@@ -1,0 +1,14 @@
+# Python
+.pyenv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Data
+data/raw/
+output/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
