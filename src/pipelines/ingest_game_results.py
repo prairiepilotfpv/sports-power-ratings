@@ -1,13 +1,5 @@
-import argparse
+import sys, csv
 from pathlib import Path
-from typing import List, Dict, Any
-import pandas as pd
-import sys
-import os
-
-from dotenv import load_dotenv
-from pydantic import BaseModel
-from openai import OpenAI
 
 # Ensure 'src' is on sys.path when running as a script
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -130,8 +122,10 @@ def main() -> None:
     else:
         out_path = processed_dir / f"{in_path.stem}.csv"
 
-    if out_path.exists() and not args.overwrite:
-        raise FileExistsError(f"Output already exists: '{out_path}'. Use --overwrite to replace.")
+def main():
+    if len(sys.argv) != 3:
+        print("Usage: python src/pipelines/ingest_game_results.py <in(.xlsx|.xls|.csv)> <out.csv>")
+        sys.exit(1)
 
     # Determine mode
     mode = args.mode
@@ -159,6 +153,7 @@ def main() -> None:
         count = ingest_image_to_csv(in_path, out_path)
     print(f"Wrote {count} rows -> {out_path}")
 
+    print(f"Wrote {out_path} with {len(rows)} rows.")
 
 if __name__ == "__main__":
     main()
