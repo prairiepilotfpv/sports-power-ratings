@@ -1,138 +1,110 @@
-# Parse Sports-Reference 'Schedule & Results' table into rows
-# (date, visitor_team, visitor_pts, home_team, home_pts, ot, game_id)
-from typing import List, Dict, Any, Optional
-from bs4 import BeautifulSoup
-from bs4.element import Comment
-import re
+import pandas as pd
+from pathlib import Path
 
+# Expected SR columns (typical):
+# Date, Visitor/Neutral, PTS, Home/Neutral, PTS, OT, Attend., Notes, Box Score
+# Sometimes 'Box Score' is a link column; if not present, we create a synthetic game_id.
 
-def _extract_text(cell) -> str:
-    if cell is None:
-        return ""
-    return cell.get_text(strip=True)
+def parse_sr_workbook(path: str) -> list[dict]:
+    p = Path(path)
+    suf = p.suffix.lower()
+    if suf in {".xlsx", ".xls"}:
+        engine = "openpyxl" if suf == ".xlsx" else "xlrd"
+        try:
+            df = pd.read_excel(p, engine=engine)
+        except ImportError as e:
+            raise RuntimeError(
+                f"Missing Excel engine '{engine}' to read '{suf}' files. Please install it in requirements."
+            ) from e
+        except Exception as e:
+            # Attempt without specifying engine as a fallback
+            try:
+                df = pd.read_excel(p)
+            except Exception:
+                raise
+    else:
+        df = pd.read_csv(p)
 
+    # Normalize column names (strip spaces, lower)
+    df.columns = [c.strip().lower() for c in df.columns]
 
-def _to_int(s: str) -> Optional[int]:
-    try:
-        return int(s)
-    except Exception:
+    # Try common SR names
+    col_map = {
+        "date": "date",
+        "visitor/neutral": "visitor",
+        "visitor": "visitor",
+        "pts": "pts",  # there are two "pts" columns; we’ll disambiguate
+        "home/neutral": "home",
+        "home": "home",
+        "ot": "ot",
+        "box score": "box_score",
+        "boxscore": "box_score",
+        "box": "box_score",
+    }
+
+    # Disambiguate the two PTS columns by position
+    # Assume first PTS belongs to visitor, second to home
+    pts_cols = [c for c in df.columns if c == "pts"]
+    if len(pts_cols) >= 2:
+        v_pts_col, h_pts_col = pts_cols[0], pts_cols[1]
+    else:
+        # fallback common labels
+        v_pts_col = next((c for c in df.columns if "visitor pts" in c), None)
+        h_pts_col = next((c for c in df.columns if "home pts" in c), None)
+
+    # Find other key columns
+    def find(name, *alts):
+        for c in (name, *alts):
+            if c in df.columns:
+                return c
         return None
 
+    date_col = find("date")
+    vis_col  = find("visitor", "visitor/neutral")
+    home_col = find("home", "home/neutral")
+    ot_col   = find("ot")
+    box_col  = find("box_score")
 
-def _find_candidate_tables(soup: BeautifulSoup):
-    tables = list(soup.find_all("table"))
-    # Sports-Reference sometimes wraps tables in HTML comments
-    for c in soup.find_all(string=lambda t: isinstance(t, Comment)):
-        if "<table" in c:
+    rows = []
+    for _, r in df.iterrows():
+        # Skip blank rows
+        if pd.isna(r.get(date_col)) or pd.isna(r.get(vis_col)) or pd.isna(r.get(home_col)):
+            continue
+
+        visitor_team = str(r[vis_col]).strip()
+        home_team    = str(r[home_col]).strip()
+
+        # Parse points robustly
+        def as_int(val):
             try:
-                cs = BeautifulSoup(c, "html.parser")
-                tables.extend(cs.find_all("table"))
+                return int(val)
             except Exception:
-                pass
-    return tables
+                try:
+                    return int(float(str(val).strip()))
+                except Exception:
+                    return None
 
+        visitor_pts = as_int(r.get(v_pts_col))
+        home_pts    = as_int(r.get(h_pts_col))
 
-def parse_sr_scores(html: str) -> List[Dict]:
-    """Parse a Sports-Reference 'Schedule & Results' table HTML.
+        # OT string (e.g., 'OT', '2OT') or blank
+        ot = str(r.get(ot_col)).strip() if ot_col and pd.notna(r.get(ot_col)) else ""
 
-    Returns list of dicts with keys:
-      - date (str)
-      - visitor_team (str)
-      - visitor_pts (int)
-      - home_team (str)
-      - home_pts (int)
-      - ot (bool)
-      - game_id (str | None)
-    """
-    soup = BeautifulSoup(html, "html.parser")
+        # game_id from box score link (often missing in workbook export)
+        game_id = ""
+        if box_col and pd.notna(r.get(box_col)):
+            game_id = str(r.get(box_col)).strip()
+        if not game_id:
+            # synthetic id: date|visitor|home
+            game_id = f"{pd.to_datetime(r[date_col]).date()}|{visitor_team}|{home_team}"
 
-    required_stats = {
-        "date_game",
-        "visitor_team_name",
-        "visitor_pts",
-        "home_team_name",
-        "home_pts",
-    }
-    optional_stats = {"overtimes", "box_score_text"}
-
-    rows_out: List[Dict[str, Any]] = []
-
-    for table in _find_candidate_tables(soup):
-        # Validate table by checking available data-stat columns
-        header_cells = []
-        thead = table.find("thead")
-        if thead:
-            tr = thead.find("tr")
-            if tr:
-                header_cells = tr.find_all(["th", "td"])
-        if not header_cells:
-            # Fallback: first row in table
-            first_tr = table.find("tr")
-            if first_tr:
-                header_cells = first_tr.find_all(["th", "td"])
-
-        header_stats = {c.get("data-stat") for c in header_cells if c.has_attr("data-stat")}
-        if not required_stats.issubset(header_stats):
-            # Try looser validation: check if body rows have the required data-stat
-            body = table.find("tbody") or table
-            sample_tr = body.find("tr") if body else None
-            if not sample_tr:
-                continue
-            sample_stats = {c.get("data-stat") for c in sample_tr.find_all(["th", "td"]) if c.has_attr("data-stat")}
-            if not required_stats.issubset(sample_stats):
-                continue
-
-        tbody = table.find("tbody") or table
-        for tr in tbody.find_all("tr"):
-            cls = tr.get("class", [])
-            if any(c in ("thead", "over_header", "spacer") for c in cls):
-                continue
-
-            cells = {c.get("data-stat"): c for c in tr.find_all(["th", "td"]) if c.has_attr("data-stat")}
-            if not required_stats.issubset(cells.keys()):
-                continue
-
-            date = _extract_text(cells.get("date_game"))
-            vteam = _extract_text(cells.get("visitor_team_name"))
-            hteam = _extract_text(cells.get("home_team_name"))
-            vpts = _to_int(_extract_text(cells.get("visitor_pts")))
-            hpts = _to_int(_extract_text(cells.get("home_pts")))
-
-            # Skip games without scores yet
-            if vpts is None or hpts is None:
-                continue
-
-            ot_text = _extract_text(cells.get("overtimes")) if "overtimes" in cells else ""
-            ot = bool(ot_text and ("OT" in ot_text.upper()))
-
-            # Try to get game_id from box score link
-            game_id = None
-            link_cell = cells.get("box_score_text")
-            link = None
-            if link_cell:
-                link = link_cell.find("a", href=True)
-            if not link:
-                # Fallback: search any link in row containing /boxscores/
-                link = tr.find("a", href=lambda h: isinstance(h, str) and "/boxscores/" in h)
-            if link and link.has_attr("href"):
-                m = re.search(r"/boxscores/([A-Za-z0-9_-]+)\.html", link["href"]) 
-                if m:
-                    game_id = m.group(1)
-
-            rows_out.append(
-                {
-                    "date": date,
-                    "visitor_team": vteam,
-                    "visitor_pts": vpts,
-                    "home_team": hteam,
-                    "home_pts": hpts,
-                    "ot": ot,
-                    "game_id": game_id,
-                }
-            )
-
-        # If we successfully parsed rows from this table, we can stop
-        if rows_out:
-            break
-
-    return rows_out
+        rows.append({
+            "date": str(pd.to_datetime(r[date_col]).date()),
+            "visitor_team": visitor_team,
+            "visitor_pts": visitor_pts,
+            "home_team": home_team,
+            "home_pts": home_pts,
+            "ot": ot,
+            "game_id": game_id,
+        })
+    return rows
