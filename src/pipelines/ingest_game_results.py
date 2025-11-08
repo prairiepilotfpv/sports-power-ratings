@@ -4,7 +4,22 @@ from pathlib import Path
 # Ensure 'src' is on sys.path when running as a script
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from parsers.sr_table_parser import parse_sr_scores, parse_sr_workbook
+# NEW: required imports
+import os
+import argparse
+from typing import Any, Dict, List
+import pandas as pd
+from dotenv import load_dotenv
+from pydantic import BaseModel
+from openai import OpenAI
+
+# Make parse_sr_scores optional to avoid ImportError
+from parsers.sr_table_parser import parse_sr_workbook
+try:
+    from parsers.sr_table_parser import parse_sr_scores  # type: ignore
+except Exception:
+    parse_sr_scores = None  # HTML parsing not available
+
 from ocr.ocr import ocr_image
 
 
@@ -17,6 +32,11 @@ def _write_rows_to_csv(rows: List[Dict[str, Any]], output_path: Path) -> int:
 
 
 def ingest_html_to_csv(input_path: Path, output_path: Path) -> int:
+    if parse_sr_scores is None:
+        raise ImportError(
+            "HTML parsing function 'parse_sr_scores' is not available in parsers.sr_table_parser. "
+            "Use --mode workbook or image, or implement 'parse_sr_scores'."
+        )
     html = input_path.read_text(encoding="utf-8", errors="ignore")
     rows = parse_sr_scores(html)
     return _write_rows_to_csv(rows, output_path)
@@ -83,7 +103,18 @@ def main() -> None:
     )
     parser.add_argument(
         "input",
-        help="Input HTML, Excel workbook, or image file. If not an existing path, resolved under data/raw/",
+        help="Input HTML, Excel workbook, or image file. If not an existing path, resolved under data/raw/.",
+    )
+    parser.add_argument(
+        "output",
+        nargs="?",
+        help="Optional positional output CSV path. Alternatively use -o/--output.",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        dest="output_flag",
+        help="Output CSV path. Defaults to data/processed/<input_stem>.csv",
     )
     parser.add_argument(
         "--mode",
@@ -92,16 +123,10 @@ def main() -> None:
         help="Input mode detection. Default auto by file extension.",
     )
     parser.add_argument(
-        "-o",
-        "--output",
-        help="Output CSV path. Defaults to data/processed/<input_stem>.csv",
-    )
-    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Allow overwriting existing output file.",
     )
-
     args = parser.parse_args()
 
     raw_dir = Path("data/raw")
@@ -115,17 +140,18 @@ def main() -> None:
         else:
             raise FileNotFoundError(f"Input not found: '{args.input}' (also tried '{candidate}')")
 
-    if args.output:
+    # Default output to data/processed/<stem>.csv (we write CSV regardless of extension)
+    # Determine output path: priority is explicit flag > positional > default
+    if args.output_flag:
+        out_path = Path(args.output_flag)
+    elif args.output:
         out_path = Path(args.output)
-        if out_path.is_dir():
-            out_path = out_path / f"{in_path.stem}.csv"
     else:
         out_path = processed_dir / f"{in_path.stem}.csv"
-
-def main():
-    if len(sys.argv) != 3:
-        print("Usage: python src/pipelines/ingest_game_results.py <in(.xlsx|.xls|.csv)> <out.csv>")
-        sys.exit(1)
+    if out_path.is_dir():
+        out_path = out_path / f"{in_path.stem}.csv"
+    if out_path.exists() and not args.overwrite:
+        raise FileExistsError(f"Output exists: {out_path}. Use --overwrite to replace.")
 
     # Determine mode
     mode = args.mode
@@ -133,7 +159,7 @@ def main():
         ext = in_path.suffix.lower()
         if ext in {".html", ".htm"}:
             mode = "html"
-        elif ext in {".xls", ".xlsx", ".xlsm"}:
+        elif ext in {".xls", ".xlsx", ".xlsm", ".csv"}:
             mode = "workbook"
         elif ext in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}:
             mode = "image"
@@ -145,15 +171,16 @@ def main():
             except Exception:
                 mode = "image"
 
+    # Dispatch
     if mode == "html":
         count = ingest_html_to_csv(in_path, out_path)
     elif mode == "workbook":
         count = ingest_workbook_to_csv(in_path, out_path)
     else:
         count = ingest_image_to_csv(in_path, out_path)
+
     print(f"Wrote {count} rows -> {out_path}")
 
-    print(f"Wrote {out_path} with {len(rows)} rows.")
 
 if __name__ == "__main__":
     main()
