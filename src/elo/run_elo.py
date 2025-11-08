@@ -1,14 +1,23 @@
-import argparse
+from __future__ import annotations
+
 from pathlib import Path
-import sys
-from typing import List, Dict, Any
+
+try:  # Allow execution from repository root or nested directories
+    from bootstrap import ensure_src_on_path
+except ModuleNotFoundError:  # pragma: no cover - fallback when bootstrap isn't on sys.path
+    import sys
+
+    sys.path.append(str(Path(__file__).resolve().parents[2]))
+    from bootstrap import ensure_src_on_path
+
+ensure_src_on_path()
+
+import argparse
+from typing import Any, Dict, List
 
 import pandas as pd
 
-# Ensure 'src' is on sys.path for direct execution
-sys.path.append(str(Path(__file__).resolve().parents[1]))
-
-from elo.elo import Elo
+from elo import Elo
 
 
 def load_games(csv_path: Path) -> pd.DataFrame:
