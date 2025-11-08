@@ -12,18 +12,27 @@ from openai import OpenAI
 # Ensure 'src' is on sys.path when running as a script
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from parsers.sr_table_parser import parse_sr_scores
+from parsers.sr_table_parser import parse_sr_scores, parse_sr_workbook
 from ocr.ocr import ocr_image
 
 
-def ingest_html_to_csv(input_path: Path, output_path: Path) -> int:
-    html = input_path.read_text(encoding="utf-8", errors="ignore")
-    rows: List[Dict] = parse_sr_scores(html)
+def _write_rows_to_csv(rows: List[Dict[str, Any]], output_path: Path) -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     cols = ["date", "visitor_team", "visitor_pts", "home_team", "home_pts", "ot", "game_id"]
     df = pd.DataFrame(rows, columns=cols)
     df.to_csv(output_path, index=False)
     return len(df)
+
+
+def ingest_html_to_csv(input_path: Path, output_path: Path) -> int:
+    html = input_path.read_text(encoding="utf-8", errors="ignore")
+    rows = parse_sr_scores(html)
+    return _write_rows_to_csv(rows, output_path)
+
+
+def ingest_workbook_to_csv(input_path: Path, output_path: Path) -> int:
+    rows = parse_sr_workbook(input_path)
+    return _write_rows_to_csv(rows, output_path)
 
 
 class GameRow(BaseModel):
@@ -73,24 +82,20 @@ def _extract_games_structured(text: str) -> List[Dict[str, Any]]:
 def ingest_image_to_csv(input_path: Path, output_path: Path) -> int:
     text = ocr_image(str(input_path))
     rows = _extract_games_structured(text)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    cols = ["date", "visitor_team", "visitor_pts", "home_team", "home_pts", "ot", "game_id"]
-    df = pd.DataFrame(rows, columns=cols)
-    df.to_csv(output_path, index=False)
-    return len(df)
+    return _write_rows_to_csv(rows, output_path)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Parse Sports-Reference 'Schedule & Results' from HTML or OCR screenshot and write CSV."
+        description="Parse Sports-Reference 'Schedule & Results' from HTML, Excel, or OCR screenshot and write CSV."
     )
     parser.add_argument(
         "input",
-        help="Input HTML or image file. If not an existing path, resolved under data/raw/",
+        help="Input HTML, Excel workbook, or image file. If not an existing path, resolved under data/raw/",
     )
     parser.add_argument(
         "--mode",
-        choices=["auto", "html", "image"],
+        choices=["auto", "html", "workbook", "image"],
         default="auto",
         help="Input mode detection. Default auto by file extension.",
     )
@@ -134,6 +139,8 @@ def main() -> None:
         ext = in_path.suffix.lower()
         if ext in {".html", ".htm"}:
             mode = "html"
+        elif ext in {".xls", ".xlsx", ".xlsm"}:
+            mode = "workbook"
         elif ext in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}:
             mode = "image"
         else:
@@ -146,6 +153,8 @@ def main() -> None:
 
     if mode == "html":
         count = ingest_html_to_csv(in_path, out_path)
+    elif mode == "workbook":
+        count = ingest_workbook_to_csv(in_path, out_path)
     else:
         count = ingest_image_to_csv(in_path, out_path)
     print(f"Wrote {count} rows -> {out_path}")
