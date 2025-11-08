@@ -1,17 +1,25 @@
-import sys, csv
+from __future__ import annotations
+
 from pathlib import Path
 
-# Ensure 'src' is on sys.path when running as a script
-sys.path.append(str(Path(__file__).resolve().parents[1]))
+try:  # Allow execution from repository root or nested directories
+    from bootstrap import ensure_src_on_path
+except ModuleNotFoundError:  # pragma: no cover - fallback when bootstrap isn't on sys.path
+    import sys
 
-# NEW: required imports
-import os
+    sys.path.append(str(Path(__file__).resolve().parents[2]))
+    from bootstrap import ensure_src_on_path
+
+ensure_src_on_path()
+
 import argparse
+import os
 from typing import Any, Dict, List
+
 import pandas as pd
 from dotenv import load_dotenv
-from pydantic import BaseModel
 from openai import OpenAI
+from pydantic import BaseModel
 
 # Make parse_sr_scores optional to avoid ImportError
 from parsers.sr_table_parser import parse_sr_workbook
