@@ -11,8 +11,6 @@ Run:
 3) pip install -r requirements.txt
 4) python src\pipelines\ingest_game_results.py --help
 
-Python 3.11+ supported (including 3.13). HTML parsing uses BeautifulSoup + html5lib, so no native build tools are required.
-
 Human-friendly pipeline:
 1) python -m venv .pyenv
 2) .\.pyenv\Scripts\Activate.ps1
