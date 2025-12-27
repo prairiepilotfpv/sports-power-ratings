@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from io import StringIO
 from pathlib import Path
 from typing import List
 
@@ -38,9 +39,9 @@ def _resolve_pts_columns(df: pd.DataFrame) -> tuple[str | None, str | None]:
     if len(pts_cols) >= 2:
         return pts_cols[0], pts_cols[1]
 
-    visitor_pts = _find_column(df, "visitor pts", "visitor_pts")
+    away_pts = _find_column(df, "visitor pts", "visitor_pts", "away pts", "away_pts")
     home_pts = _find_column(df, "home pts", "home_pts")
-    return visitor_pts, home_pts
+    return away_pts, home_pts
 
 
 def _parse_sr_dataframe(
@@ -51,53 +52,63 @@ def _parse_sr_dataframe(
     df = _normalize_columns(df)
 
     date_col = _find_column(df, "date")
-    visitor_col = _find_column(df, "visitor/neutral", "visitor")
+    away_col = _find_column(df, "visitor/neutral", "visitor", "away", "away/neutral")
     home_col = _find_column(df, "home/neutral", "home")
     ot_col = _find_column(df, "ot")
     box_col = _find_column(df, "box score", "boxscore", "box")
-    visitor_pts_col, home_pts_col = _resolve_pts_columns(df)
+    notes_col = _find_column(df, "notes")
+    away_pts_col, home_pts_col = _resolve_pts_columns(df)
 
-    if not date_col or not visitor_col or not home_col:
-        missing = [name for name, col in {
-            "date": date_col,
-            "visitor": visitor_col,
-            "home": home_col,
-        }.items() if col is None]
+    if not date_col or not away_col or not home_col:
+        missing = [
+            name
+            for name, col in {
+                "date": date_col,
+                "away": away_col,
+                "home": home_col,
+            }.items()
+            if col is None
+        ]
         raise ValueError(f"Missing required columns: {', '.join(missing)}")
 
     games: List[GameResult] = []
     for _, row in df.iterrows():
-        if pd.isna(row.get(date_col)) or pd.isna(row.get(visitor_col)) or pd.isna(row.get(home_col)):
+        if pd.isna(row.get(date_col)) or pd.isna(row.get(away_col)) or pd.isna(row.get(home_col)):
             continue
 
-        visitor_team = str(row[visitor_col]).strip()
+        away_team = str(row[away_col]).strip()
         home_team = str(row[home_col]).strip()
 
-        visitor_pts = _as_int(row.get(visitor_pts_col))
-        home_pts = _as_int(row.get(home_pts_col))
+        away_score = _as_int(row.get(away_pts_col))
+        home_score = _as_int(row.get(home_pts_col))
 
         ot_raw = ""
         if ot_col and pd.notna(row.get(ot_col)):
             ot_raw = str(row.get(ot_col)).strip()
-        ot = bool(ot_raw)
+        overtime = bool(ot_raw)
 
         game_id = None
         if box_col and pd.notna(row.get(box_col)):
             game_id = str(row.get(box_col)).strip()
         if not game_id:
-            game_id = f"{pd.to_datetime(row[date_col]).date()}|{visitor_team}|{home_team}"
+            game_id = f"{pd.to_datetime(row[date_col]).date()}|{away_team}|{home_team}"
+
+        notes = None
+        if notes_col and pd.notna(row.get(notes_col)):
+            notes = str(row.get(notes_col)).strip()
 
         games.append(
             GameResult(
                 date=pd.to_datetime(row[date_col]).date(),
-                visitor_team=visitor_team,
-                visitor_pts=visitor_pts,
                 home_team=home_team,
-                home_pts=home_pts,
-                ot=ot,
+                away_team=away_team,
+                home_score=home_score,
+                away_score=away_score,
+                overtime=overtime,
                 game_id=game_id,
                 sport=sport,
                 season=season,
+                notes=notes,
             )
         )
 
@@ -121,3 +132,8 @@ def parse_sr_html(path: str | Path, sport: str | None = None, season: str | None
     if last_error is not None:
         raise last_error
     raise ValueError("No tables found in HTML input")
+
+
+def parse_sr_csv_text(text: str, sport: str | None = None, season: str | None = None) -> List[GameResult]:
+    df = pd.read_csv(StringIO(text))
+    return _parse_sr_dataframe(df, sport=sport, season=season)

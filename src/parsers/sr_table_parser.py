@@ -43,13 +43,13 @@ def parse_sr_workbook(path: str) -> list[dict]:
     }
 
     # Disambiguate the two PTS columns by position
-    # Assume first PTS belongs to visitor, second to home
+    # Assume first PTS belongs to away, second to home
     pts_cols = [c for c in df.columns if c == "pts"]
     if len(pts_cols) >= 2:
         v_pts_col, h_pts_col = pts_cols[0], pts_cols[1]
     else:
         # fallback common labels
-        v_pts_col = next((c for c in df.columns if "visitor pts" in c), None)
+        v_pts_col = next((c for c in df.columns if "visitor pts" in c or "away pts" in c), None)
         h_pts_col = next((c for c in df.columns if "home pts" in c), None)
 
     # Find other key columns
@@ -60,10 +60,11 @@ def parse_sr_workbook(path: str) -> list[dict]:
         return None
 
     date_col = find("date")
-    vis_col  = find("visitor", "visitor/neutral")
+    vis_col  = find("visitor", "visitor/neutral", "away", "away/neutral")
     home_col = find("home", "home/neutral")
     ot_col   = find("ot")
     box_col  = find("box_score")
+    notes_col = find("notes")
 
     rows = []
     for _, r in df.iterrows():
@@ -71,7 +72,7 @@ def parse_sr_workbook(path: str) -> list[dict]:
         if pd.isna(r.get(date_col)) or pd.isna(r.get(vis_col)) or pd.isna(r.get(home_col)):
             continue
 
-        visitor_team = str(r[vis_col]).strip()
+        away_team = str(r[vis_col]).strip()
         home_team    = str(r[home_col]).strip()
 
         # Parse points robustly
@@ -84,11 +85,11 @@ def parse_sr_workbook(path: str) -> list[dict]:
                 except Exception:
                     return None
 
-        visitor_pts = as_int(r.get(v_pts_col))
-        home_pts    = as_int(r.get(h_pts_col))
+        away_score = as_int(r.get(v_pts_col))
+        home_score = as_int(r.get(h_pts_col))
 
         # OT string (e.g., 'OT', '2OT') or blank
-        ot = str(r.get(ot_col)).strip() if ot_col and pd.notna(r.get(ot_col)) else ""
+        overtime = str(r.get(ot_col)).strip() if ot_col and pd.notna(r.get(ot_col)) else ""
 
         # game_id from box score link (often missing in workbook export)
         game_id = ""
@@ -96,15 +97,20 @@ def parse_sr_workbook(path: str) -> list[dict]:
             game_id = str(r.get(box_col)).strip()
         if not game_id:
             # synthetic id: date|visitor|home
-            game_id = f"{pd.to_datetime(r[date_col]).date()}|{visitor_team}|{home_team}"
+            game_id = f"{pd.to_datetime(r[date_col]).date()}|{away_team}|{home_team}"
+
+        notes = ""
+        if notes_col and pd.notna(r.get(notes_col)):
+            notes = str(r.get(notes_col)).strip()
 
         rows.append({
             "date": str(pd.to_datetime(r[date_col]).date()),
-            "visitor_team": visitor_team,
-            "visitor_pts": visitor_pts,
+            "away_team": away_team,
             "home_team": home_team,
-            "home_pts": home_pts,
-            "ot": ot,
+            "away_score": away_score,
+            "home_score": home_score,
+            "overtime": overtime,
             "game_id": game_id,
+            "notes": notes,
         })
     return rows

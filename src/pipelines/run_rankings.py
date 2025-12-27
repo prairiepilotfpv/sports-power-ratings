@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List
 
 try:  # Allow execution from repository root or nested directories
     from bootstrap import ensure_src_on_path
@@ -16,11 +16,17 @@ ensure_src_on_path()
 import pandas as pd
 
 from data.repository import load_games
-from elo.run_elo import run_elo_on_games
+from models.registry import get_model
 
 
-def _normalize_games(rows: List[Dict[str, Any]]) -> pd.DataFrame:
-    df = pd.DataFrame(rows)
+def _normalize_games(rows: Iterable[Any]) -> pd.DataFrame:
+    normalized_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        if hasattr(row, "model_dump"):
+            normalized_rows.append(row.model_dump())
+        else:
+            normalized_rows.append(dict(row))
+    df = pd.DataFrame(normalized_rows)
     if df.empty:
         return df
     if "date" in df.columns:
@@ -30,13 +36,23 @@ def _normalize_games(rows: List[Dict[str, Any]]) -> pd.DataFrame:
     return df
 
 
-def build_rankings(df: pd.DataFrame, model: str = "elo") -> pd.DataFrame:
-    if model != "elo":
-        raise ValueError(f"Unsupported model: {model}")
-    elo = run_elo_on_games(df)
+def build_rankings(df: pd.DataFrame, model: str = "bradley-terry") -> pd.DataFrame:
+    model_cls = get_model(model)
+    model_instance = model_cls()
+    model_instance.fit(df.to_dict(orient="records"))
+
+    games_played: Dict[str, int] = {}
+    for _, row in df.iterrows():
+        home = str(row.get("home_team", "")).strip()
+        away = str(row.get("away_team", "")).strip()
+        if not home or not away:
+            continue
+        games_played[home] = games_played.get(home, 0) + 1
+        games_played[away] = games_played.get(away, 0) + 1
+
     items = [
-        {"team": team, "rating": rating, "games": elo.N[team]}
-        for team, rating in elo.R.items()
+        {"team": team, "rating": rating, "games": games_played.get(team, 0)}
+        for team, rating in model_instance.rankings()
     ]
     return pd.DataFrame(items).sort_values("rating", ascending=False)
 
@@ -46,7 +62,7 @@ def run_rankings(
     *,
     sport: str,
     season: str,
-    model: str = "elo",
+    model: str = "bradley-terry",
     output_path: str | Path | None = None,
 ) -> Path:
     rows = load_games(db_path, sport=sport, season=season)
