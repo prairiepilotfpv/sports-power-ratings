@@ -8,11 +8,13 @@ from pydantic import BaseModel, Field
 
 class GameResult(BaseModel):
     date: date
-    visitor_team: str
-    visitor_pts: Optional[int] = Field(default=None, ge=0)
     home_team: str
-    home_pts: Optional[int] = Field(default=None, ge=0)
-    ot: bool = False
+    away_team: str
+    home_score: Optional[int] = Field(default=None, ge=0)
+    away_score: Optional[int] = Field(default=None, ge=0)
+    neutral: bool = False
+    overtime: bool = False
     game_id: Optional[str] = None
     sport: Optional[str] = None
     season: Optional[str] = None
+    notes: Optional[str] = None
