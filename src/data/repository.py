@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import date
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, List
 
 from ingest.schema import GameResult
 
@@ -12,14 +12,16 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS games (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     date TEXT NOT NULL,
-    visitor_team TEXT NOT NULL,
-    visitor_pts INTEGER,
     home_team TEXT NOT NULL,
-    home_pts INTEGER,
-    ot INTEGER NOT NULL DEFAULT 0,
+    away_team TEXT NOT NULL,
+    home_score INTEGER,
+    away_score INTEGER,
+    neutral INTEGER NOT NULL DEFAULT 0,
+    overtime INTEGER NOT NULL DEFAULT 0,
     game_id TEXT,
     sport TEXT,
     season TEXT,
+    notes TEXT,
     UNIQUE(game_id, sport, season)
 );
 """
@@ -38,14 +40,16 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
     rows = [
         (
             g.date.isoformat(),
-            g.visitor_team,
-            g.visitor_pts,
             g.home_team,
-            g.home_pts,
-            1 if g.ot else 0,
+            g.away_team,
+            g.home_score,
+            g.away_score,
+            1 if g.neutral else 0,
+            1 if g.overtime else 0,
             g.game_id,
             g.sport,
             g.season,
+            g.notes,
         )
         for g in games
     ]
@@ -55,15 +59,17 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
             """
             INSERT OR REPLACE INTO games (
                 date,
-                visitor_team,
-                visitor_pts,
                 home_team,
-                home_pts,
-                ot,
+                away_team,
+                home_score,
+                away_score,
+                neutral,
+                overtime,
                 game_id,
                 sport,
-                season
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                season,
+                notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -92,17 +98,19 @@ def load_games(
 
     query = f"""
         SELECT date,
-               visitor_team,
-               visitor_pts,
                home_team,
-               home_pts,
-               ot,
+               away_team,
+               home_score,
+               away_score,
+               neutral,
+               overtime,
                game_id,
                sport,
-               season
+               season,
+               notes
         FROM games
         {where_clause}
-        ORDER BY date, visitor_team, home_team
+        ORDER BY date, away_team, home_team
     """
 
     with sqlite3.connect(Path(db_path)) as conn:
@@ -111,14 +119,16 @@ def load_games(
     return [
         GameResult(
             date=date.fromisoformat(row[0]),
-            visitor_team=row[1],
-            visitor_pts=row[2],
-            home_team=row[3],
-            home_pts=row[4],
-            ot=bool(row[5]),
-            game_id=row[6],
-            sport=row[7],
-            season=row[8],
+            home_team=row[1],
+            away_team=row[2],
+            home_score=row[3],
+            away_score=row[4],
+            neutral=bool(row[5]),
+            overtime=bool(row[6]),
+            game_id=row[7],
+            sport=row[8],
+            season=row[9],
+            notes=row[10],
         )
         for row in rows
     ]

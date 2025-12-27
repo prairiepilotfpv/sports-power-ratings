@@ -33,7 +33,16 @@ from ocr.ocr import ocr_image
 
 def _write_rows_to_csv(rows: List[Dict[str, Any]], output_path: Path) -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    cols = ["date", "visitor_team", "visitor_pts", "home_team", "home_pts", "ot", "game_id"]
+    cols = [
+        "date",
+        "away_team",
+        "away_score",
+        "home_team",
+        "home_score",
+        "overtime",
+        "game_id",
+        "notes",
+    ]
     df = pd.DataFrame(rows, columns=cols)
     df.to_csv(output_path, index=False)
     return len(df)
@@ -57,12 +66,13 @@ def ingest_workbook_to_csv(input_path: Path, output_path: Path) -> int:
 
 class GameRow(BaseModel):
     date: str
-    visitor_team: str
-    visitor_pts: int
     home_team: str
-    home_pts: int
-    ot: bool
+    away_team: str
+    home_score: int
+    away_score: int
+    overtime: bool
     game_id: str | None = None
+    notes: str | None = None
 
 
 class GameRows(BaseModel):
@@ -79,8 +89,9 @@ def _extract_games_structured(text: str) -> List[Dict[str, Any]]:
 
     instruction = (
         "Extract basketball game results from the text. Return an array 'games' of objects "
-        "with fields: date (string), visitor_team (string), visitor_pts (int), home_team (string), "
-        "home_pts (int), ot (boolean), game_id (nullable string). If OT/2OT/3OT indicated, set ot=true."
+        "with fields: date (string), away_team (string), away_score (int), home_team (string), "
+        "home_score (int), overtime (boolean), game_id (nullable string), notes (nullable string). "
+        "If OT/2OT/3OT indicated, set overtime=true."
     )
 
     try:

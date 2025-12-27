@@ -13,7 +13,9 @@ except ModuleNotFoundError:  # pragma: no cover - fallback when bootstrap isn't 
 
 ensure_src_on_path()
 
+from data.paths import db_path_for
 from data.repository import save_games
+from ingest.normalize import normalize_games
 from ingest.sports_reference import parse_sr_csv, parse_sr_html
 
 
@@ -24,8 +26,8 @@ def main() -> None:
     parser.add_argument("input", help="Path to Sports-Reference file (CSV or HTML).")
     parser.add_argument(
         "--db",
-        default="data/app.db",
-        help="SQLite DB path (default: data/app.db)",
+        default=None,
+        help="SQLite DB path override (default: data/db/<sport>/<season>.db)",
     )
     parser.add_argument("--sport", help="Sport identifier (e.g., nba)")
     parser.add_argument("--season", help="Season identifier (e.g., 2023-24)")
@@ -36,6 +38,8 @@ def main() -> None:
         help="Input format override (default: auto-detect by extension)",
     )
     args = parser.parse_args()
+
+    print("Warning: src.cli.ingest is legacy. Prefer: python -m src.cli.pipeline import")
 
     in_path = Path(args.input)
     if not in_path.exists():
@@ -52,8 +56,11 @@ def main() -> None:
         games = parse_sr_html(in_path, sport=args.sport, season=args.season)
     else:
         games = parse_sr_csv(in_path, sport=args.sport, season=args.season)
-    saved = save_games(args.db, games)
-    print(f"Saved {saved} games to {args.db}")
+    games = normalize_games(games)
+
+    db_path = Path(args.db) if args.db else db_path_for(args.sport or "unknown", args.season or "unknown")
+    saved = save_games(db_path, games)
+    print(f"Saved {saved} games to {db_path}")
 
 
 if __name__ == "__main__":

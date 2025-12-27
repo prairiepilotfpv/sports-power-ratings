@@ -2,6 +2,6 @@
 from __future__ import annotations
 
 from .base import PowerRatingModel
-from .elo import Elo
+from .bradley_terry import BradleyTerry
 
-__all__ = ["PowerRatingModel", "Elo"]
+__all__ = ["PowerRatingModel", "BradleyTerry"]
