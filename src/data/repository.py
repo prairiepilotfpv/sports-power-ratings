@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import date
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -72,28 +73,74 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
 
 def load_games(
     db_path: str | Path,
-    *,
     sport: str | None = None,
     season: str | None = None,
-) -> list[dict[str, Any]]:
-    init_db(db_path)
-    query = (
-        "SELECT date, visitor_team, visitor_pts, home_team, home_pts, ot, game_id, sport, season "
-        "FROM games"
-    )
-    params: list[Any] = []
-    clauses: list[str] = []
+) -> List[GameResult]:
+    filters = []
+    params: list[str] = []
+
     if sport is not None:
-        clauses.append("sport = ?")
+        filters.append("sport = ?")
         params.append(sport)
     if season is not None:
-        clauses.append("season = ?")
+        filters.append("season = ?")
         params.append(season)
-    if clauses:
-        query = f"{query} WHERE {' AND '.join(clauses)}"
-    query = f"{query} ORDER BY date, game_id"
+
+    where_clause = ""
+    if filters:
+        where_clause = f"WHERE {' AND '.join(filters)}"
+
+    query = f"""
+        SELECT date,
+               visitor_team,
+               visitor_pts,
+               home_team,
+               home_pts,
+               ot,
+               game_id,
+               sport,
+               season
+        FROM games
+        {where_clause}
+        ORDER BY date, visitor_team, home_team
+    """
 
     with sqlite3.connect(Path(db_path)) as conn:
-        conn.row_factory = sqlite3.Row
         rows = conn.execute(query, params).fetchall()
-    return [dict(row) for row in rows]
+
+    return [
+        GameResult(
+            date=date.fromisoformat(row[0]),
+            visitor_team=row[1],
+            visitor_pts=row[2],
+            home_team=row[3],
+            home_pts=row[4],
+            ot=bool(row[5]),
+            game_id=row[6],
+            sport=row[7],
+            season=row[8],
+        )
+        for row in rows
+    ]
+
+
+def list_sports(db_path: str | Path) -> List[str]:
+    with sqlite3.connect(Path(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT sport FROM games WHERE sport IS NOT NULL ORDER BY sport"
+        ).fetchall()
+    return [row[0] for row in rows]
+
+
+def list_seasons(db_path: str | Path, sport: str) -> List[str]:
+    with sqlite3.connect(Path(db_path)) as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT season
+            FROM games
+            WHERE sport = ? AND season IS NOT NULL
+            ORDER BY season
+            """,
+            (sport,),
+        ).fetchall()
+    return [row[0] for row in rows]

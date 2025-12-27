@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from typing import DefaultDict
+from typing import Any, DefaultDict, Iterable, Mapping
+
+from .base import PowerRatingModel
 
 H_ELO = 55.0
 PTS_PER_ELO = 0.085
@@ -26,10 +28,29 @@ def k_factor(n: int, base: float = 22.0) -> float:
     return base / (1 + max(n, 0)) ** 0.5
 
 
-class Elo:
+def _game_value(game: Mapping[str, Any], key: str, default: Any = None) -> Any:
+    if hasattr(game, key):
+        return getattr(game, key)
+    return game.get(key, default)
+
+
+class Elo(PowerRatingModel):
     def __init__(self) -> None:
         self.R: DefaultDict[str, float] = defaultdict(lambda: 1500.0)
         self.N: DefaultDict[str, int] = defaultdict(int)
+
+    def fit(self, games: Iterable[Mapping[str, Any]]) -> None:
+        for game in games:
+            home = str(_game_value(game, "home_team", "")).strip()
+            away = str(_game_value(game, "visitor_team", "")).strip()
+            home_pts = _game_value(game, "home_pts")
+            away_pts = _game_value(game, "visitor_pts")
+            neutral = bool(_game_value(game, "neutral", False))
+            if not home or not away:
+                continue
+            if home_pts is None or away_pts is None:
+                continue
+            self.update(home, away, int(home_pts), int(away_pts), neutral=neutral)
 
     def predict(self, home: str, away: str, neutral: bool = False) -> tuple[float, float]:
         H = 0.0 if neutral else H_ELO
@@ -52,3 +73,6 @@ class Elo:
         self.R[away] = ra - ka * delta
         self.N[home] += 1
         self.N[away] += 1
+
+    def rankings(self) -> list[tuple[str, float]]:
+        return sorted(self.R.items(), key=lambda item: item[1], reverse=True)

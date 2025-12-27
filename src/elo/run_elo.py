@@ -17,7 +17,7 @@ from typing import Any, Dict, List
 
 import pandas as pd
 
-from elo import Elo
+from models.elo import Elo
 
 
 def load_games(csv_path: Path) -> pd.DataFrame:
@@ -107,4 +107,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
