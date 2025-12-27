@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, List
+from typing import List
 
 import pandas as pd
 
@@ -34,7 +34,7 @@ def _as_int(value) -> int | None:
 
 
 def _resolve_pts_columns(df: pd.DataFrame) -> tuple[str | None, str | None]:
-    pts_cols = [c for c in df.columns if c == "pts"]
+    pts_cols = [c for c in df.columns if c == "pts" or c.startswith("pts.")]
     if len(pts_cols) >= 2:
         return pts_cols[0], pts_cols[1]
 
@@ -43,8 +43,11 @@ def _resolve_pts_columns(df: pd.DataFrame) -> tuple[str | None, str | None]:
     return visitor_pts, home_pts
 
 
-def parse_sr_csv(path: str | Path, sport: str | None = None, season: str | None = None) -> List[GameResult]:
-    df = pd.read_csv(Path(path))
+def _parse_sr_dataframe(
+    df: pd.DataFrame,
+    sport: str | None = None,
+    season: str | None = None,
+) -> List[GameResult]:
     df = _normalize_columns(df)
 
     date_col = _find_column(df, "date")
@@ -99,3 +102,22 @@ def parse_sr_csv(path: str | Path, sport: str | None = None, season: str | None 
         )
 
     return games
+
+
+def parse_sr_csv(path: str | Path, sport: str | None = None, season: str | None = None) -> List[GameResult]:
+    df = pd.read_csv(Path(path))
+    return _parse_sr_dataframe(df, sport=sport, season=season)
+
+
+def parse_sr_html(path: str | Path, sport: str | None = None, season: str | None = None) -> List[GameResult]:
+    tables = pd.read_html(Path(path))
+    last_error: ValueError | None = None
+    for table in tables:
+        try:
+            return _parse_sr_dataframe(table, sport=sport, season=season)
+        except ValueError as exc:
+            last_error = exc
+            continue
+    if last_error is not None:
+        raise last_error
+    raise ValueError("No tables found in HTML input")
