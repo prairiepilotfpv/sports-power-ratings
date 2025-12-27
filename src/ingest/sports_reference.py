@@ -121,7 +121,8 @@ def parse_sr_csv(path: str | Path, sport: str | None = None, season: str | None 
 
 
 def parse_sr_html(path: str | Path, sport: str | None = None, season: str | None = None) -> List[GameResult]:
-    tables = pd.read_html(Path(path))
+    html = Path(path).read_text(encoding="utf-8", errors="ignore")
+    tables = pd.read_html(StringIO(html), flavor="bs4")
     last_error: ValueError | None = None
     for table in tables:
         try:
