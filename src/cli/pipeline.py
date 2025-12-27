@@ -17,6 +17,7 @@ from data.paths import db_path_for
 from data.repository import save_games
 from ingest.normalize import normalize_games
 from ingest.sports_reference import parse_sr_csv, parse_sr_csv_text, parse_sr_html
+from pipelines.matchups import format_matchup, predict_matchup
 from pipelines.run_rankings import run_rankings
 
 
@@ -75,6 +76,29 @@ def _parse_args() -> argparse.Namespace:
         help="Allow overwriting existing output file.",
     )
 
+    matchup_parser = subparsers.add_parser(
+        "matchup",
+        aliases=["predict", "predict_matchup"],
+        help="Predict a matchup using stored rankings data.",
+    )
+    matchup_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
+    matchup_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
+    matchup_parser.add_argument(
+        "--matchup",
+        help='Matchup string like "Eagles vs Cowboys".',
+    )
+    matchup_parser.add_argument("--home", help="Home team name.")
+    matchup_parser.add_argument("--away", help="Away team name.")
+    matchup_parser.add_argument(
+        "--model",
+        default="bradley-terry",
+        help="Ranking model to run (default: bradley-terry)",
+    )
+    matchup_parser.add_argument(
+        "--db",
+        help="Optional SQLite DB path override (default: data/db/<sport>/<season>.db)",
+    )
+
     return parser.parse_args()
 
 
@@ -120,12 +144,48 @@ def _run_rankings(args: argparse.Namespace) -> None:
     print(f"Saved rankings -> {result_path}")
 
 
+def _parse_matchup_text(text: str) -> tuple[str, str]:
+    cleaned = text.replace("VS", "vs").replace("Vs", "vs").replace("v.", "vs").replace(" v ", " vs ")
+    if "vs" not in cleaned:
+        raise ValueError("Matchup must include 'vs' between team names.")
+    parts = [part.strip() for part in cleaned.split("vs") if part.strip()]
+    if len(parts) != 2:
+        raise ValueError("Matchup must include exactly two teams.")
+    return parts[0], parts[1]
+
+
+def _run_matchup(args: argparse.Namespace) -> None:
+    home = args.home
+    away = args.away
+    if args.matchup:
+        home, away = _parse_matchup_text(args.matchup)
+
+    if not home or not away:
+        raise ValueError("Provide --matchup or both --home and --away.")
+
+    db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
+    prediction = predict_matchup(
+        db_path,
+        sport=args.sport,
+        season=args.season,
+        home_team=home,
+        away_team=away,
+        model=args.model,
+    )
+    line, metrics = format_matchup(prediction)
+    print(line)
+    print(f"Spread: {metrics['spread']:.2f}")
+    print(f"Total Points: {metrics['total_points']:.2f}")
+
+
 def main() -> None:
     args = _parse_args()
     if args.command == "import":
         _import_games(args)
     elif args.command == "rank":
         _run_rankings(args)
+    elif args.command == "matchup":
+        _run_matchup(args)
     else:
         raise ValueError(f"Unknown command: {args.command}")
 
