@@ -19,6 +19,7 @@ from ingest.normalize import normalize_games
 from ingest.sports_reference import parse_sr_csv, parse_sr_csv_text, parse_sr_html
 from pipelines.matchups import format_matchup, predict_matchup
 from pipelines.run_rankings import run_rankings
+from pipelines.schedule import build_schedule_with_projections
 
 
 def _parse_args() -> argparse.Namespace:
@@ -95,6 +96,32 @@ def _parse_args() -> argparse.Namespace:
         help="Ranking model to run (default: bradley-terry)",
     )
     matchup_parser.add_argument(
+        "--db",
+        help="Optional SQLite DB path override (default: data/db/<sport>/<season>.db)",
+    )
+
+    schedule_parser = subparsers.add_parser(
+        "schedule",
+        aliases=["calendar", "projections"],
+        help="Export played/upcoming games with model projections for upcoming games.",
+    )
+    schedule_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
+    schedule_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
+    schedule_parser.add_argument(
+        "--model",
+        default="bradley-terry",
+        help="Ranking model to use for projections (default: bradley-terry)",
+    )
+    schedule_parser.add_argument(
+        "--output",
+        help="Optional output CSV path. Defaults to data/processed/<sport>/<season>/schedule_with_projections.csv",
+    )
+    schedule_parser.add_argument(
+        "--upcoming-only",
+        action="store_true",
+        help="Only include games without scores (future games).",
+    )
+    schedule_parser.add_argument(
         "--db",
         help="Optional SQLite DB path override (default: data/db/<sport>/<season>.db)",
     )
@@ -178,6 +205,20 @@ def _run_matchup(args: argparse.Namespace) -> None:
     print(f"Total Points: {metrics['total_points']:.2f}")
 
 
+def _run_schedule(args: argparse.Namespace) -> None:
+    db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
+    output_path = Path(args.output) if args.output else None
+    result_path = build_schedule_with_projections(
+        db_path,
+        sport=args.sport,
+        season=args.season,
+        model=args.model,
+        output_path=output_path,
+        upcoming_only=args.upcoming_only,
+    )
+    print(f"Saved schedule with projections -> {result_path}")
+
+
 def main() -> None:
     args = _parse_args()
     if args.command == "import":
@@ -186,6 +227,8 @@ def main() -> None:
         _run_rankings(args)
     elif args.command == "matchup":
         _run_matchup(args)
+    elif args.command == "schedule":
+        _run_schedule(args)
     else:
         raise ValueError(f"Unknown command: {args.command}")
 

@@ -21,7 +21,7 @@ class MatchupPrediction:
     total_points: float
 
 
-def _average_total_points(df: pd.DataFrame) -> float:
+def average_total_points(df: pd.DataFrame) -> float:
     if df.empty:
         return 0.0
     totals = []
@@ -70,7 +70,7 @@ def predict_matchup(
     else:
         winner, loser = away_key, home_key
 
-    total_points = _average_total_points(df)
+    total_points = average_total_points(df)
 
     return MatchupPrediction(
         home_team=home_key,

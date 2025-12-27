@@ -19,11 +19,17 @@ Lightweight pipeline for turning Sports-Reference schedules/results into SQLite 
 - `python -m src.cli.pipeline import --sport nba --season 2024-25 --input data/processed/nba_schedule.csv`
 - `--sport` and `--season` are required and determine which SQLite database is used. The pipeline does not infer these from the CSV.
 - Accepts HTML/CSV files or `--input-text` for pasted CSV content. Override the DB with `--db` (default `data/db/<sport>/<season>.db`).
+- Rows without scores are kept so the schedule can include future games.
 
 ### Run rankings
 - `python -m src.cli.pipeline rank --sport nba --season 2024-25 --model bradley-terry --output data/processed/nba/2024-25/rankings.csv --overwrite`
 - `--sport` and `--season` are required and must match the database you imported into.
 - Without `--output`, rankings write to `data/processed/<sport>/<season>/rankings.csv`. Uses the same DB as import unless `--db` is set.
+
+### Export schedule with projections
+- `python -m src.cli.pipeline schedule --sport nba --season 2024-25 --model bradley-terry --output data/processed/nba/2024-25/schedule_with_projections.csv`
+- Outputs played games and upcoming games in one calendar, with `projected_winner`, `projected_spread`, `projected_total`, and current `home_rating`/`away_rating` from the selected model. Use `--upcoming-only` to show just future games.
+- Uses the same per-sport/per-season DB unless `--db` is set; defaults to writing `data/processed/<sport>/<season>/schedule_with_projections.csv` when `--output` is omitted.
 
 ### Predict a matchup
 - `python -m src.cli.pipeline matchup --sport nba --season 2024-25 --matchup "Lakers vs Celtics"`

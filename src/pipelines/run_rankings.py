@@ -21,13 +21,35 @@ from models.registry import get_model
 from pipelines.common import normalize_games
 
 
-def build_rankings(df: pd.DataFrame, model: str = "bradley-terry") -> pd.DataFrame:
+def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    mask = df["home_score"].notna() & df["away_score"].notna()
+    return df[mask]
+
+
+def _empty_rankings() -> pd.DataFrame:
+    return pd.DataFrame(columns=["team", "rating", "points", "games"])
+
+
+def build_rankings(
+    df: pd.DataFrame,
+    model: str = "bradley-terry",
+    *,
+    require_scores: bool = True,
+) -> pd.DataFrame:
+    played = _completed_games(df)
+    if played.empty:
+        if require_scores:
+            raise ValueError("No completed games available to build rankings.")
+        return _empty_rankings()
+
     model_cls = get_model(model)
     model_instance = model_cls()
-    model_instance.fit(df.to_dict(orient="records"))
+    model_instance.fit(played.to_dict(orient="records"))
 
     games_played: Dict[str, int] = {}
-    for _, row in df.iterrows():
+    for _, row in played.iterrows():
         home = str(row.get("home_team", "")).strip()
         away = str(row.get("away_team", "")).strip()
         if not home or not away:
@@ -37,7 +59,7 @@ def build_rankings(df: pd.DataFrame, model: str = "bradley-terry") -> pd.DataFra
 
     rating_map = dict(model_instance.rankings())
 
-    point_scale = _estimate_point_scale(df, rating_map)
+    point_scale = _estimate_point_scale(played, rating_map)
 
     items = []
     for team, rating in rating_map.items():
@@ -95,7 +117,12 @@ def run_rankings(
     df = normalize_games(rows)
     if df.empty:
         raise ValueError(f"No games found for sport={sport!r}, season={season!r}")
-    rankings = build_rankings(df, model=model)
+    try:
+        rankings = build_rankings(df, model=model)
+    except ValueError as exc:
+        if "No completed games" in str(exc):
+            raise ValueError(f"No completed games found for sport={sport!r}, season={season!r}") from exc
+        raise
     if output_path is None:
         output_path = Path("data/processed") / sport / season / "rankings.csv"
     else:
