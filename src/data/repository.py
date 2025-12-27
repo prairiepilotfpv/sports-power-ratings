@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from ingest.schema import GameResult
 
@@ -68,3 +68,32 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
         )
         conn.commit()
         return conn.total_changes
+
+
+def load_games(
+    db_path: str | Path,
+    *,
+    sport: str | None = None,
+    season: str | None = None,
+) -> list[dict[str, Any]]:
+    init_db(db_path)
+    query = (
+        "SELECT date, visitor_team, visitor_pts, home_team, home_pts, ot, game_id, sport, season "
+        "FROM games"
+    )
+    params: list[Any] = []
+    clauses: list[str] = []
+    if sport is not None:
+        clauses.append("sport = ?")
+        params.append(sport)
+    if season is not None:
+        clauses.append("season = ?")
+        params.append(season)
+    if clauses:
+        query = f"{query} WHERE {' AND '.join(clauses)}"
+    query = f"{query} ORDER BY date, game_id"
+
+    with sqlite3.connect(Path(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
