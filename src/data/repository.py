@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import date
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, List
 
 from ingest.schema import GameResult
 
@@ -68,3 +69,78 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
         )
         conn.commit()
         return conn.total_changes
+
+
+def load_games(
+    db_path: str | Path,
+    sport: str | None = None,
+    season: str | None = None,
+) -> List[GameResult]:
+    filters = []
+    params: list[str] = []
+
+    if sport is not None:
+        filters.append("sport = ?")
+        params.append(sport)
+    if season is not None:
+        filters.append("season = ?")
+        params.append(season)
+
+    where_clause = ""
+    if filters:
+        where_clause = f"WHERE {' AND '.join(filters)}"
+
+    query = f"""
+        SELECT date,
+               visitor_team,
+               visitor_pts,
+               home_team,
+               home_pts,
+               ot,
+               game_id,
+               sport,
+               season
+        FROM games
+        {where_clause}
+        ORDER BY date, visitor_team, home_team
+    """
+
+    with sqlite3.connect(Path(db_path)) as conn:
+        rows = conn.execute(query, params).fetchall()
+
+    return [
+        GameResult(
+            date=date.fromisoformat(row[0]),
+            visitor_team=row[1],
+            visitor_pts=row[2],
+            home_team=row[3],
+            home_pts=row[4],
+            ot=bool(row[5]),
+            game_id=row[6],
+            sport=row[7],
+            season=row[8],
+        )
+        for row in rows
+    ]
+
+
+def list_sports(db_path: str | Path) -> List[str]:
+    with sqlite3.connect(Path(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT sport FROM games WHERE sport IS NOT NULL ORDER BY sport"
+        ).fetchall()
+    return [row[0] for row in rows]
+
+
+def list_seasons(db_path: str | Path, sport: str) -> List[str]:
+    with sqlite3.connect(Path(db_path)) as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT season
+            FROM games
+            WHERE sport = ? AND season IS NOT NULL
+            ORDER BY season
+            """,
+            (sport,),
+        ).fetchall()
+    return [row[0] for row in rows]
