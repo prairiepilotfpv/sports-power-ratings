@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import re
 from io import StringIO
 from pathlib import Path
 from typing import List
@@ -12,6 +14,17 @@ from ingest.schema import GameResult
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [c.strip().lower() for c in df.columns]
+    return df
+
+
+def _rename_duplicate_pts(df: pd.DataFrame) -> pd.DataFrame:
+    cols = list(df.columns)
+    pts_indices = [i for i, c in enumerate(cols) if c == "pts"]
+    if len(pts_indices) >= 2:
+        cols[pts_indices[0]] = "pts_away"
+        cols[pts_indices[1]] = "pts_home"
+        df = df.copy()
+        df.columns = cols
     return df
 
 
@@ -35,6 +48,8 @@ def _as_int(value) -> int | None:
 
 
 def _resolve_pts_columns(df: pd.DataFrame) -> tuple[str | None, str | None]:
+    if "pts_away" in df.columns and "pts_home" in df.columns:
+        return "pts_away", "pts_home"
     pts_cols = [c for c in df.columns if c == "pts" or c.startswith("pts.")]
     if len(pts_cols) >= 2:
         return pts_cols[0], pts_cols[1]
@@ -50,6 +65,7 @@ def _parse_sr_dataframe(
     season: str | None = None,
 ) -> List[GameResult]:
     df = _normalize_columns(df)
+    df = _rename_duplicate_pts(df)
 
     date_col = _find_column(df, "date")
     away_col = _find_column(df, "visitor/neutral", "visitor", "away", "away/neutral")
@@ -79,8 +95,8 @@ def _parse_sr_dataframe(
         away_team = str(row[away_col]).strip()
         home_team = str(row[home_col]).strip()
 
-        away_score = _as_int(row.get(away_pts_col))
-        home_score = _as_int(row.get(home_pts_col))
+        away_score = _as_int(row.get(away_pts_col)) if away_pts_col else None
+        home_score = _as_int(row.get(home_pts_col)) if home_pts_col else None
 
         ot_raw = ""
         if ot_col and pd.notna(row.get(ot_col)):
@@ -115,8 +131,44 @@ def _parse_sr_dataframe(
     return games
 
 
+def _load_csv_lenient(text: str) -> pd.DataFrame:
+    """
+    Read Sports-Reference CSV exports that may include an unlabeled start-time column.
+    If a row has one more column than the header and the second field looks like a tip time (e.g., '7:00p'),
+    drop that field so Visitor/Home/PTS stay aligned. Rows with missing columns are padded.
+    """
+    reader = csv.reader(StringIO(text))
+    header: List[str] = []
+    rows: List[List[str]] = []
+    time_re = re.compile(r"\d{1,2}:\d{2}[ap]", re.IGNORECASE)
+
+    try:
+        header = next(reader)
+    except StopIteration:
+        return pd.DataFrame()
+
+    for row in reader:
+        # Skip empty rows
+        if not row or all(cell.strip() == "" for cell in row):
+            continue
+
+        if len(row) > len(header):
+            if len(row) == len(header) + 1 and len(row) >= 2 and time_re.search(row[1] or ""):
+                # Drop unlabeled start time to realign columns
+                row = row[:1] + row[2:]
+            else:
+                row = row[: len(header)]
+        if len(row) < len(header):
+            row = row + [""] * (len(header) - len(row))
+
+        rows.append(row)
+
+    return pd.DataFrame(rows, columns=header)
+
+
 def parse_sr_csv(path: str | Path, sport: str | None = None, season: str | None = None) -> List[GameResult]:
-    df = pd.read_csv(Path(path))
+    text = Path(path).read_text(encoding="utf-8", errors="ignore")
+    df = _load_csv_lenient(text)
     return _parse_sr_dataframe(df, sport=sport, season=season)
 
 
@@ -136,5 +188,5 @@ def parse_sr_html(path: str | Path, sport: str | None = None, season: str | None
 
 
 def parse_sr_csv_text(text: str, sport: str | None = None, season: str | None = None) -> List[GameResult]:
-    df = pd.read_csv(StringIO(text))
+    df = _load_csv_lenient(text)
     return _parse_sr_dataframe(df, sport=sport, season=season)

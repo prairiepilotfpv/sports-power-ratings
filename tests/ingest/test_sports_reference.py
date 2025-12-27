@@ -48,6 +48,20 @@ def test_parse_sr_csv_text() -> None:
     assert games[0].home_score == 109
 
 
+def test_parse_sr_csv_text_with_unlabeled_start_times() -> None:
+    text = (
+        "Date,Visitor/Neutral,PTS,Home/Neutral,PTS\n"
+        "Sun Mar 1 2026,1:00p,San Antonio Spurs,,New York Knicks,\n"
+        "Sun Mar 1 2026,3:30p,Cleveland Cavaliers,,Brooklyn Nets,\n"
+    )
+    games = parse_sr_csv_text(text, sport="nba", season="2025-26")
+    assert len(games) == 2
+    assert games[0].away_team == "San Antonio Spurs"
+    assert games[0].home_team == "New York Knicks"
+    assert games[0].away_score is None
+    assert games[0].home_score is None
+
+
 @pytest.mark.parametrize(
     "parser,fixture",
     [
