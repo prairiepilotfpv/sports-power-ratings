@@ -10,18 +10,12 @@ Setup:
 2) .\.pyenv\Scripts\Activate.ps1
 3) pip install -r requirements.txt
 
-Convert raw Sports-Reference data to CSV (HTML/Excel/image → CSV):
-1) python -m src.pipelines.ingest_game_results schedule.xlsx schedule.csv
-
-Load CSV into the database:
-1) python -m src.cli.pipeline input --sport nba --season 2024-25 --input schedule.csv
-
-Run a model and write rankings to CSV:
-1) python -m src.cli.pipeline run_model --sport nba --season 2024-25 --model bradley-terry --output rankings.csv
-
-Command shortcuts (aliases):
-- input → import
-- run_model → rank
+Human-friendly pipeline (CSV in, CSV out):
+1) python -m venv .pyenv
+2) .\.pyenv\Scripts\Activate.ps1
+3) pip install -r requirements.txt
+4) python -m src.cli.pipeline import --sport nba --season 2024-25 --source sports-reference --input schedule.csv
+5) python -m src.cli.pipeline rank --sport nba --season 2024-25 --model bradley-terry --output rankings.csv
 
 CSV output columns:
 - team
