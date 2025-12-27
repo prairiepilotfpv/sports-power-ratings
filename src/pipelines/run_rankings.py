@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -50,11 +51,52 @@ def build_rankings(df: pd.DataFrame, model: str = "bradley-terry") -> pd.DataFra
         games_played[home] = games_played.get(home, 0) + 1
         games_played[away] = games_played.get(away, 0) + 1
 
-    items = [
-        {"team": team, "rating": rating, "games": games_played.get(team, 0)}
-        for team, rating in model_instance.rankings()
-    ]
+    rating_map = dict(model_instance.rankings())
+
+    point_scale = _estimate_point_scale(df, rating_map)
+
+    items = []
+    for team, rating in rating_map.items():
+        points_rating = math.log(rating) * point_scale if rating > 0 else 0.0
+        items.append(
+            {
+                "team": team,
+                "rating": rating,
+                "points": points_rating,
+                "games": games_played.get(team, 0),
+            }
+        )
     return pd.DataFrame(items).sort_values("rating", ascending=False)
+
+
+def _estimate_point_scale(df: pd.DataFrame, ratings: Dict[str, float]) -> float:
+    if df.empty or not ratings:
+        return 0.0
+
+    numerator = 0.0
+    denominator = 0.0
+    for _, row in df.iterrows():
+        home = str(row.get("home_team", "")).strip()
+        away = str(row.get("away_team", "")).strip()
+        if not home or not away:
+            continue
+        rating_home = ratings.get(home)
+        rating_away = ratings.get(away)
+        if not rating_home or not rating_away:
+            continue
+        try:
+            margin = int(row.get("home_score")) - int(row.get("away_score"))
+        except Exception:
+            continue
+        log_diff = math.log(rating_home) - math.log(rating_away)
+        if log_diff == 0.0:
+            continue
+        numerator += log_diff * margin
+        denominator += log_diff * log_diff
+
+    if denominator == 0.0:
+        return 0.0
+    return numerator / denominator
 
 
 def run_rankings(

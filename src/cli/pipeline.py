@@ -26,6 +26,7 @@ def _parse_args() -> argparse.Namespace:
 
     import_parser = subparsers.add_parser(
         "import",
+        aliases=["input"],
         help="Import game results into the per-sport/per-season database.",
     )
     import_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
@@ -50,6 +51,7 @@ def _parse_args() -> argparse.Namespace:
 
     rank_parser = subparsers.add_parser(
         "rank",
+        aliases=["run_model", "run-model"],
         help="Generate rankings from the per-sport/per-season database.",
     )
     rank_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
