@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Dict
 
 try:  # Allow execution from repository root or nested directories
     from bootstrap import ensure_src_on_path
@@ -18,23 +18,7 @@ import pandas as pd
 
 from data.repository import load_games
 from models.registry import get_model
-
-
-def _normalize_games(rows: Iterable[Any]) -> pd.DataFrame:
-    normalized_rows: List[Dict[str, Any]] = []
-    for row in rows:
-        if hasattr(row, "model_dump"):
-            normalized_rows.append(row.model_dump())
-        else:
-            normalized_rows.append(dict(row))
-    df = pd.DataFrame(normalized_rows)
-    if df.empty:
-        return df
-    if "date" in df.columns:
-        dt = pd.to_datetime(df["date"], errors="coerce")
-        if dt.notna().any():
-            df = df.assign(_dt=dt).sort_values(["_dt", "game_id"]).drop(columns=["_dt"], errors="ignore")
-    return df
+from pipelines.common import normalize_games
 
 
 def build_rankings(df: pd.DataFrame, model: str = "bradley-terry") -> pd.DataFrame:
@@ -108,7 +92,7 @@ def run_rankings(
     output_path: str | Path | None = None,
 ) -> Path:
     rows = load_games(db_path, sport=sport, season=season)
-    df = _normalize_games(rows)
+    df = normalize_games(rows)
     if df.empty:
         raise ValueError(f"No games found for sport={sport!r}, season={season!r}")
     rankings = build_rankings(df, model=model)
