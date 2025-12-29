@@ -8,8 +8,8 @@ import pandas as pd
 
 from data.repository import load_games, load_model_metrics
 from pipelines.common import normalize_games
+from config import DEFAULT_WIN_PROB_K
 from pipelines.projections import (
-    DEFAULT_LOGISTIC_SCALE,
     average_total_points,
     matchup_total_from_averages,
     project_game,
@@ -37,6 +37,7 @@ def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def team_home_advantages(df: pd.DataFrame, ratings: Dict[str, float]) -> Dict[str, float]:
+    """Estimate team-specific home advantages from residual margins."""
     if df.empty or not ratings:
         return {}
 
@@ -90,7 +91,7 @@ def predict_matchup(
     home_advantages = team_home_advantages(played, ratings)
     metrics = load_model_metrics(db_path, sport=sport, season=season, model=model) or {}
     fallback_home_advantage = float(metrics.get("home_advantage", 0.0))
-    win_prob_k = float(metrics.get("win_prob_k", DEFAULT_LOGISTIC_SCALE))
+    win_prob_k = float(metrics.get("win_prob_k", DEFAULT_WIN_PROB_K))
     base_total = float(metrics.get("base_total", 0.0))
     scoring_averages = team_scoring_averages(played.to_dict(orient="records"))
 
