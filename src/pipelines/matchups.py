@@ -36,6 +36,47 @@ def average_total_points(df: pd.DataFrame) -> float:
     return sum(totals) / len(totals)
 
 
+def team_total_averages(df: pd.DataFrame) -> Dict[str, float]:
+    totals: Dict[str, float] = {}
+    counts: Dict[str, int] = {}
+    if df.empty:
+        return totals
+
+    for _, row in df.iterrows():
+        try:
+            total = float(row.get("home_score")) + float(row.get("away_score"))
+        except Exception:
+            continue
+        home = str(row.get("home_team", "")).strip()
+        away = str(row.get("away_team", "")).strip()
+        if home:
+            totals[home] = totals.get(home, 0.0) + total
+            counts[home] = counts.get(home, 0) + 1
+        if away:
+            totals[away] = totals.get(away, 0.0) + total
+            counts[away] = counts.get(away, 0) + 1
+
+    return {team: totals[team] / counts[team] for team in totals if counts.get(team)}
+
+
+def projected_total_points(
+    team_totals: Dict[str, float],
+    *,
+    home_team: str,
+    away_team: str,
+    fallback: float,
+) -> float:
+    home_total = team_totals.get(home_team)
+    away_total = team_totals.get(away_team)
+    if home_total is not None and away_total is not None:
+        return (home_total + away_total) / 2.0
+    if home_total is not None:
+        return home_total
+    if away_total is not None:
+        return away_total
+    return fallback
+
+
 def _rating_lookup(rankings: pd.DataFrame) -> Dict[str, float]:
     return {str(row["team"]).strip(): float(row["points"]) for _, row in rankings.iterrows()}
 
@@ -70,7 +111,13 @@ def predict_matchup(
     else:
         winner, loser = away_key, home_key
 
-    total_points = average_total_points(df)
+    overall_total = average_total_points(df)
+    total_points = projected_total_points(
+        team_total_averages(df),
+        home_team=home_key,
+        away_team=away_key,
+        fallback=overall_total,
+    )
 
     return MatchupPrediction(
         home_team=home_key,
