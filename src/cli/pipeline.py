@@ -104,7 +104,10 @@ def _parse_args() -> argparse.Namespace:
     schedule_parser = subparsers.add_parser(
         "schedule",
         aliases=["calendar", "projections"],
-        help="Export played/upcoming games with model projections for upcoming games.",
+        help=(
+            "Export played/upcoming games with model projections for upcoming games "
+            "(includes home_rating/away_rating power ratings from build_rankings)."
+        ),
     )
     schedule_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
     schedule_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")

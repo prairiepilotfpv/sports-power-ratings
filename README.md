@@ -37,6 +37,7 @@ Lightweight pipeline for turning Sports-Reference schedules/results into SQLite 
 ### Export schedule with projections
 - `python -m src.cli.pipeline schedule --sport nba --season 2025-26 --model bradley-terry --output data/processed/nba/2025-26/schedule_with_projections.csv`
 - Outputs played games and upcoming games in one calendar, with `projected_winner`, `projected_spread`, `projected_total`, and current `home_rating`/`away_rating` from the selected model. Use `--upcoming-only` to show just future games.
+- Column glossary: `home_rating`/`away_rating` are the model-derived power ratings for each team (from `build_rankings` in `src/pipelines/schedule.py`).
 - Uses the same per-sport/per-season DB unless `--db` is set; defaults to writing `data/processed/<sport>/<season>/schedule_with_projections.csv` when `--output` is omitted.
 
 ### Predict a matchup
@@ -54,6 +55,7 @@ Lightweight pipeline for turning Sports-Reference schedules/results into SQLite 
 - `python -m src.cli.pipeline report --sport nba --season 2025-26`
 - Writes to `data/processed/<sport>/<season>/report.xlsx` by default. Use `--output` to pick a different file or directory.
 - Pass `--models` with a comma-separated list to create one sheet per model (currently only `bradley-terry` is registered).
+- The daily report spreadsheet (see `src/pipelines/report.py`) includes a "Spreads" section where `home_rating`/`away_rating` are the model-derived power ratings for each team.
 
 ## Automated tests
 - Activate the venv and install deps (including pytest), then run: `python -m pytest`
