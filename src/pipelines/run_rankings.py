@@ -19,7 +19,8 @@ import pandas as pd
 from data.repository import load_games, save_model_metrics
 from models.registry import get_model
 from pipelines.common import normalize_games
-from pipelines.projections import DEFAULT_LOGISTIC_SCALE, average_total_points, fit_win_prob_scale
+from config import DEFAULT_WIN_PROB_K
+from pipelines.projections import average_total_points, fit_win_prob_scale
 
 
 def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
@@ -62,14 +63,20 @@ def build_rankings(
 
     point_scale = _estimate_point_scale(played, rating_map)
 
-    items = []
+    points_ratings: Dict[str, float] = {}
     for team, rating in rating_map.items():
         points_rating = math.log(rating) * point_scale if rating > 0 else 0.0
+        points_ratings[team] = points_rating
+
+    centered_points = _center_ratings(points_ratings)
+
+    items = []
+    for team, rating in rating_map.items():
         items.append(
             {
                 "team": team,
                 "rating": rating,
-                "points": points_rating,
+                "points": centered_points.get(team, 0.0),
                 "games": games_played.get(team, 0),
             }
         )
@@ -104,6 +111,13 @@ def _estimate_point_scale(df: pd.DataFrame, ratings: Dict[str, float]) -> float:
     if denominator == 0.0:
         return 0.0
     return numerator / denominator
+
+
+def _center_ratings(ratings: Dict[str, float]) -> Dict[str, float]:
+    if not ratings:
+        return {}
+    mean_rating = sum(ratings.values()) / len(ratings)
+    return {team: value - mean_rating for team, value in ratings.items()}
 
 
 def run_rankings(
@@ -177,18 +191,19 @@ def _store_model_metrics(
             continue
         neutral_raw = row.get("neutral", False)
         neutral = False if pd.isna(neutral_raw) else bool(neutral_raw)
-        predicted = (ratings[home] - ratings[away]) + (0.0 if neutral else home_advantage)
-        errors.append(predicted - margin)
+        predicted_margin = (ratings[home] - ratings[away]) + (0.0 if neutral else home_advantage)
+        errors.append(predicted_margin - margin)
         if margin == 0:
             continue
-        win_prob_samples.append((predicted, 1 if margin > 0 else 0))
+        projected_spread = -predicted_margin
+        win_prob_samples.append((projected_spread, 1 if margin > 0 else 0))
 
     model_error = math.sqrt(sum(e * e for e in errors) / len(errors)) if errors else 0.0
     if model_error == 0.0:
         model_error = 1.0
 
     base_total = average_total_points(played.to_dict(orient="records"))
-    win_prob_k = fit_win_prob_scale(win_prob_samples, default_k=DEFAULT_LOGISTIC_SCALE)
+    win_prob_k = fit_win_prob_scale(win_prob_samples, default_k=DEFAULT_WIN_PROB_K)
 
     save_model_metrics(
         db_path,

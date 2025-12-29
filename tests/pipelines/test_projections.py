@@ -23,6 +23,7 @@ def test_margin_adds_home_advantage_when_not_neutral() -> None:
 def test_projected_spread_is_negative_margin() -> None:
     projection = project_game(6.0, 2.0, home_advantage=1.0, neutral=False, base_total=200.0)
     assert projection.projected_spread == -projection.margin
+    assert projection.projected_home_spread == projection.margin
 
 
 def test_projected_scores_difference_equals_margin() -> None:
@@ -37,6 +38,15 @@ def test_win_prob_monotonic_and_half_at_zero_margin() -> None:
     high = project_game(3.0, 1.0, home_advantage=0.0, neutral=True, k=10.0, base_total=200.0)
     assert low.projected_win_prob < mid.projected_win_prob < high.projected_win_prob
     assert math.isclose(mid.projected_win_prob, 0.5, rel_tol=1e-9)
+
+
+def test_win_prob_uses_away_minus_home_spread() -> None:
+    home_favored = project_game(5.0, 1.0, home_advantage=0.0, neutral=True, k=10.0, base_total=200.0)
+    away_favored = project_game(1.0, 5.0, home_advantage=0.0, neutral=True, k=10.0, base_total=200.0)
+    assert home_favored.projected_spread < 0
+    assert away_favored.projected_spread > 0
+    assert home_favored.projected_win_prob > 0.5
+    assert away_favored.projected_win_prob < 0.5
 
 
 def test_integration_project_row_sign_conventions() -> None:
@@ -56,12 +66,14 @@ def test_integration_project_row_sign_conventions() -> None:
         row,
         ratings={"Home": 5.0, "Away": -3.0},
         base_total=200.0,
+        scoring_averages={},
         status="scheduled",
         home_advantage=2.0,
         win_prob_k=10.0,
     )
     assert output["projected_winner"] == "Home"
     assert output["projected_spread"] == -10.0
+    assert output["projected_home_spread"] == 10.0
     assert output["projected_home_score"] == 105.0
     assert output["projected_away_score"] == 95.0
     assert output["projected_total"] == 200.0

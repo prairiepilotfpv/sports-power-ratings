@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -48,3 +49,4 @@ def test_run_rankings_smoke(tmp_path: Path) -> None:
     df = pd.read_csv(output_path)
     assert set(df.columns) == {"team", "rating", "points", "games"}
     assert {"A", "B"}.issubset(set(df["team"]))
+    assert math.isclose(df["points"].mean(), 0.0, abs_tol=1e-9)
