@@ -18,7 +18,12 @@ import pandas as pd
 
 from data.repository import load_games, load_model_metrics
 from pipelines.common import normalize_games
-from pipelines.matchups import average_total_points, projected_total_points, team_total_averages
+from pipelines.matchups import (
+    average_total_points,
+    projected_total_points,
+    team_home_advantages,
+    team_total_averages,
+)
 from pipelines.run_rankings import build_rankings
 
 
@@ -80,6 +85,7 @@ def _project_row(
     base = _base_schedule_row(row)
     home = base["home_team"]
     away = base["away_team"]
+    applied_home_advantage = 0.0 if base["neutral"] else home_advantage
     home_rating = ratings.get(home)
     away_rating = ratings.get(away)
 
@@ -87,7 +93,7 @@ def _project_row(
     projected_winner = None
     projected_win_prob = None
     if home_rating is not None and away_rating is not None:
-        rating_spread = home_rating - away_rating + home_advantage
+        rating_spread = home_rating - away_rating + applied_home_advantage
 
     projected_total = (
         projected_total_points(
@@ -137,7 +143,7 @@ def _project_row(
             "projected_winner": projected_winner,
             "projected_spread": projected_spread,
             "projected_win_prob": projected_win_prob,
-            "home_advantage": home_advantage,
+            "home_advantage": applied_home_advantage,
             "model_error": model_error,
             "projected_home_score": projected_home_score,
             "projected_away_score": projected_away_score,
@@ -173,12 +179,14 @@ def build_schedule_with_projections(
     fallback_total = average_total_points(played)
     team_totals = team_total_averages(played)
     metrics = load_model_metrics(db_path, sport=sport, season=season, model=model) or {}
-    home_advantage = float(metrics.get("home_advantage", 0.0))
+    home_advantages = team_home_advantages(played, ratings)
+    fallback_home_advantage = float(metrics.get("home_advantage", 0.0))
     model_error = float(metrics.get("model_error", 1.0))
 
     schedule_rows: List[Dict[str, Any]] = []
     if not upcoming_only:
         for _, row in played.iterrows():
+            home = str(row.get("home_team", "")).strip()
             schedule_rows.append(
                 _project_row(
                     row,
@@ -186,12 +194,13 @@ def build_schedule_with_projections(
                     team_totals=team_totals,
                     fallback_total=fallback_total,
                     status="final",
-                    home_advantage=home_advantage,
+                    home_advantage=home_advantages.get(home, fallback_home_advantage),
                     model_error=model_error,
                 )
             )
 
     for _, row in upcoming.iterrows():
+        home = str(row.get("home_team", "")).strip()
         schedule_rows.append(
             _project_row(
                 row,
@@ -199,7 +208,7 @@ def build_schedule_with_projections(
                 team_totals=team_totals,
                 fallback_total=fallback_total,
                 status="scheduled",
-                home_advantage=home_advantage,
+                home_advantage=home_advantages.get(home, fallback_home_advantage),
                 model_error=model_error,
             )
         )
