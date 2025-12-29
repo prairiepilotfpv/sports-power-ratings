@@ -33,7 +33,7 @@ Lightweight pipeline for turning Sports-Reference schedules/results into SQLite 
 - `python -m src.cli.pipeline rank --sport nba --season 2025-26 --model bradley-terry --output data/processed/nba/2025-26/rankings.csv --overwrite`
 - `--sport` and `--season` are required and must match the database you imported into.
 - Without `--output`, rankings write to `data/processed/<sport>/<season>/rankings.csv`. Uses the same DB as import unless `--db` is set. If the target file exists and `--overwrite` is omitted, a suffixed path (e.g., `rankings-1.csv`) is used instead.
-- The rankings step also saves `home_advantage` and `model_error` into the database for the selected model; those metrics are reused by projections/matchups to calibrate spreads and win probabilities.
+- The rankings step also saves `home_advantage`, `win_prob_k`, and `base_total` into the database for the selected model; those metrics are reused by projections/matchups to calibrate spreads, totals, and win probabilities.
 
 ### Export schedule with projections
 - `python -m src.cli.pipeline schedule --sport nba --season 2025-26 --model bradley-terry --output data/processed/nba/2025-26/schedule_with_projections.csv`
@@ -41,20 +41,20 @@ Lightweight pipeline for turning Sports-Reference schedules/results into SQLite 
 - Data columns:
   - Schedule core: `date`, `home_team`, `away_team`, `home_score`, `away_score`, `neutral`, `overtime`, `game_id`
   - Status: `status` is `final` for completed games and `scheduled` otherwise; rerunning after new scores moves rows to `final` and carries the latest points.
-  - Ratings/projections: `home_rating`/`away_rating` (model-derived point-scale ratings), `projected_winner`, `projected_spread`, `projected_win_prob`, `projected_home_score`, `projected_away_score`, `projected_total`
-  - Model calibration: `home_advantage`, `model_error` pulled from the rankings step
+  - Ratings/projections: `home_rating`/`away_rating` (model-derived point-scale ratings, expected neutral-court margin vs average), `projected_winner`, `projected_spread` (betting-format home spread, negative means home favored), `projected_win_prob` (home win probability), `projected_home_score`, `projected_away_score`, `projected_total` (league base total)
+  - Model calibration: `home_advantage`, `win_prob_k`, `base_total` pulled from the rankings step
   - Results for completed games: `result_margin`, `result_total`
 - Use `--upcoming-only` to show just future games. Notes/model columns are intentionally omitted from the output.
 
 ### Predict a matchup
 - `python -m src.cli.pipeline matchup --sport nba --season 2025-26 --matchup "Lakers vs Celtics"`
 - `python -m src.cli.pipeline matchup --sport nfl --season 2023 --home Eagles --away Cowboys`
-- Uses the per-sport/per-season database and Bradley-Terry rankings to estimate a winner, spread, total points, and win probability (when `model_error` is available from the latest rankings run).
+- Uses the per-sport/per-season database and Bradley-Terry rankings to estimate a winner, spread (betting-format home spread), total points, and win probability (when `win_prob_k` is available from the latest rankings run).
 
 ### Rankings output columns
 - team
 - rating (Bradley-Terry strength)
-- points (log-scaled rating mapped to point-spread units, used for projections/matchups)
+- points (log-scaled rating mapped to point-spread units; expected neutral-court margin vs an average team)
 - games
 
 ### Generate Excel worksheet output
