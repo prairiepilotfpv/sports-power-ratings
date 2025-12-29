@@ -18,8 +18,8 @@ import pandas as pd
 from data.repository import load_games, load_model_metrics
 from pipelines.common import normalize_games
 from pipelines.matchups import team_home_advantages
+from config import DEFAULT_WIN_PROB_K
 from pipelines.projections import (
-    DEFAULT_LOGISTIC_SCALE,
     average_total_points,
     matchup_total_from_averages,
     project_game,
@@ -92,6 +92,7 @@ def _project_row(
 
     projected_winner = None
     projected_spread = None
+    projected_home_spread = None
     projected_win_prob = None
     projected_home_score = None
     projected_away_score = None
@@ -111,6 +112,7 @@ def _project_row(
         )
         projected_winner = projection.projected_winner
         projected_spread = projection.projected_spread
+        projected_home_spread = projection.projected_home_spread
         projected_win_prob = projection.projected_win_prob
         projected_home_score = projection.projected_home_score
         projected_away_score = projection.projected_away_score
@@ -133,6 +135,7 @@ def _project_row(
             "away_rating": away_rating,
             "projected_winner": projected_winner,
             "projected_spread": projected_spread,
+            "projected_home_spread": projected_home_spread,
             "projected_win_prob": projected_win_prob,
             "home_advantage": applied_home_advantage,
             "projected_home_score": projected_home_score,
@@ -166,9 +169,10 @@ def build_schedule_with_projections(
     ratings = _rating_lookup(rankings)
     fallback_total = average_total_points(played.to_dict(orient="records"))
     metrics = load_model_metrics(db_path, sport=sport, season=season, model=model) or {}
+    # Team-specific home advantages (per-home team residuals) are the chosen H option.
     home_advantages = team_home_advantages(played, ratings)
     fallback_home_advantage = float(metrics.get("home_advantage", 0.0))
-    win_prob_k = float(metrics.get("win_prob_k", DEFAULT_LOGISTIC_SCALE))
+    win_prob_k = float(metrics.get("win_prob_k", DEFAULT_WIN_PROB_K))
     base_total = float(metrics.get("base_total", 0.0)) or fallback_total
     scoring_averages = team_scoring_averages(played.to_dict(orient="records"))
 

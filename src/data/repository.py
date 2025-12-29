@@ -5,6 +5,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Iterable, List
 
+from config import DEFAULT_WIN_PROB_K
 from ingest.schema import GameResult
 
 
@@ -52,7 +53,9 @@ def init_db(db_path: str | Path) -> None:
 def _ensure_model_metrics_columns(conn: sqlite3.Connection) -> None:
     existing = {row[1] for row in conn.execute("PRAGMA table_info(model_metrics)").fetchall()}
     if "win_prob_k" not in existing:
-        conn.execute("ALTER TABLE model_metrics ADD COLUMN win_prob_k REAL NOT NULL DEFAULT 10.0")
+        conn.execute(
+            f"ALTER TABLE model_metrics ADD COLUMN win_prob_k REAL NOT NULL DEFAULT {DEFAULT_WIN_PROB_K}"
+        )
     if "base_total" not in existing:
         conn.execute("ALTER TABLE model_metrics ADD COLUMN base_total REAL NOT NULL DEFAULT 0.0")
 

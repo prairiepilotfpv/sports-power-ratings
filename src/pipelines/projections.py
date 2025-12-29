@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import math
 from typing import Iterable, Sequence
 
-DEFAULT_LOGISTIC_SCALE = 10.0
+from config import DEFAULT_WIN_PROB_K
 
 
 @dataclass(frozen=True)
@@ -13,14 +13,15 @@ class GameProjection:
     margin: float
     projected_winner: str | None
     projected_spread: float
+    projected_home_spread: float
     projected_win_prob: float | None
     projected_home_score: float | None
     projected_away_score: float | None
     projected_total: float | None
 
 
-def logistic_win_prob(margin: float, k: float) -> float:
-    return 1.0 / (1.0 + math.exp(-margin / k))
+def logistic_win_prob(away_minus_home: float, k: float) -> float:
+    return 1.0 / (1.0 + math.exp(away_minus_home / k))
 
 
 def project_game(
@@ -29,14 +30,16 @@ def project_game(
     *,
     home_advantage: float,
     neutral: bool,
-    k: float = DEFAULT_LOGISTIC_SCALE,
+    k: float = DEFAULT_WIN_PROB_K,
     base_total: float | None = None,
     home_team: str | None = None,
     away_team: str | None = None,
 ) -> GameProjection:
     margin_neutral = home_rating - away_rating
     margin = margin_neutral + (0.0 if neutral else home_advantage)
+    # Convention: projected_spread is away_minus_home. Negative => home favored.
     projected_spread = -margin
+    projected_home_spread = -projected_spread
 
     projected_winner = None
     if home_team is not None and away_team is not None:
@@ -44,7 +47,7 @@ def project_game(
 
     projected_win_prob = None
     if k > 0:
-        projected_win_prob = logistic_win_prob(margin, k)
+        projected_win_prob = logistic_win_prob(projected_spread, k)
 
     projected_home_score = None
     projected_away_score = None
@@ -64,6 +67,7 @@ def project_game(
         margin=margin,
         projected_winner=projected_winner,
         projected_spread=projected_spread,
+        projected_home_spread=projected_home_spread,
         projected_win_prob=projected_win_prob,
         projected_home_score=projected_home_score,
         projected_away_score=projected_away_score,
@@ -134,7 +138,7 @@ def matchup_total_from_averages(
 def fit_win_prob_scale(
     samples: Sequence[tuple[float, int]],
     *,
-    default_k: float = DEFAULT_LOGISTIC_SCALE,
+    default_k: float = DEFAULT_WIN_PROB_K,
     min_k: float = 0.5,
     max_k: float = 50.0,
     grid_steps: int = 100,
@@ -144,8 +148,8 @@ def fit_win_prob_scale(
 
     def log_likelihood(k: float) -> float:
         ll = 0.0
-        for margin, outcome in samples:
-            p = logistic_win_prob(margin, k)
+        for spread, outcome in samples:
+            p = logistic_win_prob(spread, k)
             p = min(max(p, 1e-9), 1.0 - 1e-9)
             ll += outcome * math.log(p) + (1 - outcome) * math.log(1.0 - p)
         return ll
