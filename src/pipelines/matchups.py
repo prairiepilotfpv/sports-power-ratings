@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -9,6 +8,7 @@ import pandas as pd
 
 from data.repository import load_games, load_model_metrics
 from pipelines.common import normalize_games
+from pipelines.projections import DEFAULT_LOGISTIC_SCALE, average_total_points, project_game
 from pipelines.run_rankings import build_rankings
 
 
@@ -21,21 +21,6 @@ class MatchupPrediction:
     spread: float
     total_points: float
     win_prob: float | None
-
-
-def average_total_points(df: pd.DataFrame) -> float:
-    if df.empty:
-        return 0.0
-    totals = []
-    for _, row in df.iterrows():
-        try:
-            total = float(row.get("home_score")) + float(row.get("away_score"))
-        except Exception:
-            continue
-        totals.append(total)
-    if not totals:
-        return 0.0
-    return sum(totals) / len(totals)
 
 
 def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
@@ -140,7 +125,8 @@ def predict_matchup(
     home_advantages = team_home_advantages(played, ratings)
     metrics = load_model_metrics(db_path, sport=sport, season=season, model=model) or {}
     fallback_home_advantage = float(metrics.get("home_advantage", 0.0))
-    model_error = float(metrics.get("model_error", 1.0))
+    win_prob_k = float(metrics.get("win_prob_k", DEFAULT_LOGISTIC_SCALE))
+    base_total = float(metrics.get("base_total", 0.0))
 
     home_key = home_team.strip()
     away_key = away_team.strip()
@@ -150,31 +136,31 @@ def predict_matchup(
         raise ValueError(f"Unknown team: {away_team}")
 
     home_advantage = home_advantages.get(home_key, fallback_home_advantage)
-    spread = ratings[home_key] - ratings[away_key] + home_advantage
-    win_prob = None
-    if model_error > 0:
-        win_prob = 1.0 / (1.0 + math.exp(-spread / model_error))
-    if spread >= 0:
+    fallback_total = average_total_points(played.to_dict(orient="records"))
+    applied_total = base_total if base_total > 0 else fallback_total
+    projection = project_game(
+        ratings[home_key],
+        ratings[away_key],
+        home_advantage=home_advantage,
+        neutral=False,
+        k=win_prob_k,
+        base_total=applied_total if applied_total > 0 else None,
+        home_team=home_key,
+        away_team=away_key,
+    )
+    if projection.margin >= 0:
         winner, loser = home_key, away_key
     else:
         winner, loser = away_key, home_key
-
-    overall_total = average_total_points(df)
-    total_points = projected_total_points(
-        team_total_averages(df),
-        home_team=home_key,
-        away_team=away_key,
-        fallback=overall_total,
-    )
 
     return MatchupPrediction(
         home_team=home_key,
         away_team=away_key,
         winner=winner,
         loser=loser,
-        spread=spread,
-        total_points=total_points,
-        win_prob=win_prob,
+        spread=projection.projected_spread,
+        total_points=projection.projected_total or 0.0,
+        win_prob=projection.projected_win_prob,
     )
 
 
