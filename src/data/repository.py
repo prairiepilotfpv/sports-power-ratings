@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS model_metrics (
     model TEXT NOT NULL,
     home_advantage REAL NOT NULL,
     model_error REAL NOT NULL,
+    win_prob_k REAL NOT NULL,
+    base_total REAL NOT NULL,
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(sport, season, model)
 );
@@ -43,7 +45,16 @@ def init_db(db_path: str | Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:
         conn.executescript(SCHEMA)
+        _ensure_model_metrics_columns(conn)
         conn.commit()
+
+
+def _ensure_model_metrics_columns(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(model_metrics)").fetchall()}
+    if "win_prob_k" not in existing:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN win_prob_k REAL NOT NULL DEFAULT 10.0")
+    if "base_total" not in existing:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN base_total REAL NOT NULL DEFAULT 0.0")
 
 
 def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
@@ -175,6 +186,8 @@ def save_model_metrics(
     model: str,
     home_advantage: float,
     model_error: float,
+    win_prob_k: float,
+    base_total: float,
 ) -> None:
     init_db(db_path)
     with sqlite3.connect(Path(db_path)) as conn:
@@ -186,10 +199,12 @@ def save_model_metrics(
                 model,
                 home_advantage,
                 model_error,
+                win_prob_k,
+                base_total,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, datetime('now'))
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
-            (sport, season, model, home_advantage, model_error),
+            (sport, season, model, home_advantage, model_error, win_prob_k, base_total),
         )
         conn.commit()
 
@@ -205,7 +220,7 @@ def load_model_metrics(
     with sqlite3.connect(Path(db_path)) as conn:
         row = conn.execute(
             """
-            SELECT home_advantage, model_error
+            SELECT home_advantage, model_error, win_prob_k, base_total
             FROM model_metrics
             WHERE sport = ? AND season = ? AND model = ?
             """,
@@ -213,4 +228,9 @@ def load_model_metrics(
         ).fetchone()
     if row is None:
         return None
-    return {"home_advantage": float(row[0]), "model_error": float(row[1])}
+    return {
+        "home_advantage": float(row[0]),
+        "model_error": float(row[1]),
+        "win_prob_k": float(row[2]),
+        "base_total": float(row[3]),
+    }

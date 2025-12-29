@@ -19,6 +19,7 @@ import pandas as pd
 from data.repository import load_games, save_model_metrics
 from models.registry import get_model
 from pipelines.common import normalize_games
+from pipelines.projections import DEFAULT_LOGISTIC_SCALE, average_total_points, fit_win_prob_scale
 
 
 def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
@@ -162,6 +163,7 @@ def _store_model_metrics(
     home_advantage = float(margins.mean()) if not margins.empty else 0.0
 
     errors = []
+    win_prob_samples: list[tuple[float, int]] = []
     for _, row in played.iterrows():
         home = str(row.get("home_team", "")).strip()
         away = str(row.get("away_team", "")).strip()
@@ -173,12 +175,20 @@ def _store_model_metrics(
             margin = float(row.get("home_score")) - float(row.get("away_score"))
         except Exception:
             continue
-        predicted = (ratings[home] - ratings[away]) + home_advantage
+        neutral_raw = row.get("neutral", False)
+        neutral = False if pd.isna(neutral_raw) else bool(neutral_raw)
+        predicted = (ratings[home] - ratings[away]) + (0.0 if neutral else home_advantage)
         errors.append(predicted - margin)
+        if margin == 0:
+            continue
+        win_prob_samples.append((predicted, 1 if margin > 0 else 0))
 
     model_error = math.sqrt(sum(e * e for e in errors) / len(errors)) if errors else 0.0
     if model_error == 0.0:
         model_error = 1.0
+
+    base_total = average_total_points(played.to_dict(orient="records"))
+    win_prob_k = fit_win_prob_scale(win_prob_samples, default_k=DEFAULT_LOGISTIC_SCALE)
 
     save_model_metrics(
         db_path,
@@ -187,4 +197,6 @@ def _store_model_metrics(
         model=model,
         home_advantage=home_advantage,
         model_error=model_error,
+        win_prob_k=win_prob_k,
+        base_total=base_total,
     )

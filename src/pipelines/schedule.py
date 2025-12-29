@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import math
 from typing import Any, Dict, List
 
 try:  # Allow execution from repository root or nested directories
@@ -18,12 +17,8 @@ import pandas as pd
 
 from data.repository import load_games, load_model_metrics
 from pipelines.common import normalize_games
-from pipelines.matchups import (
-    average_total_points,
-    projected_total_points,
-    team_home_advantages,
-    team_total_averages,
-)
+from pipelines.matchups import team_home_advantages
+from pipelines.projections import DEFAULT_LOGISTIC_SCALE, average_total_points, project_game
 from pipelines.run_rankings import build_rankings
 
 
@@ -76,11 +71,10 @@ def _project_row(
     row: pd.Series,
     *,
     ratings: Dict[str, float],
-    team_totals: Dict[str, float],
-    fallback_total: float,
+    base_total: float,
     status: str,
     home_advantage: float,
-    model_error: float,
+    win_prob_k: float,
 ) -> Dict[str, Any]:
     base = _base_schedule_row(row)
     home = base["home_team"]
@@ -89,41 +83,30 @@ def _project_row(
     home_rating = ratings.get(home)
     away_rating = ratings.get(away)
 
-    rating_spread = None
     projected_winner = None
+    projected_spread = None
     projected_win_prob = None
-    if home_rating is not None and away_rating is not None:
-        rating_spread = home_rating - away_rating + applied_home_advantage
-
-    projected_total = (
-        projected_total_points(
-            team_totals,
-            home_team=home,
-            away_team=away,
-            fallback=fallback_total,
-        )
-        if fallback_total > 0
-        else None
-    )
     projected_home_score = None
     projected_away_score = None
-    if projected_total is not None:
-        base_home = projected_total / 2.0
-        base_away = projected_total / 2.0
-        if rating_spread is not None:
-            base_home += rating_spread / 2.0
-            base_away -= rating_spread / 2.0
-        projected_home_score = base_home
-        projected_away_score = base_away
+    projected_total = None
 
-    projected_spread = None
-    if projected_home_score is not None and projected_away_score is not None:
-        projected_spread = projected_home_score - projected_away_score
-
-    if projected_spread is not None and rating_spread is not None:
-        projected_winner = home if projected_spread >= 0 else away
-        if model_error > 0:
-            projected_win_prob = 1.0 / (1.0 + math.exp(-projected_spread / model_error))
+    if home_rating is not None and away_rating is not None:
+        projection = project_game(
+            home_rating,
+            away_rating,
+            home_advantage=applied_home_advantage,
+            neutral=base["neutral"],
+            k=win_prob_k,
+            base_total=base_total if base_total > 0 else None,
+            home_team=home,
+            away_team=away,
+        )
+        projected_winner = projection.projected_winner
+        projected_spread = projection.projected_spread
+        projected_win_prob = projection.projected_win_prob
+        projected_home_score = projection.projected_home_score
+        projected_away_score = projection.projected_away_score
+        projected_total = projection.projected_total
 
     result_margin = None
     result_total = None
@@ -146,9 +129,7 @@ def _project_row(
             "home_advantage": applied_home_advantage,
             "projected_home_score": projected_home_score,
             "projected_away_score": projected_away_score,
-            "projected_total": projected_home_score + projected_away_score
-            if projected_home_score is not None and projected_away_score is not None
-            else projected_total,
+            "projected_total": projected_total,
             "result_margin": result_margin,
             "result_total": result_total,
         }
@@ -175,12 +156,12 @@ def build_schedule_with_projections(
 
     rankings = build_rankings(played, model=model, require_scores=False)
     ratings = _rating_lookup(rankings)
-    fallback_total = average_total_points(played)
-    team_totals = team_total_averages(played)
+    fallback_total = average_total_points(played.to_dict(orient="records"))
     metrics = load_model_metrics(db_path, sport=sport, season=season, model=model) or {}
     home_advantages = team_home_advantages(played, ratings)
     fallback_home_advantage = float(metrics.get("home_advantage", 0.0))
-    model_error = float(metrics.get("model_error", 1.0))
+    win_prob_k = float(metrics.get("win_prob_k", DEFAULT_LOGISTIC_SCALE))
+    base_total = float(metrics.get("base_total", 0.0)) or fallback_total
 
     schedule_rows: List[Dict[str, Any]] = []
     if not upcoming_only:
@@ -190,11 +171,10 @@ def build_schedule_with_projections(
                 _project_row(
                     row,
                     ratings=ratings,
-                    team_totals=team_totals,
-                    fallback_total=fallback_total,
+                    base_total=base_total,
                     status="final",
                     home_advantage=home_advantages.get(home, fallback_home_advantage),
-                    model_error=model_error,
+                    win_prob_k=win_prob_k,
                 )
             )
 
@@ -204,11 +184,10 @@ def build_schedule_with_projections(
             _project_row(
                 row,
                 ratings=ratings,
-                team_totals=team_totals,
-                fallback_total=fallback_total,
+                base_total=base_total,
                 status="scheduled",
                 home_advantage=home_advantages.get(home, fallback_home_advantage),
-                model_error=model_error,
+                win_prob_k=win_prob_k,
             )
         )
 
