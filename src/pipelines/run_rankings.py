@@ -16,7 +16,7 @@ ensure_src_on_path()
 
 import pandas as pd
 
-from data.repository import load_games
+from data.repository import load_games, save_model_metrics
 from models.registry import get_model
 from pipelines.common import normalize_games
 
@@ -131,4 +131,60 @@ def run_rankings(
             output_path = output_path / "rankings.csv"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     rankings.to_csv(output_path, index=False)
+    _store_model_metrics(db_path, df, rankings, sport=sport, season=season, model=model)
     return output_path
+
+
+def _store_model_metrics(
+    db_path: str | Path,
+    df: pd.DataFrame,
+    rankings: pd.DataFrame,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+) -> None:
+    if df.empty or rankings.empty:
+        return
+    played = _completed_games(df)
+    if played.empty:
+        return
+
+    ratings = {str(row["team"]).strip(): float(row["points"]) for _, row in rankings.iterrows()}
+    neutral_mask = played.get("neutral")
+    if neutral_mask is not None:
+        non_neutral = played[~neutral_mask.astype(bool)]
+        sample = non_neutral if not non_neutral.empty else played
+    else:
+        sample = played
+
+    margins = sample["home_score"].astype(float) - sample["away_score"].astype(float)
+    home_advantage = float(margins.mean()) if not margins.empty else 0.0
+
+    errors = []
+    for _, row in played.iterrows():
+        home = str(row.get("home_team", "")).strip()
+        away = str(row.get("away_team", "")).strip()
+        if not home or not away:
+            continue
+        if home not in ratings or away not in ratings:
+            continue
+        try:
+            margin = float(row.get("home_score")) - float(row.get("away_score"))
+        except Exception:
+            continue
+        predicted = (ratings[home] - ratings[away]) + home_advantage
+        errors.append(predicted - margin)
+
+    model_error = math.sqrt(sum(e * e for e in errors) / len(errors)) if errors else 0.0
+    if model_error == 0.0:
+        model_error = 1.0
+
+    save_model_metrics(
+        db_path,
+        sport=sport,
+        season=season,
+        model=model,
+        home_advantage=home_advantage,
+        model_error=model_error,
+    )
