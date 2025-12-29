@@ -19,4 +19,4 @@
 - if the update is ran multiple times with no new data, it should return the same data, no doubling up or
 - add rank column to excel output
 - make sure I don't need the "import sports reference" sectoin as it's kind of outdated. 
-
+- seperate the reports from the math, meaning when I add or remove a column from the report, I just want it to change what's added to the report, I still want all the math done and want to track overtime/neutral site etc
