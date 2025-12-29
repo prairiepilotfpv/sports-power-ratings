@@ -11,6 +11,7 @@
 
 ## Later: Additional models and betting utilities
 - Add additional power ranking models using the same data source.
+- Aggregate multiple model outputs into a combined rankings view (beyond Bradley-Terry).
 - Add a pricing mechanism (e.g., "bet to win" target calculator).
 
 ## Documentation cleanup
