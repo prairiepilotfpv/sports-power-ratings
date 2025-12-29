@@ -18,6 +18,7 @@ from data.repository import save_games
 from ingest.normalize import normalize_games
 from ingest.sports_reference import parse_sr_csv, parse_sr_csv_text, parse_sr_html
 from pipelines.matchups import format_matchup, predict_matchup
+from pipelines.excel_report import build_excel_report
 from pipelines.run_rankings import run_rankings
 from pipelines.schedule import build_schedule_with_projections
 
@@ -126,6 +127,26 @@ def _parse_args() -> argparse.Namespace:
         help="Optional SQLite DB path override (default: data/db/<sport>/<season>.db)",
     )
 
+    report_parser = subparsers.add_parser(
+        "report",
+        aliases=["excel", "excel_report"],
+        help="Generate an Excel report with rankings per model.",
+    )
+    report_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
+    report_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
+    report_parser.add_argument(
+        "--models",
+        help="Comma-separated list of ranking models (default: bradley-terry).",
+    )
+    report_parser.add_argument(
+        "--output",
+        help="Optional output Excel path. Defaults to data/processed/<sport>/<season>/report.xlsx",
+    )
+    report_parser.add_argument(
+        "--db",
+        help="Optional SQLite DB path override (default: data/db/<sport>/<season>.db)",
+    )
+
     return parser.parse_args()
 
 
@@ -223,6 +244,22 @@ def _run_schedule(args: argparse.Namespace) -> None:
     print(f"Saved schedule with projections -> {result_path}")
 
 
+def _run_report(args: argparse.Namespace) -> None:
+    db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
+    output_path = Path(args.output) if args.output else None
+    models = None
+    if args.models:
+        models = [model.strip() for model in args.models.split(",") if model.strip()]
+    result_path = build_excel_report(
+        db_path,
+        sport=args.sport,
+        season=args.season,
+        models=models,
+        output_path=output_path,
+    )
+    print(f"Saved Excel report -> {result_path}")
+
+
 def main() -> None:
     args = _parse_args()
     if args.command == "import":
@@ -233,6 +270,8 @@ def main() -> None:
         _run_matchup(args)
     elif args.command == "schedule":
         _run_schedule(args)
+    elif args.command == "report":
+        _run_report(args)
     else:
         raise ValueError(f"Unknown command: {args.command}")
 
