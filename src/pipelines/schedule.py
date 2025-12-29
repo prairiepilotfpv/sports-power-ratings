@@ -17,7 +17,7 @@ import pandas as pd
 
 from data.repository import load_games
 from pipelines.common import normalize_games
-from pipelines.matchups import average_total_points
+from pipelines.matchups import average_total_points, projected_total_points, team_total_averages
 from pipelines.run_rankings import build_rankings
 
 
@@ -71,7 +71,8 @@ def _project_row(
     row: pd.Series,
     *,
     ratings: Dict[str, float],
-    total_points: float,
+    team_totals: Dict[str, float],
+    fallback_total: float,
     model: str,
     status: str,
 ) -> Dict[str, Any]:
@@ -105,7 +106,14 @@ def _project_row(
             "away_rating": away_rating,
             "projected_winner": projected_winner,
             "projected_spread": projected_spread,
-            "projected_total": total_points if total_points > 0 else None,
+            "projected_total": projected_total_points(
+                team_totals,
+                home_team=home,
+                away_team=away,
+                fallback=fallback_total,
+            )
+            if fallback_total > 0
+            else None,
             "result_margin": result_margin,
             "result_total": result_total,
         }
@@ -132,7 +140,8 @@ def build_schedule_with_projections(
 
     rankings = build_rankings(played, model=model, require_scores=False)
     ratings = _rating_lookup(rankings)
-    total_points = average_total_points(played)
+    fallback_total = average_total_points(played)
+    team_totals = team_total_averages(played)
 
     schedule_rows: List[Dict[str, Any]] = []
     if not upcoming_only:
@@ -141,7 +150,8 @@ def build_schedule_with_projections(
                 _project_row(
                     row,
                     ratings=ratings,
-                    total_points=total_points,
+                    team_totals=team_totals,
+                    fallback_total=fallback_total,
                     model=model,
                     status="final",
                 )
@@ -152,7 +162,8 @@ def build_schedule_with_projections(
             _project_row(
                 row,
                 ratings=ratings,
-                total_points=total_points,
+                team_totals=team_totals,
+                fallback_total=fallback_total,
                 model=model,
                 status="scheduled",
             )
