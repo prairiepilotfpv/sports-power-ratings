@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 from typing import Dict, Tuple
 
 import pandas as pd
 
-from data.repository import load_games
+from data.repository import load_games, load_model_metrics
 from pipelines.common import normalize_games
 from pipelines.run_rankings import build_rankings
 
@@ -19,6 +20,7 @@ class MatchupPrediction:
     loser: str
     spread: float
     total_points: float
+    win_prob: float | None
 
 
 def average_total_points(df: pd.DataFrame) -> float:
@@ -97,6 +99,9 @@ def predict_matchup(
 
     rankings = build_rankings(df, model=model)
     ratings = _rating_lookup(rankings)
+    metrics = load_model_metrics(db_path, sport=sport, season=season, model=model) or {}
+    home_advantage = float(metrics.get("home_advantage", 0.0))
+    model_error = float(metrics.get("model_error", 1.0))
 
     home_key = home_team.strip()
     away_key = away_team.strip()
@@ -105,7 +110,10 @@ def predict_matchup(
     if away_key not in ratings:
         raise ValueError(f"Unknown team: {away_team}")
 
-    spread = ratings[home_key] - ratings[away_key]
+    spread = ratings[home_key] - ratings[away_key] + home_advantage
+    win_prob = None
+    if model_error > 0:
+        win_prob = 1.0 / (1.0 + math.exp(-spread / model_error))
     if spread >= 0:
         winner, loser = home_key, away_key
     else:
@@ -126,17 +134,23 @@ def predict_matchup(
         loser=loser,
         spread=spread,
         total_points=total_points,
+        win_prob=win_prob,
     )
 
 
 def format_matchup(prediction: MatchupPrediction) -> Tuple[str, Dict[str, float]]:
     spread_points = abs(prediction.spread)
+    prob_suffix = ""
+    if prediction.win_prob is not None:
+        prob_suffix = f" Win prob: {prediction.win_prob:.1%}."
     line = (
         f"{prediction.winner} over {prediction.loser} by {spread_points:.1f} points. "
-        f"Projected total: {prediction.total_points:.1f}."
+        f"Projected total: {prediction.total_points:.1f}.{prob_suffix}"
     )
     metrics = {
         "spread": prediction.spread,
         "total_points": prediction.total_points,
     }
+    if prediction.win_prob is not None:
+        metrics["win_prob"] = prediction.win_prob
     return line, metrics
