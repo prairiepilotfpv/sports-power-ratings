@@ -54,8 +54,17 @@ def _resolve_pts_columns(df: pd.DataFrame) -> tuple[str | None, str | None]:
     if len(pts_cols) >= 2:
         return pts_cols[0], pts_cols[1]
 
-    away_pts = _find_column(df, "visitor pts", "visitor_pts", "away pts", "away_pts")
-    home_pts = _find_column(df, "home pts", "home_pts")
+    away_pts = _find_column(
+        df,
+        "visitor pts",
+        "visitor_pts",
+        "away pts",
+        "away_pts",
+        "pts_visitor",
+        "ptsaway",
+        "pts away",
+    )
+    home_pts = _find_column(df, "home pts", "home_pts", "pts_home", "ptshome", "pts home")
     return away_pts, home_pts
 
 
@@ -67,10 +76,10 @@ def _parse_sr_dataframe(
     df = _normalize_columns(df)
     df = _rename_duplicate_pts(df)
 
-    date_col = _find_column(df, "date")
-    away_col = _find_column(df, "visitor/neutral", "visitor", "away", "away/neutral")
-    home_col = _find_column(df, "home/neutral", "home")
-    ot_col = _find_column(df, "ot")
+    date_col = _find_column(df, "date", "game date")
+    away_col = _find_column(df, "visitor/neutral", "visitor", "away", "away/neutral", "road", "road team")
+    home_col = _find_column(df, "home/neutral", "home", "home team")
+    ot_col = _find_column(df, "ot", "overtime")
     box_col = _find_column(df, "box score", "boxscore", "box")
     notes_col = _find_column(df, "notes")
     away_pts_col, home_pts_col = _resolve_pts_columns(df)
@@ -89,7 +98,12 @@ def _parse_sr_dataframe(
 
     games: List[GameResult] = []
     for _, row in df.iterrows():
-        if pd.isna(row.get(date_col)) or pd.isna(row.get(away_col)) or pd.isna(row.get(home_col)):
+        raw_date = row.get(date_col)
+        if pd.isna(raw_date) or pd.isna(row.get(away_col)) or pd.isna(row.get(home_col)):
+            continue
+
+        parsed_date = pd.to_datetime(raw_date, errors="coerce")
+        if pd.isna(parsed_date):
             continue
 
         away_team = str(row[away_col]).strip()
@@ -107,7 +121,7 @@ def _parse_sr_dataframe(
         if box_col and pd.notna(row.get(box_col)):
             game_id = str(row.get(box_col)).strip()
         if not game_id:
-            game_id = f"{pd.to_datetime(row[date_col]).date()}|{away_team}|{home_team}"
+            game_id = f"{parsed_date.date()}|{away_team}|{home_team}"
 
         notes = None
         if notes_col and pd.notna(row.get(notes_col)):
@@ -115,7 +129,7 @@ def _parse_sr_dataframe(
 
         games.append(
             GameResult(
-                date=pd.to_datetime(row[date_col]).date(),
+                date=parsed_date.date(),
                 home_team=home_team,
                 away_team=away_team,
                 home_score=home_score,

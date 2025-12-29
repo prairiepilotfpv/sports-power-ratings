@@ -6,6 +6,7 @@ from ingest.sports_reference import parse_sr_csv, parse_sr_csv_text, parse_sr_ht
 
 
 FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "sports_reference" / "nba"
+NFL_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "sports_reference" / "nfl"
 
 
 def test_parse_sr_csv() -> None:
@@ -72,3 +73,23 @@ def test_parse_sr_csv_text_with_unlabeled_start_times() -> None:
 def test_missing_required_columns_raises(parser, fixture: str) -> None:
     with pytest.raises(ValueError, match="Missing required columns"):
         parser(FIXTURES_DIR / fixture)
+
+
+def test_parse_sr_csv_nfl_handles_unlabeled_time_and_ot() -> None:
+    games = parse_sr_csv(NFL_FIXTURES / "2024.csv", sport="nfl", season="2024")
+    assert len(games) == 2
+    assert games[0].away_team == "Green Bay Packers"
+    assert games[0].home_team == "Minnesota Vikings"
+    assert games[0].overtime is True
+    assert games[1].away_score is None
+    assert games[1].home_score is None
+    assert games[0].sport == "nfl"
+    assert games[0].season == "2024"
+
+
+def test_parse_sr_html_nfl() -> None:
+    games = parse_sr_html(NFL_FIXTURES / "2024.html", sport="nfl", season="2024")
+    assert len(games) == 2
+    assert games[1].away_team == "Chicago Bears"
+    assert games[1].home_team == "Green Bay Packers"
+    assert games[1].overtime is True

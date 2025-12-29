@@ -143,13 +143,17 @@ def _import_games(args: argparse.Namespace) -> None:
     else:
         in_path = Path(args.input)
         if not in_path.exists():
-            raise FileNotFoundError(f"Input not found: {in_path}")
+            candidate = Path("data/raw") / args.input
+            if candidate.exists():
+                in_path = candidate
+            else:
+                raise FileNotFoundError(f"Input not found: {in_path} (also tried {candidate})")
         if in_path.suffix.lower() in {".html", ".htm"}:
             games = parse_sr_html(in_path, sport=args.sport, season=args.season)
         else:
             games = parse_sr_csv(in_path, sport=args.sport, season=args.season)
 
-    games = normalize_games(games)
+    games = normalize_games(games, sport=args.sport, season=args.season)
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
     saved = save_games(db_path, games)
     print(f"Saved {saved} games to {db_path}")

@@ -18,8 +18,9 @@ Lightweight pipeline for turning Sports-Reference schedules/results into SQLite 
 ### Import games into SQLite
 - `python -m src.cli.pipeline import --sport nba --season 2024-25 --input data/processed/nba_schedule.csv`
 - `--sport` and `--season` are required and determine which SQLite database is used. The pipeline does not infer these from the CSV.
-- Accepts HTML/CSV files or `--input-text` for pasted CSV content. Override the DB with `--db` (default `data/db/<sport>/<season>.db`).
+- Accepts HTML/CSV files or `--input-text` for pasted CSV content. If `--input` is a bare filename, it is resolved under `data/raw/` first. Override the DB with `--db` (default `data/db/<sport>/<season>.db`).
 - Rows without scores are kept so the schedule can include future games.
+- Example for another league: `python -m src.cli.pipeline import --sport nfl --season 2024 --input data/raw/nfl_2024.csv`
 
 ### Run rankings
 - `python -m src.cli.pipeline rank --sport nba --season 2024-25 --model bradley-terry --output data/processed/nba/2024-25/rankings.csv --overwrite`

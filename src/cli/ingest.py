@@ -56,7 +56,7 @@ def main() -> None:
         games = parse_sr_html(in_path, sport=args.sport, season=args.season)
     else:
         games = parse_sr_csv(in_path, sport=args.sport, season=args.season)
-    games = normalize_games(games)
+    games = normalize_games(games, sport=args.sport, season=args.season)
 
     db_path = Path(args.db) if args.db else db_path_for(args.sport or "unknown", args.season or "unknown")
     saved = save_games(db_path, games)
