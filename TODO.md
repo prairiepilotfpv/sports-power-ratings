@@ -1,6 +1,6 @@
 # TODO
 ## ASAP: End-to-end daily pipeline (must-have)
-- Provide a single daily pipeline command that chains ingest -> import -> rankings -> schedule output.
+- Provide a single pipeline to update the different leagues as needed with CSV files from Sports Reference and other sources, ie, a way to indiciate what sport and season with the relevent file to keep the databases up to date. 
 - Ensure ingest accepts Sports-Reference CSV/text updates to refresh the database daily.
 - Produce consistent outputs: team power rankings + daily matchups (including projections/spreads) from the current schedule.
 - Add human-usable output: a clean Excel worksheet that shows the up-to-date calendar with projected matchups.
