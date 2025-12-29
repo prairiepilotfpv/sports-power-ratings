@@ -1,6 +1,6 @@
-py# Sports Power Ratings
+# Sports Power Ratings
 
-Lightweight pipeline for turning Sports-Reference schedules/results into SQLite data and Bradley-Terry power ratings.
+Lightweight pipeline for turning Sports-Reference schedules/results into SQLite data and Bradley-Terry power ratings (projections, matchup sims, Excel reports).
 
 ## Setup
 - python -m venv .pyenv
@@ -13,7 +13,7 @@ Lightweight pipeline for turning Sports-Reference schedules/results into SQLite 
 
 ### Convert Sports-Reference schedules to CSV
 - HTML/CSV/Excel: `python -m src.pipelines.ingest_game_results data/raw/nba_schedule.html --mode auto --overwrite`
-- Screenshots: `python -m src.pipelines.ingest_game_results data/raw/nba_schedule.png --mode image`
+- Screenshots: `python -m src.pipelines.ingest_game_results data/raw/nba_schedule.png --mode image` (uses Tesseract + OpenAI parsing)
 - Defaults: resolves missing paths under `data/raw/`, writes to `data/processed/<input_stem>.csv`, and requires `--overwrite` if the output exists.
 
 ### Import games into SQLite
@@ -32,23 +32,29 @@ Lightweight pipeline for turning Sports-Reference schedules/results into SQLite 
 ### Run rankings
 - `python -m src.cli.pipeline rank --sport nba --season 2025-26 --model bradley-terry --output data/processed/nba/2025-26/rankings.csv --overwrite`
 - `--sport` and `--season` are required and must match the database you imported into.
-- Without `--output`, rankings write to `data/processed/<sport>/<season>/rankings.csv`. Uses the same DB as import unless `--db` is set.
+- Without `--output`, rankings write to `data/processed/<sport>/<season>/rankings.csv`. Uses the same DB as import unless `--db` is set. If the target file exists and `--overwrite` is omitted, a suffixed path (e.g., `rankings-1.csv`) is used instead.
+- The rankings step also saves `home_advantage` and `model_error` into the database for the selected model; those metrics are reused by projections/matchups to calibrate spreads and win probabilities.
 
 ### Export schedule with projections
 - `python -m src.cli.pipeline schedule --sport nba --season 2025-26 --model bradley-terry --output data/processed/nba/2025-26/schedule_with_projections.csv`
-- Outputs played games and upcoming games in one calendar, with `projected_winner`, `projected_spread`, `projected_total`, and current `home_rating`/`away_rating` from the selected model. Use `--upcoming-only` to show just future games.
-- Column glossary: `home_rating`/`away_rating` are the model-derived power ratings for each team (from `build_rankings` in `src/pipelines/schedule.py`).
-- Uses the same per-sport/per-season DB unless `--db` is set; defaults to writing `data/processed/<sport>/<season>/schedule_with_projections.csv` when `--output` is omitted.
+- Outputs played games and upcoming games in one calendar. Uses the same per-sport/per-season DB unless `--db` is set; defaults to writing `data/processed/<sport>/<season>/schedule_with_projections.csv` when `--output` is omitted.
+- Data columns:
+  - Schedule core: `date`, `home_team`, `away_team`, `home_score`, `away_score`, `neutral`, `overtime`, `game_id`
+  - Status: `status` is `final` for completed games and `scheduled` otherwise; rerunning after new scores moves rows to `final` and carries the latest points.
+  - Ratings/projections: `home_rating`/`away_rating` (model-derived point-scale ratings), `projected_winner`, `projected_spread`, `projected_win_prob`, `projected_home_score`, `projected_away_score`, `projected_total`
+  - Model calibration: `home_advantage`, `model_error` pulled from the rankings step
+  - Results for completed games: `result_margin`, `result_total`
+- Use `--upcoming-only` to show just future games. Notes/model columns are intentionally omitted from the output.
 
 ### Predict a matchup
 - `python -m src.cli.pipeline matchup --sport nba --season 2025-26 --matchup "Lakers vs Celtics"`
 - `python -m src.cli.pipeline matchup --sport nfl --season 2023 --home Eagles --away Cowboys`
-- Uses the per-sport/per-season database and Bradley-Terry rankings to estimate a winner, spread, and total points.
+- Uses the per-sport/per-season database and Bradley-Terry rankings to estimate a winner, spread, total points, and win probability (when `model_error` is available from the latest rankings run).
 
 ### Rankings output columns
 - team
 - rating (Bradley-Terry strength)
-- points (log-scaled rating mapped to point-spread units)
+- points (log-scaled rating mapped to point-spread units, used for projections/matchups)
 - games
 
 ### Generate Excel worksheet output
