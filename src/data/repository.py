@@ -24,6 +24,17 @@ CREATE TABLE IF NOT EXISTS games (
     notes TEXT,
     UNIQUE(game_id, sport, season)
 );
+
+CREATE TABLE IF NOT EXISTS model_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    model TEXT NOT NULL,
+    home_advantage REAL NOT NULL,
+    model_error REAL NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(sport, season, model)
+);
 """
 
 
@@ -154,3 +165,52 @@ def list_seasons(db_path: str | Path, sport: str) -> List[str]:
             (sport,),
         ).fetchall()
     return [row[0] for row in rows]
+
+
+def save_model_metrics(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+    home_advantage: float,
+    model_error: float,
+) -> None:
+    init_db(db_path)
+    with sqlite3.connect(Path(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO model_metrics (
+                sport,
+                season,
+                model,
+                home_advantage,
+                model_error,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (sport, season, model, home_advantage, model_error),
+        )
+        conn.commit()
+
+
+def load_model_metrics(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+) -> dict[str, float] | None:
+    init_db(db_path)
+    with sqlite3.connect(Path(db_path)) as conn:
+        row = conn.execute(
+            """
+            SELECT home_advantage, model_error
+            FROM model_metrics
+            WHERE sport = ? AND season = ? AND model = ?
+            """,
+            (sport, season, model),
+        ).fetchone()
+    if row is None:
+        return None
+    return {"home_advantage": float(row[0]), "model_error": float(row[1])}
