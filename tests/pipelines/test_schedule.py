@@ -4,10 +4,11 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from data.repository import load_games, save_games
 from ingest.schema import GameResult
-from pipelines.schedule import build_schedule_with_projections
+from pipelines.schedule import SCHEDULE_EXPORT_COLUMNS, _order_schedule_export, build_schedule_with_projections
 
 
 def test_build_schedule_with_projections(tmp_path: Path) -> None:
@@ -119,3 +120,67 @@ def test_schedule_uses_latest_scores(tmp_path: Path) -> None:
     db_games = {game.game_id: game for game in load_games(db_path, sport="nba", season="2024-25")}
     assert db_games[game_id].home_score == updated_row["home_score"]
     assert db_games[game_id].away_score == updated_row["away_score"]
+
+
+def test_schedule_export_column_ordering() -> None:
+    row = {
+        "date": "2024-01-01",
+        "game_id": "gid-1",
+        "status": "final",
+        "home_team": "Home",
+        "away_team": "Away",
+        "neutral": False,
+        "overtime": False,
+        "home_score": 100,
+        "away_score": 90,
+        "result_margin": 10,
+        "result_total": 190,
+        "home_rating": 1.5,
+        "away_rating": -0.2,
+        "home_advantage": 3.0,
+        "projected_winner": "Home",
+        "projected_spread": -4.5,
+        "projected_home_spread": 4.5,
+        "projected_win_prob": 0.65,
+        "projected_home_score": 102.5,
+        "projected_away_score": 95.5,
+        "projected_total": 198.0,
+    }
+    # Shuffle columns to simulate unordered input
+    shuffled_columns = sorted(row.keys())
+    df = pd.DataFrame([row], columns=shuffled_columns)
+
+    ordered = _order_schedule_export(df)
+    assert list(ordered.columns) == SCHEDULE_EXPORT_COLUMNS
+
+
+def test_schedule_export_column_ordering_missing_column() -> None:
+    base_df = pd.DataFrame(
+        [
+            {
+                "date": "2024-01-01",
+                "status": "final",
+                "home_team": "Home",
+                "away_team": "Away",
+                "neutral": False,
+                "overtime": False,
+                "home_score": 100,
+                "away_score": 90,
+                "result_margin": 10,
+                "result_total": 190,
+                "home_rating": 1.5,
+                "away_rating": -0.2,
+                "home_advantage": 3.0,
+                "projected_winner": "Home",
+                "projected_spread": -4.5,
+                "projected_home_spread": 4.5,
+                "projected_win_prob": 0.65,
+                "projected_home_score": 102.5,
+                "projected_away_score": 95.5,
+                "projected_total": 198.0,
+            }
+        ]
+    )
+
+    with pytest.raises(ValueError, match="game_id"):
+        _order_schedule_export(base_df)

@@ -28,6 +28,31 @@ from pipelines.projections import (
 from pipelines.run_rankings import build_rankings
 
 
+SCHEDULE_EXPORT_COLUMNS: List[str] = [
+    "date",
+    "game_id",
+    "status",
+    "home_team",
+    "away_team",
+    "neutral",
+    "overtime",
+    "home_score",
+    "away_score",
+    "result_margin",
+    "result_total",
+    "home_rating",
+    "away_rating",
+    "home_advantage",
+    "projected_winner",
+    "projected_spread",
+    "projected_home_spread",
+    "projected_win_prob",
+    "projected_home_score",
+    "projected_away_score",
+    "projected_total",
+]
+
+
 def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
@@ -148,6 +173,16 @@ def _project_row(
     return base
 
 
+def _order_schedule_export(schedule_df: pd.DataFrame) -> pd.DataFrame:
+    expected_set = set(SCHEDULE_EXPORT_COLUMNS)
+    missing = [col for col in SCHEDULE_EXPORT_COLUMNS if col not in schedule_df.columns]
+    extra = [col for col in schedule_df.columns if col not in expected_set]
+    if missing or extra:
+        raise ValueError(f"Schedule export column mismatch. Missing: {missing or 'none'}, extra: {extra or 'none'}")
+    # report-only ordering; do not modify upstream calculations.
+    return schedule_df[SCHEDULE_EXPORT_COLUMNS]
+
+
 def build_schedule_with_projections(
     db_path: str | Path,
     *,
@@ -219,6 +254,7 @@ def build_schedule_with_projections(
         if output_path.is_dir() or output_path.suffix == "":
             output_path = output_path / "schedule_with_projections.csv"
 
+    schedule_df = _order_schedule_export(schedule_df)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     schedule_df.to_csv(output_path, index=False)
     return output_path
