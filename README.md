@@ -41,7 +41,7 @@ Lightweight pipeline for turning Sports-Reference schedules/results into SQLite 
 - Data columns:
   - Schedule core: `date`, `home_team`, `away_team`, `home_score`, `away_score`, `neutral`, `overtime`, `game_id`
   - Status: `status` is `final` for completed games and `scheduled` otherwise; rerunning after new scores moves rows to `final` and carries the latest points.
-  - Ratings/projections: `home_rating`/`away_rating` (model-derived point-scale ratings, expected neutral-court margin vs average), `projected_winner`, `projected_spread` (betting-format home spread, negative means home favored), `projected_win_prob` (home win probability), `projected_home_score`, `projected_away_score`, `projected_total` (league base total)
+  - Ratings/projections: `home_rating`/`away_rating` (model-derived point-scale ratings, expected neutral-court margin vs average), `projected_winner`, `projected_spread` (betting-format home spread, negative means home favored), `projected_win_prob` (home win probability), `projected_home_score`, `projected_away_score`, `projected_total` (sum of projected home/away scores; uses the league base total when available)
   - Model calibration: `home_advantage`, `win_prob_k`, `base_total` pulled from the rankings step
   - Results for completed games: `result_margin`, `result_total`
 - Use `--upcoming-only` to show just future games. Notes/model columns are intentionally omitted from the output.
