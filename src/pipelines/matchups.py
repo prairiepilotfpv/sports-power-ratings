@@ -38,6 +38,13 @@ def average_total_points(df: pd.DataFrame) -> float:
     return sum(totals) / len(totals)
 
 
+def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    mask = df["home_score"].notna() & df["away_score"].notna()
+    return df[mask]
+
+
 def team_total_averages(df: pd.DataFrame) -> Dict[str, float]:
     totals: Dict[str, float] = {}
     counts: Dict[str, int] = {}
@@ -59,6 +66,36 @@ def team_total_averages(df: pd.DataFrame) -> Dict[str, float]:
             counts[away] = counts.get(away, 0) + 1
 
     return {team: totals[team] / counts[team] for team in totals if counts.get(team)}
+
+
+def team_home_advantages(df: pd.DataFrame, ratings: Dict[str, float]) -> Dict[str, float]:
+    if df.empty or not ratings:
+        return {}
+
+    sums: Dict[str, float] = {}
+    counts: Dict[str, int] = {}
+    for _, row in df.iterrows():
+        neutral_raw = row.get("neutral", False)
+        neutral = False if pd.isna(neutral_raw) else bool(neutral_raw)
+        if neutral:
+            continue
+        home = str(row.get("home_team", "")).strip()
+        away = str(row.get("away_team", "")).strip()
+        if not home or not away:
+            continue
+        home_rating = ratings.get(home)
+        away_rating = ratings.get(away)
+        if home_rating is None or away_rating is None:
+            continue
+        try:
+            margin = float(row.get("home_score")) - float(row.get("away_score"))
+        except Exception:
+            continue
+        residual = margin - (home_rating - away_rating)
+        sums[home] = sums.get(home, 0.0) + residual
+        counts[home] = counts.get(home, 0) + 1
+
+    return {team: sums[team] / counts[team] for team in sums if counts.get(team)}
 
 
 def projected_total_points(
@@ -99,8 +136,10 @@ def predict_matchup(
 
     rankings = build_rankings(df, model=model)
     ratings = _rating_lookup(rankings)
+    played = _completed_games(df)
+    home_advantages = team_home_advantages(played, ratings)
     metrics = load_model_metrics(db_path, sport=sport, season=season, model=model) or {}
-    home_advantage = float(metrics.get("home_advantage", 0.0))
+    fallback_home_advantage = float(metrics.get("home_advantage", 0.0))
     model_error = float(metrics.get("model_error", 1.0))
 
     home_key = home_team.strip()
@@ -110,6 +149,7 @@ def predict_matchup(
     if away_key not in ratings:
         raise ValueError(f"Unknown team: {away_team}")
 
+    home_advantage = home_advantages.get(home_key, fallback_home_advantage)
     spread = ratings[home_key] - ratings[away_key] + home_advantage
     win_prob = None
     if model_error > 0:
