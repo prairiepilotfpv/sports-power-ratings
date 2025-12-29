@@ -18,3 +18,4 @@
 
 - if the update is ran multiple times with no new data, it should return the same data, no doubling up or
 - add rank column to excel output
+- make sure I don't need the "import sports reference" sectoin as it's kind of outdated. 
