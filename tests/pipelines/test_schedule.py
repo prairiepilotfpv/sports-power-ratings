@@ -54,6 +54,7 @@ def test_build_schedule_with_projections(tmp_path: Path) -> None:
     assert len(df) == 3
     assert set(df["status"]) == {"final", "scheduled"}
     assert "notes" not in df.columns
+    assert "model_error" not in df.columns
 
     upcoming = df[df["status"] == "scheduled"].iloc[0]
     assert upcoming["home_team"] == "Team B"

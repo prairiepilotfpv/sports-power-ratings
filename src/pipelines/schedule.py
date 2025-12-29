@@ -144,7 +144,6 @@ def _project_row(
             "projected_spread": projected_spread,
             "projected_win_prob": projected_win_prob,
             "home_advantage": applied_home_advantage,
-            "model_error": model_error,
             "projected_home_score": projected_home_score,
             "projected_away_score": projected_away_score,
             "projected_total": projected_home_score + projected_away_score
