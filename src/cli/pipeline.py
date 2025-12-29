@@ -183,7 +183,8 @@ def _import_games(args: argparse.Namespace) -> None:
 def _run_rankings(args: argparse.Namespace) -> None:
     output_path = Path(args.output) if args.output else None
     if output_path is not None and output_path.exists() and not args.overwrite:
-        raise FileExistsError(f"Output exists: {output_path}. Use --overwrite to replace.")
+        output_path = _next_available_path(output_path)
+        print(f"Output exists: {args.output}. Writing to {output_path}. Use --overwrite to replace.")
 
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
     result_path = run_rankings(
@@ -194,6 +195,21 @@ def _run_rankings(args: argparse.Namespace) -> None:
         output_path=output_path,
     )
     print(f"Saved rankings -> {result_path}")
+
+
+def _next_available_path(output_path: Path) -> Path:
+    if not output_path.exists():
+        return output_path
+    stem = output_path.stem
+    suffix = output_path.suffix
+    parent = output_path.parent
+    for index in range(1, 1000):
+        candidate = parent / f"{stem}-{index}{suffix}"
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(
+        f"Output exists: {output_path}. Tried 999 alternate names. Use --overwrite to replace."
+    )
 
 
 def _parse_matchup_text(text: str) -> tuple[str, str]:
