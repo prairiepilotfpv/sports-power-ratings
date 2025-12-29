@@ -64,7 +64,6 @@ def _base_schedule_row(row: pd.Series) -> Dict[str, Any]:
         "neutral": neutral,
         "overtime": overtime,
         "game_id": row.get("game_id"),
-        "notes": row.get("notes"),
     }
 
 
