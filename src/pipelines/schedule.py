@@ -73,7 +73,6 @@ def _project_row(
     ratings: Dict[str, float],
     team_totals: Dict[str, float],
     fallback_total: float,
-    model: str,
     status: str,
     home_advantage: float,
     model_error: float,
@@ -106,7 +105,6 @@ def _project_row(
     base.update(
         {
             "status": status,
-            "model": model,
             "home_rating": home_rating,
             "away_rating": away_rating,
             "projected_winner": projected_winner,
@@ -163,7 +161,6 @@ def build_schedule_with_projections(
                     ratings=ratings,
                     team_totals=team_totals,
                     fallback_total=fallback_total,
-                    model=model,
                     status="final",
                     home_advantage=home_advantage,
                     model_error=model_error,
@@ -177,7 +174,6 @@ def build_schedule_with_projections(
                 ratings=ratings,
                 team_totals=team_totals,
                 fallback_total=fallback_total,
-                model=model,
                 status="scheduled",
                 home_advantage=home_advantage,
                 model_error=model_error,
