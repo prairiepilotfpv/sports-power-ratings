@@ -83,11 +83,38 @@ def _project_row(
     home_rating = ratings.get(home)
     away_rating = ratings.get(away)
 
-    projected_spread = None
+    rating_spread = None
     projected_winner = None
     projected_win_prob = None
     if home_rating is not None and away_rating is not None:
-        projected_spread = home_rating - away_rating + home_advantage
+        rating_spread = home_rating - away_rating + home_advantage
+
+    projected_total = (
+        projected_total_points(
+            team_totals,
+            home_team=home,
+            away_team=away,
+            fallback=fallback_total,
+        )
+        if fallback_total > 0
+        else None
+    )
+    projected_home_score = None
+    projected_away_score = None
+    if projected_total is not None:
+        base_home = projected_total / 2.0
+        base_away = projected_total / 2.0
+        if rating_spread is not None:
+            base_home += rating_spread / 2.0
+            base_away -= rating_spread / 2.0
+        projected_home_score = base_home
+        projected_away_score = base_away
+
+    projected_spread = None
+    if projected_home_score is not None and projected_away_score is not None:
+        projected_spread = projected_home_score - projected_away_score
+
+    if projected_spread is not None and rating_spread is not None:
         projected_winner = home if projected_spread >= 0 else away
         if model_error > 0:
             projected_win_prob = 1.0 / (1.0 + math.exp(-projected_spread / model_error))
@@ -112,14 +139,11 @@ def _project_row(
             "projected_win_prob": projected_win_prob,
             "home_advantage": home_advantage,
             "model_error": model_error,
-            "projected_total": projected_total_points(
-                team_totals,
-                home_team=home,
-                away_team=away,
-                fallback=fallback_total,
-            )
-            if fallback_total > 0
-            else None,
+            "projected_home_score": projected_home_score,
+            "projected_away_score": projected_away_score,
+            "projected_total": projected_home_score + projected_away_score
+            if projected_home_score is not None and projected_away_score is not None
+            else projected_total,
             "result_margin": result_margin,
             "result_total": result_total,
         }
