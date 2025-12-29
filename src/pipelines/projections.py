@@ -84,6 +84,53 @@ def average_total_points(rows: Iterable[dict[str, object]]) -> float:
     return sum(totals) / len(totals)
 
 
+def team_scoring_averages(rows: Iterable[dict[str, object]]) -> dict[str, tuple[float, float]]:
+    totals_for: dict[str, float] = {}
+    totals_against: dict[str, float] = {}
+    counts: dict[str, int] = {}
+
+    for row in rows:
+        try:
+            home = str(row.get("home_team", "")).strip()
+            away = str(row.get("away_team", "")).strip()
+            home_score = float(row.get("home_score"))
+            away_score = float(row.get("away_score"))
+        except Exception:
+            continue
+        if not home or not away:
+            continue
+
+        totals_for[home] = totals_for.get(home, 0.0) + home_score
+        totals_against[home] = totals_against.get(home, 0.0) + away_score
+        counts[home] = counts.get(home, 0) + 1
+
+        totals_for[away] = totals_for.get(away, 0.0) + away_score
+        totals_against[away] = totals_against.get(away, 0.0) + home_score
+        counts[away] = counts.get(away, 0) + 1
+
+    averages: dict[str, tuple[float, float]] = {}
+    for team, games in counts.items():
+        if games <= 0:
+            continue
+        averages[team] = (totals_for[team] / games, totals_against[team] / games)
+    return averages
+
+
+def matchup_total_from_averages(
+    home_team: str,
+    away_team: str,
+    averages: dict[str, tuple[float, float]],
+) -> float | None:
+    home_avg = averages.get(home_team)
+    away_avg = averages.get(away_team)
+    if home_avg is None or away_avg is None:
+        return None
+    home_for, home_against = home_avg
+    away_for, away_against = away_avg
+    total = (home_for + away_for + home_against + away_against) / 2.0
+    return total if total > 0 else None
+
+
 def fit_win_prob_scale(
     samples: Sequence[tuple[float, int]],
     *,
