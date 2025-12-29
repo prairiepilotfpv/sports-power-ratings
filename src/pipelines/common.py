@@ -15,6 +15,9 @@ def normalize_games(rows: Iterable[Any]) -> pd.DataFrame:
     df = pd.DataFrame(normalized_rows)
     if df.empty:
         return df
+    for score_col in ("home_score", "away_score"):
+        if score_col in df.columns:
+            df[score_col] = pd.to_numeric(df[score_col], errors="coerce")
     if "date" in df.columns:
         dt = pd.to_datetime(df["date"], errors="coerce")
         if dt.notna().any():
