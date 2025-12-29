@@ -18,7 +18,13 @@ import pandas as pd
 from data.repository import load_games, load_model_metrics
 from pipelines.common import normalize_games
 from pipelines.matchups import team_home_advantages
-from pipelines.projections import DEFAULT_LOGISTIC_SCALE, average_total_points, project_game
+from pipelines.projections import (
+    DEFAULT_LOGISTIC_SCALE,
+    average_total_points,
+    matchup_total_from_averages,
+    project_game,
+    team_scoring_averages,
+)
 from pipelines.run_rankings import build_rankings
 
 
@@ -72,6 +78,7 @@ def _project_row(
     *,
     ratings: Dict[str, float],
     base_total: float,
+    scoring_averages: Dict[str, tuple[float, float]],
     status: str,
     home_advantage: float,
     win_prob_k: float,
@@ -91,13 +98,14 @@ def _project_row(
     projected_total = None
 
     if home_rating is not None and away_rating is not None:
+        matchup_total = matchup_total_from_averages(home, away, scoring_averages)
         projection = project_game(
             home_rating,
             away_rating,
             home_advantage=applied_home_advantage,
             neutral=base["neutral"],
             k=win_prob_k,
-            base_total=base_total if base_total > 0 else None,
+            base_total=matchup_total or (base_total if base_total > 0 else None),
             home_team=home,
             away_team=away,
         )
@@ -162,6 +170,7 @@ def build_schedule_with_projections(
     fallback_home_advantage = float(metrics.get("home_advantage", 0.0))
     win_prob_k = float(metrics.get("win_prob_k", DEFAULT_LOGISTIC_SCALE))
     base_total = float(metrics.get("base_total", 0.0)) or fallback_total
+    scoring_averages = team_scoring_averages(played.to_dict(orient="records"))
 
     schedule_rows: List[Dict[str, Any]] = []
     if not upcoming_only:
@@ -172,6 +181,7 @@ def build_schedule_with_projections(
                     row,
                     ratings=ratings,
                     base_total=base_total,
+                    scoring_averages=scoring_averages,
                     status="final",
                     home_advantage=home_advantages.get(home, fallback_home_advantage),
                     win_prob_k=win_prob_k,
@@ -185,6 +195,7 @@ def build_schedule_with_projections(
                 row,
                 ratings=ratings,
                 base_total=base_total,
+                scoring_averages=scoring_averages,
                 status="scheduled",
                 home_advantage=home_advantages.get(home, fallback_home_advantage),
                 win_prob_k=win_prob_k,

@@ -8,7 +8,13 @@ import pandas as pd
 
 from data.repository import load_games, load_model_metrics
 from pipelines.common import normalize_games
-from pipelines.projections import DEFAULT_LOGISTIC_SCALE, average_total_points, project_game
+from pipelines.projections import (
+    DEFAULT_LOGISTIC_SCALE,
+    average_total_points,
+    matchup_total_from_averages,
+    project_game,
+    team_scoring_averages,
+)
 from pipelines.run_rankings import build_rankings
 
 
@@ -86,6 +92,7 @@ def predict_matchup(
     fallback_home_advantage = float(metrics.get("home_advantage", 0.0))
     win_prob_k = float(metrics.get("win_prob_k", DEFAULT_LOGISTIC_SCALE))
     base_total = float(metrics.get("base_total", 0.0))
+    scoring_averages = team_scoring_averages(played.to_dict(orient="records"))
 
     home_key = home_team.strip()
     away_key = away_team.strip()
@@ -97,13 +104,14 @@ def predict_matchup(
     home_advantage = home_advantages.get(home_key, fallback_home_advantage)
     fallback_total = average_total_points(played.to_dict(orient="records"))
     applied_total = base_total if base_total > 0 else fallback_total
+    matchup_total = matchup_total_from_averages(home_key, away_key, scoring_averages)
     projection = project_game(
         ratings[home_key],
         ratings[away_key],
         home_advantage=home_advantage,
         neutral=False,
         k=win_prob_k,
-        base_total=applied_total if applied_total > 0 else None,
+        base_total=matchup_total or (applied_total if applied_total > 0 else None),
         home_team=home_key,
         away_team=away_key,
     )
