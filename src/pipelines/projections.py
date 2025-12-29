@@ -48,11 +48,15 @@ def project_game(
 
     projected_home_score = None
     projected_away_score = None
-    projected_total = None
     if base_total is not None:
-        projected_total = base_total
         projected_home_score = (base_total + margin) / 2.0
         projected_away_score = (base_total - margin) / 2.0
+
+    projected_total = None
+    if projected_home_score is not None and projected_away_score is not None:
+        projected_total = projected_home_score + projected_away_score
+    elif base_total is not None:
+        projected_total = base_total
 
     return GameProjection(
         margin_neutral=margin_neutral,
