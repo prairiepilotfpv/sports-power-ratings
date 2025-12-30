@@ -12,6 +12,7 @@ from .base import (
 )
 from .bradley_terry import BradleyTerry
 from .bradley_terry_hfa import BradleyTerryHFA
+from .toor import TOORModel, TOORPowerRating
 
 __all__ = [
     "BaseModel",
@@ -20,6 +21,8 @@ __all__ = [
     "PowerRatingModel",
     "BradleyTerry",
     "BradleyTerryHFA",
+    "TOORModel",
+    "TOORPowerRating",
     "normalize_optional_float",
     "require_columns",
     "validate_probability",
