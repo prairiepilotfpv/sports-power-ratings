@@ -13,6 +13,9 @@ class GSSDPowerRating:
     """Power rating wrapper around ssat's GSSD implementation."""
 
     def __init__(self) -> None:
+        self.model_id = "gssd"
+        self.model_version = "1.0"
+        self.params: dict[str, Any] = {}
         self._model = GSSD()
         self._ratings: dict[str, float] = {}
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -8,7 +9,8 @@ import numpy as np
 import pandas as pd
 
 from data.validation import validate_dataset
-from models.base import BaseModel, GamePrediction
+from models.base import BaseModel, GamePrediction, resolve_model_identity
+from pipelines.metadata import prediction_hash
 DEFAULT_BUCKET_EDGES = np.linspace(0.0, 1.0, 11)
 
 
@@ -80,6 +82,7 @@ def run_backtest(
         day_games = evaluation[evaluation["date"] == current_date]
         predict_input = day_games.drop(columns=["home_score", "away_score"], errors="ignore")
         predictions = model.predict(predict_input)
+        _attach_prediction_metadata(predictions, model=model, train_data=train_data)
         pred_df = _predictions_to_frame(predictions)
         pred_df["date"] = pd.to_datetime(pred_df["date"]).dt.normalize()
 
@@ -158,6 +161,57 @@ def _predictions_to_frame(predictions: Iterable[GamePrediction]) -> pd.DataFrame
             row["extra"] = pred.extra
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def _prediction_hash_columns(pred_df: pd.DataFrame) -> list[str]:
+    columns = [
+        "game_id",
+        "date",
+        "home_team",
+        "away_team",
+        "p_home_win",
+        "pred_margin",
+        "pred_total",
+    ]
+    if "extra" in pred_df.columns:
+        columns.append("extra")
+    return columns
+
+
+def _training_date_range(train_data: pd.DataFrame) -> str:
+    if train_data.empty or "date" not in train_data.columns:
+        return ""
+    dates = pd.to_datetime(train_data["date"], errors="coerce").dropna()
+    if dates.empty:
+        return ""
+    return f"{dates.min().date().isoformat()} to {dates.max().date().isoformat()}"
+
+
+def _attach_prediction_metadata(
+    predictions: list[GamePrediction],
+    *,
+    model: BaseModel,
+    train_data: pd.DataFrame,
+) -> None:
+    if not predictions:
+        return
+    model_identity = resolve_model_identity(model)
+    trained_on_date_range = _training_date_range(train_data)
+    n_games_train = int(len(train_data))
+    run_timestamp_utc = datetime.now(timezone.utc).isoformat()
+
+    pred_df = _predictions_to_frame(predictions)
+    pred_hash = prediction_hash(pred_df, _prediction_hash_columns(pred_df))
+
+    metadata = {
+        **model_identity,
+        "trained_on_date_range": trained_on_date_range,
+        "n_games_train": n_games_train,
+        "run_timestamp_utc": run_timestamp_utc,
+        "prediction_hash": pred_hash,
+    }
+    for prediction in predictions:
+        prediction.metadata.update(metadata)
 
 
 def _home_win_flag(df: pd.DataFrame) -> pd.Series:

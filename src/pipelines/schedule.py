@@ -2,7 +2,8 @@ from __future__ import annotations
 
 """Schedule export pipeline with projection fields."""
 
-from datetime import date
+import json
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -29,11 +30,14 @@ from pipelines.projections import (
     team_scoring_averages,
 )
 from models.registry import (
+    get_model,
     get_model_abbreviation,
     list_models,
     normalize_model_name,
 )
 from pipelines.run_rankings import build_rankings
+from models.base import resolve_model_identity
+from pipelines.metadata import prediction_hash
 
 
 SCHEDULE_EXPORT_COLUMNS: List[str] = [
@@ -70,6 +74,8 @@ DASHBOARD_COLUMNS: List[str] = [
     "projected_winner",
     "projected_spread",
 ]
+
+MODEL_METADATA_DATA_START_ROW = 10
 
 
 def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
@@ -354,6 +360,65 @@ def _dashboard_rows_for_today(schedule_df: pd.DataFrame, model_name: str, as_of_
     return rows
 
 
+def _training_date_range(df: pd.DataFrame) -> str:
+    if df.empty or "date" not in df.columns:
+        return ""
+    dates = pd.to_datetime(df["date"], errors="coerce").dropna()
+    if dates.empty:
+        return ""
+    return f"{dates.min().date().isoformat()} to {dates.max().date().isoformat()}"
+
+
+def _serialize_params(params: Any) -> str:
+    try:
+        return json.dumps(params, sort_keys=True, default=str)
+    except TypeError:
+        return str(params)
+
+
+def _build_model_metadata(
+    *,
+    model_name: str,
+    played: pd.DataFrame,
+    schedule_df: pd.DataFrame,
+) -> dict[str, Any]:
+    model_instance = get_model(model_name)()
+    identity = resolve_model_identity(model_instance)
+    metadata = {
+        "model_id": identity["model_id"],
+        "model_version": identity["model_version"],
+        "params": _serialize_params(identity["params"]),
+        "trained_on_date_range": _training_date_range(played),
+        "n_games_train": int(len(played)),
+        "run_timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "prediction_hash": prediction_hash(schedule_df, SCHEDULE_EXPORT_COLUMNS),
+    }
+    return metadata
+
+
+def _write_metadata_section(
+    writer: pd.ExcelWriter,
+    sheet_name: str,
+    metadata: dict[str, Any],
+) -> int:
+    if sheet_name in writer.sheets:
+        ws = writer.sheets[sheet_name]
+    else:
+        ws = writer.book.create_sheet(sheet_name)
+        writer.sheets[sheet_name] = ws
+
+    ws.cell(row=1, column=1, value="metadata_key")
+    ws.cell(row=1, column=2, value="metadata_value")
+
+    row = 2
+    for key, value in metadata.items():
+        ws.cell(row=row, column=1, value=key)
+        ws.cell(row=row, column=2, value=value)
+        row += 1
+
+    return MODEL_METADATA_DATA_START_ROW - 1
+
+
 def _build_schedule_for_model(
     df: pd.DataFrame,
     *,
@@ -435,6 +500,7 @@ def build_schedule_excel_report(
         raise ValueError(f"No games found for sport={sport!r}, season={season!r}")
 
     models = _resolve_models(model)
+    played = _completed_games(df)
     report_path = _resolve_workbook_path(
         output_path,
         sport=sport,
@@ -452,7 +518,18 @@ def build_schedule_excel_report(
                 model=model_name,
                 upcoming_only=upcoming_only,
             )
-            schedule_df.to_excel(writer, sheet_name=model_name, index=False)
+            metadata = _build_model_metadata(
+                model_name=model_name,
+                played=played,
+                schedule_df=schedule_df,
+            )
+            start_row = _write_metadata_section(writer, model_name, metadata)
+            schedule_df.to_excel(
+                writer,
+                sheet_name=model_name,
+                index=False,
+                startrow=start_row,
+            )
             dashboard_rows.extend(_dashboard_rows_for_today(schedule_df, model_name))
 
         dashboard_df = pd.DataFrame(dashboard_rows, columns=DASHBOARD_COLUMNS)

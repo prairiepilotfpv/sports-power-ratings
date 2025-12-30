@@ -3,15 +3,18 @@ from __future__ import annotations
 from datetime import date, timedelta
 from pathlib import Path
 
+import openpyxl
 import pandas as pd
 import pytest
 
 from data.repository import load_games, save_games
 from ingest.schema import GameResult
+from pipelines.metadata import prediction_hash
 from pipelines.schedule import (
+    DASHBOARD_COLUMNS,
+    MODEL_METADATA_DATA_START_ROW,
     SCHEDULE_EXPORT_COLUMNS,
     _order_schedule_export,
-    DASHBOARD_COLUMNS,
     build_schedule_excel_report,
     build_schedule_with_projections,
 )
@@ -311,7 +314,11 @@ def test_schedule_excel_report_matches_csv_outputs(tmp_path: Path) -> None:
             output_path=tmp_path / f"{model}.csv",
         )
         expected = pd.read_csv(csv_path)
-        actual = pd.read_excel(workbook_path, sheet_name=model)
+        actual = pd.read_excel(
+            workbook_path,
+            sheet_name=model,
+            skiprows=MODEL_METADATA_DATA_START_ROW - 1,
+        )
         assert list(actual.columns) == SCHEDULE_EXPORT_COLUMNS
         pd.testing.assert_frame_equal(actual, expected, check_dtype=False)
 
@@ -378,3 +385,54 @@ def test_schedule_excel_dashboard_includes_today_games(tmp_path: Path) -> None:
     assert set(dashboard["game"]) == {"Team B @ Team A"}
     assert dashboard.loc[dashboard["game"] == "Team B @ Team A", "projected_winner"].notna().all()
     assert dashboard.loc[dashboard["game"] == "Team B @ Team A", "projected_spread"].notna().all()
+
+
+def test_schedule_excel_report_includes_model_metadata(tmp_path: Path) -> None:
+    db_path = tmp_path / "games.db"
+    games = [
+        GameResult(
+            date=date(2024, 1, 1),
+            home_team="Team A",
+            away_team="Team B",
+            home_score=100,
+            away_score=90,
+            sport="nba",
+            season="2024-25",
+        ),
+        GameResult(
+            date=date(2024, 1, 5),
+            home_team="Team B",
+            away_team="Team C",
+            home_score=None,
+            away_score=None,
+            sport="nba",
+            season="2024-25",
+        ),
+    ]
+    save_games(db_path, games)
+
+    workbook_path = build_schedule_excel_report(
+        db_path,
+        sport="nba",
+        season="2024-25",
+        output_path=tmp_path / "schedule.xlsx",
+    )
+
+    workbook = openpyxl.load_workbook(workbook_path)
+    for model in ["bradley-terry", "toor"]:
+        ws = workbook[model]
+        metadata: dict[str, str] = {}
+        for row in ws.iter_rows(min_row=2, max_row=10, min_col=1, max_col=2, values_only=True):
+            key, value = row
+            if key:
+                metadata[str(key)] = str(value) if value is not None else ""
+
+        assert metadata.get("model_id") == model
+
+        schedule_df = pd.read_excel(
+            workbook_path,
+            sheet_name=model,
+            skiprows=MODEL_METADATA_DATA_START_ROW - 1,
+        )
+        expected_hash = prediction_hash(schedule_df, SCHEDULE_EXPORT_COLUMNS)
+        assert metadata.get("prediction_hash") == expected_hash
