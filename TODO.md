@@ -10,6 +10,7 @@
 
 ## Later: Additional models and betting utilities
 - Add additional power ranking models using the same data source.
+- Evaluate ssat integration for multi-model comparisons and model reuse.
 - Add a pricing mechanism (e.g., "bet to win" target calculator).
 
 ## Documentation cleanup
