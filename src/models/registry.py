@@ -6,16 +6,19 @@ from typing import Type
 from models.base import BaseModel, PowerRatingModel
 from models.bradley_terry import BradleyTerry
 from models.bradley_terry_hfa import BradleyTerryHFA
+from models.gssd import GSSDPowerRating
 from models.toor import TOORModel, TOORPowerRating
 
 
 _REGISTRY: dict[str, Type[PowerRatingModel]] = {
     "bradley-terry": BradleyTerry,
+    "gssd": GSSDPowerRating,
     "toor": TOORPowerRating,
 }
 
 _MODEL_ABBREVIATIONS: dict[str, str] = {
     "bradley-terry": "bt",
+    "gssd": "gssd",
     "toor": "toor",
 }
 
@@ -26,6 +29,7 @@ _BACKTEST_REGISTRY: dict[str, Type[BaseModel]] = {
 
 
 def get_model(name: str) -> Type[PowerRatingModel]:
+    name = normalize_model_name(name)
     try:
         return _REGISTRY[name]
     except KeyError as exc:
@@ -37,6 +41,7 @@ def list_models() -> list[str]:
 
 
 def get_model_abbreviation(name: str) -> str:
+    name = normalize_model_name(name)
     if name in _MODEL_ABBREVIATIONS:
         return _MODEL_ABBREVIATIONS[name]
     parts = [part for part in re.split(r"[^A-Za-z0-9]+", name) if part]
@@ -46,6 +51,7 @@ def get_model_abbreviation(name: str) -> str:
 
 
 def get_backtest_model(name: str) -> Type[BaseModel]:
+    name = normalize_model_name(name)
     try:
         return _BACKTEST_REGISTRY[name]
     except KeyError as exc:
@@ -54,3 +60,7 @@ def get_backtest_model(name: str) -> Type[BaseModel]:
 
 def list_backtest_models() -> list[str]:
     return sorted(_BACKTEST_REGISTRY.keys())
+
+
+def normalize_model_name(name: str) -> str:
+    return name.strip().lower()
