@@ -221,17 +221,32 @@ def _resolve_output_path(
     return resolved
 
 
-def _build_schedule_for_model(
+def _resolve_workbook_path(
+    output_path: str | Path | None,
+    *,
+    sport: str,
+    season: str,
+    default_name: str,
+) -> Path:
+    if output_path is None:
+        resolved = Path("data/processed") / sport / season / default_name
+    else:
+        resolved = Path(output_path)
+        if resolved.is_dir() or resolved.suffix == "":
+            resolved = resolved / default_name
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    return resolved
+
+
+def _build_schedule_dataframe(
     df: pd.DataFrame,
     *,
     db_path: str | Path,
     sport: str,
     season: str,
     model: str,
-    output_path: str | Path | None,
     upcoming_only: bool,
-    add_prefix: bool,
-) -> Path:
+) -> pd.DataFrame:
     played = _completed_games(df)
     upcoming = _upcoming_games(df)
 
@@ -282,6 +297,29 @@ def _build_schedule_for_model(
             ["_dt", "game_id", "away_team", "home_team"]
         ).drop(columns=["_dt"], errors="ignore")
 
+    schedule_df = _order_schedule_export(schedule_df)
+    return schedule_df
+
+
+def _build_schedule_for_model(
+    df: pd.DataFrame,
+    *,
+    db_path: str | Path,
+    sport: str,
+    season: str,
+    model: str,
+    output_path: str | Path | None,
+    upcoming_only: bool,
+    add_prefix: bool,
+) -> Path:
+    schedule_df = _build_schedule_dataframe(
+        df,
+        db_path=db_path,
+        sport=sport,
+        season=season,
+        model=model,
+        upcoming_only=upcoming_only,
+    )
     resolved_output = _resolve_output_path(
         output_path,
         sport=sport,
@@ -290,8 +328,6 @@ def _build_schedule_for_model(
         model=model,
         add_prefix=add_prefix,
     )
-
-    schedule_df = _order_schedule_export(schedule_df)
     resolved_output.parent.mkdir(parents=True, exist_ok=True)
     schedule_df.to_csv(resolved_output, index=False)
     return resolved_output
@@ -328,3 +364,39 @@ def build_schedule_with_projections(
         for model_name in models
     ]
     return results[0] if len(results) == 1 else results
+
+
+def build_schedule_excel_report(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str | None = None,
+    output_path: str | Path | None = None,
+    upcoming_only: bool = False,
+) -> Path:
+    """Build an Excel workbook with schedule projections (one sheet per model)."""
+    rows = load_games(db_path, sport=sport, season=season)
+    df = normalize_games(rows)
+    if df.empty:
+        raise ValueError(f"No games found for sport={sport!r}, season={season!r}")
+
+    models = _resolve_models(model)
+    report_path = _resolve_workbook_path(
+        output_path,
+        sport=sport,
+        season=season,
+        default_name="schedule_with_projections.xlsx",
+    )
+    with pd.ExcelWriter(report_path) as writer:
+        for model_name in models:
+            schedule_df = _build_schedule_dataframe(
+                df,
+                db_path=db_path,
+                sport=sport,
+                season=season,
+                model=model_name,
+                upcoming_only=upcoming_only,
+            )
+            schedule_df.to_excel(writer, sheet_name=model_name, index=False)
+    return report_path

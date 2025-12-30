@@ -26,7 +26,7 @@ from pipelines.matchups import format_matchup, predict_matchup
 from pipelines.excel_report import build_excel_report
 from models.registry import list_models
 from pipelines.run_rankings import run_rankings
-from pipelines.schedule import build_schedule_with_projections
+from pipelines.schedule import build_schedule_excel_report, build_schedule_with_projections
 
 
 def _parse_args() -> argparse.Namespace:
@@ -125,7 +125,10 @@ def _parse_args() -> argparse.Namespace:
     )
     schedule_parser.add_argument(
         "--output",
-        help="Optional output CSV path. Defaults to data/processed/<sport>/<season>/schedule_with_projections.csv",
+        help=(
+            "Optional output path. Defaults to data/processed/<sport>/<season>/schedule_with_projections.xlsx. "
+            "Use a .csv extension to force CSV output."
+        ),
     )
     schedule_parser.add_argument(
         "--upcoming-only",
@@ -274,7 +277,23 @@ def _run_schedule(args: argparse.Namespace) -> None:
     """Export the schedule with projections for played and upcoming games."""
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
     output_path = Path(args.output) if args.output else None
-    result_path = build_schedule_with_projections(
+    if output_path is not None and output_path.suffix.lower() == ".csv":
+        result_path = build_schedule_with_projections(
+            db_path,
+            sport=args.sport,
+            season=args.season,
+            model=args.model,
+            output_path=output_path,
+            upcoming_only=args.upcoming_only,
+        )
+        if isinstance(result_path, list):
+            for path in result_path:
+                print(f"Saved schedule with projections -> {path}")
+        else:
+            print(f"Saved schedule with projections -> {result_path}")
+        return
+
+    result_path = build_schedule_excel_report(
         db_path,
         sport=args.sport,
         season=args.season,
@@ -282,11 +301,7 @@ def _run_schedule(args: argparse.Namespace) -> None:
         output_path=output_path,
         upcoming_only=args.upcoming_only,
     )
-    if isinstance(result_path, list):
-        for path in result_path:
-            print(f"Saved schedule with projections -> {path}")
-    else:
-        print(f"Saved schedule with projections -> {result_path}")
+    print(f"Saved schedule workbook -> {result_path}")
 
 
 def _run_report(args: argparse.Namespace) -> None:
