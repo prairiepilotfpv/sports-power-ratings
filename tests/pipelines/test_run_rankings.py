@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from data.repository import load_games, save_games
+from data.repository import load_games, load_model_metrics, save_games
 from ingest.schema import GameResult
 from pipelines.run_rankings import run_rankings
 
@@ -50,3 +50,6 @@ def test_run_rankings_smoke(tmp_path: Path) -> None:
     assert set(df.columns) == {"team", "rating", "points", "games"}
     assert {"A", "B"}.issubset(set(df["team"]))
     assert math.isclose(df["points"].mean(), 0.0, abs_tol=1e-9)
+
+    metrics = load_model_metrics(db_path, sport="nba", season="2023-24", model="bradley-terry")
+    assert metrics is not None
