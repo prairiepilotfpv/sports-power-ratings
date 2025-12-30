@@ -80,7 +80,7 @@ def build_excel_report(
         )
         with pd.ExcelWriter(report_path) as writer:
             try:
-                rankings = build_rankings(df, model=model)
+                rankings = build_rankings(df.copy(deep=True), model=model)
             except ValueError as exc:
                 if "No completed games" in str(exc):
                     raise ValueError(

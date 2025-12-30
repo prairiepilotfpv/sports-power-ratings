@@ -50,7 +50,8 @@ def build_rankings(
     require_scores: bool = True,
 ) -> pd.DataFrame:
     """Fit a ranking model and return a DataFrame of ratings and point values."""
-    played = _completed_games(df)
+    working_df = df.copy(deep=True)
+    played = _completed_games(working_df)
     if played.empty:
         if require_scores:
             raise ValueError("No completed games available to build rankings.")
@@ -178,7 +179,8 @@ def run_rankings(
     results: list[Path] = []
     for model_name in models:
         try:
-            rankings = build_rankings(df, model=model_name)
+            model_df = df.copy(deep=True)
+            rankings = build_rankings(model_df, model=model_name)
         except ValueError as exc:
             if "No completed games" in str(exc):
                 raise ValueError(
@@ -195,7 +197,7 @@ def run_rankings(
         )
         resolved_output.parent.mkdir(parents=True, exist_ok=True)
         rankings.to_csv(resolved_output, index=False)
-        _store_model_metrics(db_path, df, rankings, sport=sport, season=season, model=model_name)
+        _store_model_metrics(db_path, model_df, rankings, sport=sport, season=season, model=model_name)
         results.append(resolved_output)
     return results[0] if len(results) == 1 else results
 
