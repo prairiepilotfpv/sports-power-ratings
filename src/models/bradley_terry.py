@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from math import exp, isnan
+from math import exp, isnan, log
 from typing import Any, DefaultDict, Iterable, Mapping
 
 
@@ -11,6 +11,25 @@ class BradleyTerry:
         self.tol = tol
         self.ratings: DefaultDict[str, float] = defaultdict(lambda: 1.0)
         self.games_played: DefaultDict[str, int] = defaultdict(int)
+        self.home_adv = 0.0
+
+    @staticmethod
+    def _sigmoid(score: float) -> float:
+        if score >= 0:
+            z = exp(-score)
+            return 1.0 / (1.0 + z)
+        z = exp(score)
+        return z / (1.0 + z)
+
+    def predict_probability(self, team_a: str, team_b: str, venue: str = "neutral") -> float:
+        rating_a = self.ratings[team_a]
+        rating_b = self.ratings[team_b]
+        score = log(rating_a) - log(rating_b)
+        if venue == "home":
+            score += self.home_adv
+        elif venue == "away":
+            score -= self.home_adv
+        return self._sigmoid(score)
 
     def fit(self, games: Iterable[Mapping[str, Any]]) -> None:
         teams: set[str] = set()
@@ -57,7 +76,7 @@ class BradleyTerry:
             grad_home_adv = 0.0
             for home, away, outcome, neutral in games_list:
                 score = theta[home] - theta[away] + (0.0 if neutral else home_adv)
-                win_prob = 1.0 / (1.0 + exp(-score))
+                win_prob = self._sigmoid(score)
                 diff = outcome - win_prob
                 grad[home] += diff
                 grad[away] -= diff
@@ -77,6 +96,7 @@ class BradleyTerry:
 
         for team in teams:
             self.ratings[team] = exp(theta[team])
+        self.home_adv = home_adv
 
     def rankings(self) -> list[tuple[str, float]]:
         return sorted(self.ratings.items(), key=lambda item: item[1], reverse=True)
