@@ -139,8 +139,8 @@ def _project_row(
     status: str,
     home_advantage: float,
     win_prob_k: float,
-    total_intercept: float,
-    total_slope: float,
+    total_intercept: float | None = None,
+    total_slope: float | None = None,
 ) -> Dict[str, Any]:
     """Create a schedule export row with projections when ratings are available."""
     base = _base_schedule_row(row)
@@ -161,13 +161,15 @@ def _project_row(
     if home_rating is not None and away_rating is not None:
         # Build projected spreads/totals when both team ratings are available.
         matchup_total = matchup_total_from_averages(home, away, scoring_averages)
-        model_total = total_from_ratings(
-            home,
-            away,
-            ratings,
-            intercept=total_intercept,
-            slope=total_slope,
-        )
+        model_total = None
+        if total_intercept is not None and total_slope is not None:
+            model_total = total_from_ratings(
+                home,
+                away,
+                ratings,
+                intercept=total_intercept,
+                slope=total_slope,
+            )
         applied_total = model_total or matchup_total or (base_total if base_total > 0 else None)
         projection = project_game(
             home_rating,

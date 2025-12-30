@@ -71,6 +71,8 @@ def build_rankings(
         games_played[away] = games_played.get(away, 0) + 1
 
     rating_map = dict(model_instance.rankings())
+    if not rating_map:
+        return _empty_rankings()
 
     # Convert log rating differences into point-spread units.
     point_scale = _estimate_point_scale(played, rating_map)
