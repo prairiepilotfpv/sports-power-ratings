@@ -1,0 +1,201 @@
+date,home_team,away_team,home_score,away_score,neutral
+2023-10-01,New York Knicks,Cleveland Cavaliers,120,97,False
+2023-10-01,Memphis Grizzlies,Chicago Bulls,129,119,False
+2023-10-01,Golden State Warriors,Los Angeles Lakers,113,122,False
+2023-10-01,Miami Heat,New Orleans Pelicans,85,95,False
+2023-10-01,Dallas Mavericks,Los Angeles Clippers,106,102,False
+2023-10-01,Minnesota Timberwolves,Houston Rockets,106,91,False
+2023-10-01,Boston Celtics,Indiana Pacers,91,107,False
+2023-10-01,Brooklyn Nets,Milwaukee Bucks,123,101,False
+2023-10-01,Denver Nuggets,Detroit Pistons,114,119,False
+2023-10-01,Atlanta Hawks,Charlotte Hornets,109,90,False
+2023-10-02,Atlanta Hawks,New Orleans Pelicans,98,127,False
+2023-10-02,Cleveland Cavaliers,Detroit Pistons,128,126,False
+2023-10-02,Denver Nuggets,Golden State Warriors,125,95,False
+2023-10-02,Milwaukee Bucks,Minnesota Timberwolves,100,95,False
+2023-10-02,Memphis Grizzlies,Los Angeles Lakers,102,125,False
+2023-10-02,Miami Heat,Chicago Bulls,99,128,False
+2023-10-02,Los Angeles Clippers,Charlotte Hornets,88,99,False
+2023-10-02,Houston Rockets,Boston Celtics,105,110,False
+2023-10-02,Brooklyn Nets,Dallas Mavericks,98,121,False
+2023-10-02,Indiana Pacers,New York Knicks,105,98,False
+2023-10-03,Houston Rockets,Denver Nuggets,92,94,False
+2023-10-03,Atlanta Hawks,New Orleans Pelicans,128,112,False
+2023-10-03,Cleveland Cavaliers,Boston Celtics,109,109,False
+2023-10-03,Brooklyn Nets,Los Angeles Lakers,114,118,False
+2023-10-03,Dallas Mavericks,Golden State Warriors,120,85,False
+2023-10-03,Miami Heat,New York Knicks,92,128,False
+2023-10-03,Milwaukee Bucks,Indiana Pacers,102,126,False
+2023-10-03,Charlotte Hornets,Minnesota Timberwolves,103,112,False
+2023-10-03,Detroit Pistons,Chicago Bulls,85,101,False
+2023-10-03,Memphis Grizzlies,Los Angeles Clippers,96,117,False
+2023-10-04,Boston Celtics,Charlotte Hornets,100,121,False
+2023-10-04,Miami Heat,New Orleans Pelicans,90,116,False
+2023-10-04,Los Angeles Lakers,Minnesota Timberwolves,119,93,False
+2023-10-04,Houston Rockets,Denver Nuggets,115,120,False
+2023-10-04,Cleveland Cavaliers,New York Knicks,118,123,False
+2023-10-04,Atlanta Hawks,Memphis Grizzlies,98,119,False
+2023-10-04,Detroit Pistons,Brooklyn Nets,129,97,False
+2023-10-04,Los Angeles Clippers,Indiana Pacers,110,127,False
+2023-10-04,Chicago Bulls,Dallas Mavericks,113,118,False
+2023-10-04,Milwaukee Bucks,Golden State Warriors,100,99,False
+2023-10-05,Chicago Bulls,Cleveland Cavaliers,98,119,False
+2023-10-05,Golden State Warriors,Detroit Pistons,121,121,False
+2023-10-05,Miami Heat,Brooklyn Nets,115,111,False
+2023-10-05,Dallas Mavericks,Los Angeles Clippers,91,127,False
+2023-10-05,Los Angeles Lakers,Charlotte Hornets,112,111,False
+2023-10-05,Memphis Grizzlies,Houston Rockets,88,128,False
+2023-10-05,Indiana Pacers,Boston Celtics,126,91,False
+2023-10-05,New York Knicks,Milwaukee Bucks,106,91,False
+2023-10-05,Denver Nuggets,Minnesota Timberwolves,97,119,False
+2023-10-05,New Orleans Pelicans,Atlanta Hawks,112,96,False
+2023-10-06,Golden State Warriors,Cleveland Cavaliers,85,109,False
+2023-10-06,Chicago Bulls,Los Angeles Clippers,114,103,False
+2023-10-06,Los Angeles Lakers,Indiana Pacers,120,127,False
+2023-10-06,Minnesota Timberwolves,New York Knicks,94,97,False
+2023-10-06,Dallas Mavericks,New Orleans Pelicans,88,122,False
+2023-10-06,Milwaukee Bucks,Miami Heat,88,105,False
+2023-10-06,Atlanta Hawks,Detroit Pistons,122,115,False
+2023-10-06,Houston Rockets,Boston Celtics,118,95,False
+2023-10-06,Charlotte Hornets,Memphis Grizzlies,117,90,False
+2023-10-06,Brooklyn Nets,Denver Nuggets,89,123,False
+2023-10-07,Atlanta Hawks,Chicago Bulls,93,127,False
+2023-10-07,Minnesota Timberwolves,Milwaukee Bucks,114,105,False
+2023-10-07,New Orleans Pelicans,Los Angeles Lakers,89,85,False
+2023-10-07,Brooklyn Nets,Cleveland Cavaliers,121,91,False
+2023-10-07,Detroit Pistons,Indiana Pacers,98,117,False
+2023-10-07,Memphis Grizzlies,Houston Rockets,107,89,False
+2023-10-07,Dallas Mavericks,Miami Heat,108,103,False
+2023-10-07,Golden State Warriors,Boston Celtics,119,130,False
+2023-10-07,New York Knicks,Charlotte Hornets,126,118,True
+2023-10-07,Los Angeles Clippers,Denver Nuggets,120,104,False
+2023-10-08,Houston Rockets,Atlanta Hawks,90,125,False
+2023-10-08,Dallas Mavericks,Los Angeles Lakers,102,87,True
+2023-10-08,Los Angeles Clippers,Denver Nuggets,93,125,False
+2023-10-08,Boston Celtics,Cleveland Cavaliers,95,113,False
+2023-10-08,Miami Heat,Golden State Warriors,112,120,True
+2023-10-08,Memphis Grizzlies,New Orleans Pelicans,89,129,False
+2023-10-08,Brooklyn Nets,Minnesota Timberwolves,119,87,False
+2023-10-08,Indiana Pacers,Milwaukee Bucks,122,120,False
+2023-10-08,New York Knicks,Detroit Pistons,93,87,False
+2023-10-08,Chicago Bulls,Charlotte Hornets,87,107,False
+2023-10-09,Miami Heat,New York Knicks,109,87,False
+2023-10-09,Golden State Warriors,Detroit Pistons,99,97,False
+2023-10-09,Boston Celtics,Milwaukee Bucks,114,107,False
+2023-10-09,Houston Rockets,Cleveland Cavaliers,99,99,True
+2023-10-09,Minnesota Timberwolves,Atlanta Hawks,97,110,False
+2023-10-09,Dallas Mavericks,Los Angeles Clippers,89,102,False
+2023-10-09,Brooklyn Nets,New Orleans Pelicans,117,110,False
+2023-10-09,Memphis Grizzlies,Chicago Bulls,119,106,False
+2023-10-09,Los Angeles Lakers,Indiana Pacers,92,101,False
+2023-10-09,Charlotte Hornets,Denver Nuggets,101,87,False
+2023-10-10,New Orleans Pelicans,Boston Celtics,127,92,False
+2023-10-10,Cleveland Cavaliers,Milwaukee Bucks,104,117,False
+2023-10-10,Detroit Pistons,Denver Nuggets,111,105,False
+2023-10-10,Brooklyn Nets,Los Angeles Clippers,103,120,False
+2023-10-10,Minnesota Timberwolves,Memphis Grizzlies,111,127,False
+2023-10-10,Atlanta Hawks,Chicago Bulls,128,96,False
+2023-10-10,Miami Heat,Golden State Warriors,104,110,False
+2023-10-10,Dallas Mavericks,Charlotte Hornets,85,104,False
+2023-10-10,New York Knicks,Houston Rockets,112,122,False
+2023-10-10,Indiana Pacers,Los Angeles Lakers,105,114,False
+2023-10-11,Denver Nuggets,New York Knicks,87,100,False
+2023-10-11,Atlanta Hawks,Memphis Grizzlies,124,89,False
+2023-10-11,Los Angeles Lakers,Minnesota Timberwolves,125,121,False
+2023-10-11,Indiana Pacers,Charlotte Hornets,129,109,False
+2023-10-11,Boston Celtics,New Orleans Pelicans,100,94,False
+2023-10-11,Golden State Warriors,Los Angeles Clippers,85,91,False
+2023-10-11,Houston Rockets,Detroit Pistons,99,96,False
+2023-10-11,Chicago Bulls,Brooklyn Nets,129,118,False
+2023-10-11,Cleveland Cavaliers,Miami Heat,120,100,False
+2023-10-11,Milwaukee Bucks,Dallas Mavericks,92,114,False
+2023-10-12,Chicago Bulls,Boston Celtics,118,116,False
+2023-10-12,Atlanta Hawks,Miami Heat,102,113,False
+2023-10-12,New Orleans Pelicans,Charlotte Hornets,103,100,False
+2023-10-12,Cleveland Cavaliers,Brooklyn Nets,105,119,False
+2023-10-12,Denver Nuggets,Los Angeles Clippers,94,99,False
+2023-10-12,Dallas Mavericks,Detroit Pistons,94,130,False
+2023-10-12,Indiana Pacers,Los Angeles Lakers,111,111,False
+2023-10-12,Golden State Warriors,New York Knicks,114,111,False
+2023-10-12,Houston Rockets,Minnesota Timberwolves,111,109,False
+2023-10-12,Milwaukee Bucks,Memphis Grizzlies,122,129,True
+2023-10-13,Cleveland Cavaliers,Minnesota Timberwolves,106,127,False
+2023-10-13,Milwaukee Bucks,Memphis Grizzlies,110,95,False
+2023-10-13,Golden State Warriors,Brooklyn Nets,93,124,False
+2023-10-13,Boston Celtics,Denver Nuggets,110,122,False
+2023-10-13,Charlotte Hornets,Houston Rockets,86,90,False
+2023-10-13,Detroit Pistons,Los Angeles Lakers,93,114,False
+2023-10-13,Dallas Mavericks,New York Knicks,101,109,False
+2023-10-13,Chicago Bulls,Indiana Pacers,114,105,False
+2023-10-13,Atlanta Hawks,Miami Heat,109,102,False
+2023-10-13,Los Angeles Clippers,New Orleans Pelicans,111,101,False
+2023-10-14,Denver Nuggets,Brooklyn Nets,115,127,False
+2023-10-14,Cleveland Cavaliers,Los Angeles Clippers,98,114,False
+2023-10-14,Chicago Bulls,Golden State Warriors,108,95,False
+2023-10-14,Dallas Mavericks,Detroit Pistons,130,92,False
+2023-10-14,Memphis Grizzlies,New York Knicks,95,104,False
+2023-10-14,New Orleans Pelicans,Los Angeles Lakers,86,104,False
+2023-10-14,Milwaukee Bucks,Houston Rockets,109,110,False
+2023-10-14,Charlotte Hornets,Indiana Pacers,97,89,False
+2023-10-14,Boston Celtics,Minnesota Timberwolves,125,100,False
+2023-10-14,Atlanta Hawks,Miami Heat,104,128,False
+2023-10-15,Chicago Bulls,Brooklyn Nets,130,94,False
+2023-10-15,Los Angeles Clippers,Golden State Warriors,118,126,False
+2023-10-15,Milwaukee Bucks,New York Knicks,119,115,False
+2023-10-15,Denver Nuggets,Dallas Mavericks,122,102,False
+2023-10-15,Atlanta Hawks,Miami Heat,100,90,False
+2023-10-15,Memphis Grizzlies,Detroit Pistons,113,100,False
+2023-10-15,Minnesota Timberwolves,Cleveland Cavaliers,121,124,False
+2023-10-15,Houston Rockets,Los Angeles Lakers,106,86,False
+2023-10-15,Indiana Pacers,Boston Celtics,105,96,False
+2023-10-15,New Orleans Pelicans,Charlotte Hornets,107,101,False
+2023-10-16,Memphis Grizzlies,Brooklyn Nets,103,99,False
+2023-10-16,Milwaukee Bucks,Chicago Bulls,100,104,False
+2023-10-16,Golden State Warriors,Los Angeles Clippers,108,115,False
+2023-10-16,Cleveland Cavaliers,Houston Rockets,107,112,False
+2023-10-16,Los Angeles Lakers,New Orleans Pelicans,120,106,False
+2023-10-16,Denver Nuggets,Miami Heat,114,102,False
+2023-10-16,Indiana Pacers,Charlotte Hornets,99,92,False
+2023-10-16,Boston Celtics,Dallas Mavericks,105,92,False
+2023-10-16,Atlanta Hawks,Minnesota Timberwolves,129,96,False
+2023-10-16,Detroit Pistons,New York Knicks,115,102,False
+2023-10-17,Boston Celtics,Los Angeles Lakers,125,116,False
+2023-10-17,Memphis Grizzlies,Miami Heat,85,121,False
+2023-10-17,Denver Nuggets,New York Knicks,115,113,False
+2023-10-17,Houston Rockets,Indiana Pacers,88,101,False
+2023-10-17,Los Angeles Clippers,Detroit Pistons,115,92,False
+2023-10-17,Atlanta Hawks,Chicago Bulls,110,116,False
+2023-10-17,Brooklyn Nets,Cleveland Cavaliers,125,128,False
+2023-10-17,Minnesota Timberwolves,New Orleans Pelicans,94,121,False
+2023-10-17,Dallas Mavericks,Charlotte Hornets,90,100,False
+2023-10-17,Golden State Warriors,Milwaukee Bucks,111,123,False
+2023-10-18,Indiana Pacers,Detroit Pistons,95,100,False
+2023-10-18,Charlotte Hornets,Brooklyn Nets,89,95,True
+2023-10-18,Cleveland Cavaliers,Los Angeles Lakers,113,129,False
+2023-10-18,Houston Rockets,Boston Celtics,103,87,False
+2023-10-18,Atlanta Hawks,Minnesota Timberwolves,130,103,False
+2023-10-18,Dallas Mavericks,Golden State Warriors,114,89,False
+2023-10-18,Chicago Bulls,New Orleans Pelicans,101,125,False
+2023-10-18,Miami Heat,Memphis Grizzlies,97,112,False
+2023-10-18,Los Angeles Clippers,Milwaukee Bucks,99,126,False
+2023-10-18,Denver Nuggets,New York Knicks,102,94,False
+2023-10-19,Houston Rockets,Brooklyn Nets,123,101,True
+2023-10-19,Boston Celtics,New York Knicks,99,128,False
+2023-10-19,Minnesota Timberwolves,Atlanta Hawks,121,122,False
+2023-10-19,Miami Heat,Milwaukee Bucks,128,102,False
+2023-10-19,Detroit Pistons,Los Angeles Clippers,96,115,False
+2023-10-19,Dallas Mavericks,Los Angeles Lakers,113,102,False
+2023-10-19,Chicago Bulls,Indiana Pacers,122,112,False
+2023-10-19,Denver Nuggets,Charlotte Hornets,116,90,False
+2023-10-19,Memphis Grizzlies,New Orleans Pelicans,111,106,False
+2023-10-19,Golden State Warriors,Cleveland Cavaliers,91,95,False
+2023-10-20,Houston Rockets,Brooklyn Nets,118,108,False
+2023-10-20,Denver Nuggets,New Orleans Pelicans,116,125,False
+2023-10-20,Charlotte Hornets,Minnesota Timberwolves,88,98,False
+2023-10-20,Indiana Pacers,Atlanta Hawks,93,103,False
+2023-10-20,Detroit Pistons,Dallas Mavericks,129,116,False
+2023-10-20,New York Knicks,Los Angeles Lakers,125,123,False
+2023-10-20,Chicago Bulls,Cleveland Cavaliers,130,95,False
+2023-10-20,Milwaukee Bucks,Memphis Grizzlies,85,120,False
+2023-10-20,Boston Celtics,Los Angeles Clippers,99,92,False
+2023-10-20,Golden State Warriors,Miami Heat,92,126,False
