@@ -95,6 +95,61 @@ def average_total_points(rows: Iterable[dict[str, object]]) -> float:
     return sum(totals) / len(totals)
 
 
+def fit_total_model(
+    rows: Iterable[dict[str, object]],
+    ratings: dict[str, float],
+) -> tuple[float, float]:
+    """Fit a simple linear model for totals based on summed team ratings."""
+    points: list[tuple[float, float]] = []
+    for row in rows:
+        try:
+            total = float(row.get("home_score")) + float(row.get("away_score"))
+        except Exception:
+            continue
+        home = str(row.get("home_team", "")).strip()
+        away = str(row.get("away_team", "")).strip()
+        if not home or not away:
+            continue
+        home_rating = ratings.get(home)
+        away_rating = ratings.get(away)
+        if home_rating is None or away_rating is None:
+            continue
+        points.append((home_rating + away_rating, total))
+
+    if len(points) < 2:
+        avg_total = average_total_points(rows)
+        return avg_total, 0.0
+
+    xs, ys = zip(*points, strict=False)
+    mean_x = sum(xs) / len(xs)
+    mean_y = sum(ys) / len(ys)
+    var_x = sum((x - mean_x) ** 2 for x in xs)
+    if var_x == 0.0:
+        return mean_y, 0.0
+
+    cov_xy = sum((x - mean_x) * (y - mean_y) for x, y in points)
+    slope = cov_xy / var_x
+    intercept = mean_y - slope * mean_x
+    return intercept, slope
+
+
+def total_from_ratings(
+    home_team: str,
+    away_team: str,
+    ratings: dict[str, float],
+    *,
+    intercept: float,
+    slope: float,
+) -> float | None:
+    """Estimate matchup total using the fitted rating-based total model."""
+    home_rating = ratings.get(home_team)
+    away_rating = ratings.get(away_team)
+    if home_rating is None or away_rating is None:
+        return None
+    total = intercept + slope * (home_rating + away_rating)
+    return total if total > 0 else None
+
+
 def team_scoring_averages(rows: Iterable[dict[str, object]]) -> dict[str, tuple[float, float]]:
     """Compute per-team average points scored and allowed."""
     totals_for: dict[str, float] = {}

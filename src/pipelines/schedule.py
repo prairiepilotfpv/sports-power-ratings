@@ -25,8 +25,10 @@ from pipelines.matchups import team_home_advantages
 from config import DEFAULT_WIN_PROB_K
 from pipelines.projections import (
     average_total_points,
+    fit_total_model,
     matchup_total_from_averages,
     project_game,
+    total_from_ratings,
     team_scoring_averages,
 )
 from models.registry import (
@@ -137,6 +139,8 @@ def _project_row(
     status: str,
     home_advantage: float,
     win_prob_k: float,
+    total_intercept: float | None = None,
+    total_slope: float | None = None,
 ) -> Dict[str, Any]:
     """Create a schedule export row with projections when ratings are available."""
     base = _base_schedule_row(row)
@@ -157,13 +161,23 @@ def _project_row(
     if home_rating is not None and away_rating is not None:
         # Build projected spreads/totals when both team ratings are available.
         matchup_total = matchup_total_from_averages(home, away, scoring_averages)
+        model_total = None
+        if total_intercept is not None and total_slope is not None:
+            model_total = total_from_ratings(
+                home,
+                away,
+                ratings,
+                intercept=total_intercept,
+                slope=total_slope,
+            )
+        applied_total = model_total or matchup_total or (base_total if base_total > 0 else None)
         projection = project_game(
             home_rating,
             away_rating,
             home_advantage=applied_home_advantage,
             neutral=base["neutral"],
             k=win_prob_k,
-            base_total=matchup_total or (base_total if base_total > 0 else None),
+            base_total=applied_total,
             home_team=home,
             away_team=away,
         )
@@ -281,7 +295,9 @@ def _build_schedule_dataframe(
     fallback_home_advantage = float(metrics.get("home_advantage", 0.0))
     win_prob_k = float(metrics.get("win_prob_k", DEFAULT_WIN_PROB_K))
     base_total = float(metrics.get("base_total", 0.0)) or fallback_total
-    scoring_averages = team_scoring_averages(played.to_dict(orient="records"))
+    played_records = played.to_dict(orient="records")
+    total_intercept, total_slope = fit_total_model(played_records, ratings)
+    scoring_averages = team_scoring_averages(played_records)
 
     schedule_rows: List[Dict[str, Any]] = []
     if not upcoming_only:
@@ -296,6 +312,8 @@ def _build_schedule_dataframe(
                     status="final",
                     home_advantage=home_advantages.get(home, fallback_home_advantage),
                     win_prob_k=win_prob_k,
+                    total_intercept=total_intercept,
+                    total_slope=total_slope,
                 )
             )
 
@@ -310,6 +328,8 @@ def _build_schedule_dataframe(
                 status="scheduled",
                 home_advantage=home_advantages.get(home, fallback_home_advantage),
                 win_prob_k=win_prob_k,
+                total_intercept=total_intercept,
+                total_slope=total_slope,
             )
         )
 
