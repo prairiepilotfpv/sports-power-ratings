@@ -7,10 +7,8 @@ from typing import Callable, Iterable
 import numpy as np
 import pandas as pd
 
-from models.base import BaseModel, GamePrediction, require_columns
-
-
-REQUIRED_COLUMNS = ["date", "home_team", "away_team", "home_score", "away_score"]
+from data.validation import validate_dataset
+from models.base import BaseModel, GamePrediction
 DEFAULT_BUCKET_EDGES = np.linspace(0.0, 1.0, 11)
 
 
@@ -53,16 +51,9 @@ def run_backtest(
     if window == "rolling" and rolling_days is None and rolling_games is None:
         raise ValueError("Provide rolling_days or rolling_games for rolling backtests.")
 
-    games = games_df.copy()
-    require_columns(games, REQUIRED_COLUMNS)
+    games = validate_dataset(games_df)
     if "neutral" not in games.columns:
         games["neutral"] = False
-    games["date"] = pd.to_datetime(games["date"]).dt.normalize()
-    if "game_id" not in games.columns:
-        games["game_id"] = games.apply(
-            lambda row: f"{row['date'].date()}_{row['home_team']}_{row['away_team']}",
-            axis=1,
-        )
 
     start_dt = pd.to_datetime(start_date).normalize() if start_date else games["date"].min()
     end_dt = pd.to_datetime(end_date).normalize() if end_date else games["date"].max()

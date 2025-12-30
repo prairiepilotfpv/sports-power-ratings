@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import pandas as pd
+
 try:  # Allow execution from repository root or nested directories
     from bootstrap import ensure_src_on_path
 except ModuleNotFoundError:  # pragma: no cover - fallback when bootstrap isn't on sys.path
@@ -13,6 +15,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback when bootstrap isn't 
 
 ensure_src_on_path()
 
+from data.validation import validate_dataset
 from data.paths import db_path_for
 from data.repository import save_games
 from ingest.normalize import normalize_games
@@ -178,6 +181,7 @@ def _import_games(args: argparse.Namespace) -> None:
             games = parse_sr_csv(in_path, sport=args.sport, season=args.season)
 
     games = normalize_games(games, sport=args.sport, season=args.season)
+    validate_dataset(pd.DataFrame([game.model_dump() for game in games]))
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
     saved = save_games(db_path, games)
     print(f"Saved {saved} games to {db_path}")
