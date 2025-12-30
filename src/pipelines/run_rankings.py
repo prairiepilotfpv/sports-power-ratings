@@ -19,7 +19,12 @@ ensure_src_on_path()
 import pandas as pd
 
 from data.repository import load_games, save_model_metrics
-from models.registry import get_model, get_model_abbreviation, list_models
+from models.registry import (
+    get_model,
+    get_model_abbreviation,
+    list_models,
+    normalize_model_name,
+)
 from pipelines.common import normalize_games
 from config import DEFAULT_WIN_PROB_K
 from pipelines.projections import average_total_points, fit_win_prob_scale
@@ -131,7 +136,7 @@ def _center_ratings(ratings: Dict[str, float]) -> Dict[str, float]:
 def _resolve_models(model: str | None) -> list[str]:
     if model is None:
         return list_models()
-    return [model]
+    return [normalize_model_name(model)]
 
 
 def _resolve_output_path(

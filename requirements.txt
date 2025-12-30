@@ -1,6 +1,6 @@
 pytesseract==0.3.10
 pillow==10.4.0
-pandas==2.2.2
+pandas==2.2.3
 python-dotenv==1.0.1
 pydantic==2.8.2
 openai==1.51.0
@@ -9,3 +9,4 @@ beautifulsoup4==4.12.3
 html5lib==1.1
 openpyxl==3.1.5
 xlrd==2.0.1
+ssat==0.0.4
