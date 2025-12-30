@@ -184,3 +184,77 @@ def test_schedule_export_column_ordering_missing_column() -> None:
 
     with pytest.raises(ValueError, match="game_id"):
         _order_schedule_export(base_df)
+
+
+def test_schedule_upcoming_only_filters_completed(tmp_path: Path) -> None:
+    db_path = tmp_path / "games.db"
+    games = [
+        GameResult(
+            date=date(2024, 1, 1),
+            home_team="Team A",
+            away_team="Team B",
+            home_score=100,
+            away_score=90,
+            sport="nba",
+            season="2024-25",
+        ),
+        GameResult(
+            date=date(2024, 1, 5),
+            home_team="Team C",
+            away_team="Team D",
+            home_score=None,
+            away_score=None,
+            sport="nba",
+            season="2024-25",
+        ),
+    ]
+    save_games(db_path, games)
+
+    output_path = build_schedule_with_projections(
+        db_path,
+        sport="nba",
+        season="2024-25",
+        output_path=tmp_path / "schedule.csv",
+        upcoming_only=True,
+    )
+
+    df = pd.read_csv(output_path)
+    assert len(df) == 1
+    assert df.iloc[0]["status"] == "scheduled"
+
+
+def test_schedule_neutral_games_use_zero_home_advantage(tmp_path: Path) -> None:
+    db_path = tmp_path / "games.db"
+    games = [
+        GameResult(
+            date=date(2024, 1, 1),
+            home_team="Team A",
+            away_team="Team B",
+            home_score=100,
+            away_score=90,
+            neutral=True,
+            sport="nba",
+            season="2024-25",
+        ),
+        GameResult(
+            date=date(2024, 1, 2),
+            home_team="Team A",
+            away_team="Team B",
+            home_score=None,
+            away_score=None,
+            neutral=True,
+            sport="nba",
+            season="2024-25",
+        ),
+    ]
+    save_games(db_path, games)
+
+    output_path = build_schedule_with_projections(
+        db_path,
+        sport="nba",
+        season="2024-25",
+        output_path=tmp_path / "schedule.csv",
+    )
+
+    df = pd.read_csv(output_path)
+    assert (df["home_advantage"] == 0.0).all()

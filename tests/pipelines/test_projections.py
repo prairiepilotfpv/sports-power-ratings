@@ -4,7 +4,13 @@ import math
 
 import pandas as pd
 
-from pipelines.projections import project_game
+from pipelines.projections import (
+    average_total_points,
+    fit_win_prob_scale,
+    matchup_total_from_averages,
+    project_game,
+    team_scoring_averages,
+)
 from pipelines.schedule import _project_row
 
 
@@ -77,3 +83,39 @@ def test_integration_project_row_sign_conventions() -> None:
     assert output["projected_home_score"] == 105.0
     assert output["projected_away_score"] == 95.0
     assert output["projected_total"] == 200.0
+
+
+def test_average_total_points_handles_empty() -> None:
+    assert average_total_points([]) == 0.0
+
+
+def test_average_total_points_computes_mean() -> None:
+    rows = [
+        {"home_score": 100, "away_score": 90},
+        {"home_score": 95, "away_score": 105},
+    ]
+    assert average_total_points(rows) == 195.0
+
+
+def test_team_scoring_averages_and_matchup_total() -> None:
+    rows = [
+        {"home_team": "A", "away_team": "B", "home_score": 100, "away_score": 90},
+        {"home_team": "B", "away_team": "A", "home_score": 95, "away_score": 105},
+    ]
+    averages = team_scoring_averages(rows)
+    assert set(averages.keys()) == {"A", "B"}
+
+    total = matchup_total_from_averages("A", "B", averages)
+    assert total is not None
+    assert total > 0
+    assert matchup_total_from_averages("A", "C", averages) is None
+
+
+def test_fit_win_prob_scale_defaults_when_empty() -> None:
+    assert fit_win_prob_scale([]) > 0
+
+
+def test_fit_win_prob_scale_bounds() -> None:
+    samples = [(-5.0, 1), (5.0, 0), (-2.5, 1), (2.5, 0)]
+    k = fit_win_prob_scale(samples, min_k=0.5, max_k=50.0)
+    assert 0.5 <= k <= 50.0
