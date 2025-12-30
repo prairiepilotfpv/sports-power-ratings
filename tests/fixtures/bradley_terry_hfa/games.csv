@@ -1,0 +1,4 @@
+home_team,away_team,home_score,away_score,neutral
+Alpha,Beta,100,90,
+Beta,Gamma,80,70,
+Gamma,Alpha,65,75,True

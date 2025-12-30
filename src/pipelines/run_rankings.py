@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Ranking pipeline for fitting power ratings and storing calibration metrics."""
+
 import math
 from pathlib import Path
 from typing import Dict
@@ -24,6 +26,7 @@ from pipelines.projections import average_total_points, fit_win_prob_scale
 
 
 def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
+    """Return only games with both home/away scores."""
     if df.empty:
         return df
     mask = df["home_score"].notna() & df["away_score"].notna()
@@ -31,6 +34,7 @@ def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _empty_rankings() -> pd.DataFrame:
+    """Return an empty rankings DataFrame with the expected columns."""
     return pd.DataFrame(columns=["team", "rating", "points", "games"])
 
 
@@ -40,6 +44,7 @@ def build_rankings(
     *,
     require_scores: bool = True,
 ) -> pd.DataFrame:
+    """Fit a ranking model and return a DataFrame of ratings and point values."""
     played = _completed_games(df)
     if played.empty:
         if require_scores:
@@ -61,6 +66,7 @@ def build_rankings(
 
     rating_map = dict(model_instance.rankings())
 
+    # Convert log rating differences into point-spread units.
     point_scale = _estimate_point_scale(played, rating_map)
 
     points_ratings: Dict[str, float] = {}
@@ -84,6 +90,7 @@ def build_rankings(
 
 
 def _estimate_point_scale(df: pd.DataFrame, ratings: Dict[str, float]) -> float:
+    """Estimate the point spread scale from rating differences vs actual margins."""
     if df.empty or not ratings:
         return 0.0
 
@@ -114,6 +121,7 @@ def _estimate_point_scale(df: pd.DataFrame, ratings: Dict[str, float]) -> float:
 
 
 def _center_ratings(ratings: Dict[str, float]) -> Dict[str, float]:
+    """Center point-scale ratings around zero."""
     if not ratings:
         return {}
     mean_rating = sum(ratings.values()) / len(ratings)
@@ -128,6 +136,7 @@ def run_rankings(
     model: str = "bradley-terry",
     output_path: str | Path | None = None,
 ) -> Path:
+    """Load games from SQLite, generate rankings, and write them to CSV."""
     rows = load_games(db_path, sport=sport, season=season)
     df = normalize_games(rows)
     if df.empty:
@@ -159,6 +168,7 @@ def _store_model_metrics(
     season: str,
     model: str,
 ) -> None:
+    """Compute and store calibration metrics for projections and win probabilities."""
     if df.empty or rankings.empty:
         return
     played = _completed_games(df)

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+"""Shared helpers for pipeline data normalization."""
+
 from typing import Any, Dict, Iterable, List
 
 import pandas as pd
 
 
 def normalize_games(rows: Iterable[Any]) -> pd.DataFrame:
+    """Convert rows or Pydantic models into a normalized DataFrame."""
     normalized_rows: List[Dict[str, Any]] = []
     for row in rows:
         if hasattr(row, "model_dump"):

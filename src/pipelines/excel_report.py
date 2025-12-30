@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Excel report pipeline for ranking summaries."""
+
 from pathlib import Path
 from typing import Iterable, List
 
@@ -26,6 +28,7 @@ def _resolve_output_path(
     sport: str,
     season: str,
 ) -> Path:
+    """Resolve output location, allowing directory paths."""
     if output_path is None:
         resolved = Path("data/processed") / sport / season / "report.xlsx"
     else:
@@ -44,6 +47,7 @@ def build_excel_report(
     models: Iterable[str] | None = None,
     output_path: str | Path | None = None,
 ) -> Path:
+    """Write rankings to an Excel workbook (one sheet per model)."""
     requested_models: List[str] = list(models) if models is not None else ["bradley-terry"]
     rows = load_games(db_path, sport=sport, season=season)
     df = normalize_games(rows)

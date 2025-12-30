@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Matchup prediction pipeline built on power ratings."""
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Tuple
@@ -20,6 +22,7 @@ from pipelines.run_rankings import build_rankings
 
 @dataclass(frozen=True)
 class MatchupPrediction:
+    """Structured response from a matchup projection."""
     home_team: str
     away_team: str
     winner: str
@@ -30,6 +33,7 @@ class MatchupPrediction:
 
 
 def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
+    """Return only games with final scores."""
     if df.empty:
         return df
     mask = df["home_score"].notna() & df["away_score"].notna()
@@ -68,6 +72,7 @@ def team_home_advantages(df: pd.DataFrame, ratings: Dict[str, float]) -> Dict[st
 
 
 def _rating_lookup(rankings: pd.DataFrame) -> Dict[str, float]:
+    """Map team name to point-scale rating."""
     return {str(row["team"]).strip(): float(row["points"]) for _, row in rankings.iterrows()}
 
 
@@ -80,6 +85,7 @@ def predict_matchup(
     away_team: str,
     model: str = "bradley-terry",
 ) -> MatchupPrediction:
+    """Predict a single matchup using stored games and rankings."""
     rows = load_games(db_path, sport=sport, season=season)
     df = normalize_games(rows)
     if df.empty:
@@ -133,6 +139,7 @@ def predict_matchup(
 
 
 def format_matchup(prediction: MatchupPrediction) -> Tuple[str, Dict[str, float]]:
+    """Format a matchup prediction for CLI output."""
     spread_points = abs(prediction.spread)
     prob_suffix = ""
     if prediction.win_prob is not None:

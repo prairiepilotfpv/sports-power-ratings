@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel
 
+from data.validation import validate_dataset
 # Make parse_sr_scores optional to avoid ImportError
 from parsers.sr_table_parser import parse_sr_workbook
 try:
@@ -43,7 +44,7 @@ def _write_rows_to_csv(rows: List[Dict[str, Any]], output_path: Path) -> int:
         "game_id",
         "notes",
     ]
-    df = pd.DataFrame(rows, columns=cols)
+    df = validate_dataset(pd.DataFrame(rows, columns=cols))
     df.to_csv(output_path, index=False)
     return len(df)
 
