@@ -1,4 +1,14 @@
-import pytesseract, os
+import os
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message=".*pkgutil.find_loader.*",
+    category=DeprecationWarning,
+    module="pytesseract",
+)
+
+import pytesseract
 from PIL import Image
 
 def ocr_image(path: str) -> str:
