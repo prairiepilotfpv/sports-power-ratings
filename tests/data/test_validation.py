@@ -32,6 +32,7 @@ def test_validate_dataset_rejects_invalid_date() -> None:
 
 def test_validate_dataset_rejects_invalid_score_type() -> None:
     df = _base_df()
+    df["home_score"] = df["home_score"].astype("object")
     df.loc[0, "home_score"] = "oops"
     with pytest.raises(ValueError, match="Invalid values in column 'home_score'"):
         validate_dataset(df)

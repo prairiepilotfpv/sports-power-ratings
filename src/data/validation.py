@@ -18,7 +18,7 @@ def validate_dataset(df: pd.DataFrame) -> pd.DataFrame:
     require_columns(df, REQUIRED_COLUMNS)
     validated = df.copy()
 
-    parsed_dates = pd.to_datetime(validated["date"], errors="coerce")
+    parsed_dates = pd.to_datetime(validated["date"], errors="coerce", format="mixed")
     if parsed_dates.isna().any():
         bad_values = validated.loc[parsed_dates.isna(), "date"].head(5).tolist()
         raise ValueError(f"Invalid dates in column 'date': {bad_values}")

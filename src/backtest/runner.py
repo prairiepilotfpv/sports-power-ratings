@@ -182,7 +182,7 @@ def _aggregate_metrics_by_date(predictions_df: pd.DataFrame) -> pd.DataFrame:
         )
     metrics = (
         predictions_df.groupby("date")
-        .apply(lambda group: pd.Series(_compute_metrics(group)))
+        .apply(lambda group: pd.Series(_compute_metrics(group)), include_groups=False)
         .reset_index()
     )
     return metrics
