@@ -13,7 +13,11 @@ ensure_src_on_path()
 
 from data.repository import load_games
 from pipelines.common import normalize_games
-from models.registry import get_model_abbreviation, list_models
+from models.registry import (
+    get_model_abbreviation,
+    list_models,
+    normalize_model_name,
+)
 from pipelines.run_rankings import build_rankings
 from pipelines.schedule import build_schedule_with_projections
 
@@ -60,7 +64,7 @@ def _write_section(
 def _resolve_models(model: str | None) -> list[str]:
     if model is None:
         return list_models()
-    return [model]
+    return [normalize_model_name(model)]
 
 
 def _resolve_output_path(

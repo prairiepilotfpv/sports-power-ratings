@@ -18,6 +18,7 @@ from pipelines.projections import (
     team_scoring_averages,
 )
 from pipelines.run_rankings import build_rankings
+from models.registry import normalize_model_name
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,7 @@ def predict_matchup(
     model: str = "bradley-terry",
 ) -> MatchupPrediction:
     """Predict a single matchup using stored games and rankings."""
+    model = normalize_model_name(model)
     rows = load_games(db_path, sport=sport, season=season)
     df = normalize_games(rows)
     if df.empty:

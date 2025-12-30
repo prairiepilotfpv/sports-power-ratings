@@ -19,7 +19,11 @@ import pandas as pd
 
 from data.repository import load_games
 from pipelines.common import normalize_games
-from models.registry import get_model_abbreviation, list_models
+from models.registry import (
+    get_model_abbreviation,
+    list_models,
+    normalize_model_name,
+)
 from pipelines.run_rankings import build_rankings
 
 
@@ -54,7 +58,11 @@ def build_excel_report(
     output_path: str | Path | None = None,
 ) -> Path | list[Path]:
     """Write rankings to an Excel workbook (one sheet per model)."""
-    requested_models: List[str] = list(models) if models is not None else list_models()
+    requested_models: List[str]
+    if models is None:
+        requested_models = list_models()
+    else:
+        requested_models = [normalize_model_name(model) for model in models]
     rows = load_games(db_path, sport=sport, season=season)
     df = normalize_games(rows)
     if df.empty:
