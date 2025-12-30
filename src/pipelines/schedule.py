@@ -470,7 +470,7 @@ def build_schedule_with_projections(
     multiple = len(models) > 1
     results = [
         _build_schedule_for_model(
-            df,
+            df.copy(deep=True),
             db_path=db_path,
             sport=sport,
             season=season,
@@ -510,8 +510,9 @@ def build_schedule_excel_report(
     dashboard_rows: list[Dict[str, Any]] = []
     with pd.ExcelWriter(report_path) as writer:
         for model_name in models:
+            model_df = df.copy(deep=True)
             schedule_df = _build_schedule_dataframe(
-                df,
+                model_df,
                 db_path=db_path,
                 sport=sport,
                 season=season,
@@ -520,7 +521,7 @@ def build_schedule_excel_report(
             )
             metadata = _build_model_metadata(
                 model_name=model_name,
-                played=played,
+                played=_completed_games(model_df),
                 schedule_df=schedule_df,
             )
             start_row = _write_metadata_section(writer, model_name, metadata)
