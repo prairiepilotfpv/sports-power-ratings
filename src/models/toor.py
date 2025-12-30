@@ -31,19 +31,75 @@ DEFAULT_COEFFICIENTS = ToorCoefficients(
 
 
 class TOORPowerRating:
-    """Power rating wrapper that reuses Bradley-Terry logistic strengths."""
+    """Power rating wrapper that fits team strengths via OLS on margins."""
 
     def __init__(self, *, max_iter: int = 500, tol: float = 1e-8) -> None:
         self.model_id = "toor"
         self.model_version = "1.0"
         self.params = {"max_iter": max_iter, "tol": tol}
-        self._model = BradleyTerry(max_iter=max_iter, tol=tol)
+        self._ratings: dict[str, float] = {}
 
     def fit(self, games: Iterable[Mapping[str, Any]]) -> None:
-        self._model.fit(games)
+        teams: list[str] = []
+        seen: set[str] = set()
+        samples: list[tuple[str, str, float, float]] = []
+
+        for game in games:
+            home = str(game.get("home_team", "")).strip()
+            away = str(game.get("away_team", "")).strip()
+            if not home or not away:
+                continue
+            try:
+                margin = float(game.get("home_score")) - float(game.get("away_score"))
+            except Exception:
+                continue
+
+            if home not in seen:
+                seen.add(home)
+                teams.append(home)
+            if away not in seen:
+                seen.add(away)
+                teams.append(away)
+
+            neutral_raw = game.get("neutral", False)
+            neutral = False if isinstance(neutral_raw, float) and np.isnan(neutral_raw) else bool(neutral_raw)
+            home_advantage = 0.0 if neutral else 1.0
+
+            samples.append((home, away, margin, home_advantage))
+
+        if len(teams) < 2 or not samples:
+            self._ratings = {}
+            return
+
+        index = {team: idx for idx, team in enumerate(teams)}
+        feature_count = len(teams) + 1
+        design_matrix: list[list[float]] = []
+        margins: list[float] = []
+        for home, away, margin, home_advantage in samples:
+            row = [0.0] * feature_count
+            row[index[home]] = 1.0
+            row[index[away]] = -1.0
+            row[-1] = home_advantage
+            design_matrix.append(row)
+            margins.append(margin)
+
+        if len(design_matrix) < 2:
+            self._ratings = {}
+            return
+
+        matrix = np.asarray(design_matrix, dtype=float)
+        target = np.asarray(margins, dtype=float)
+        coeffs, *_ = np.linalg.lstsq(matrix, target, rcond=None)
+        team_coeffs = coeffs[: len(teams)]
+        mean_coeff = float(np.mean(team_coeffs)) if team_coeffs.size else 0.0
+        centered = team_coeffs - mean_coeff
+        self._ratings = {
+            team: float(np.exp(centered[index[team]]))
+            for team in teams
+        }
 
     def rankings(self) -> list[tuple[str, float]]:
-        return self._model.rankings()
+        return sorted(self._ratings.items(), key=lambda item: item[1], reverse=True)
 
 
 class TOORModel(BaseModel):
