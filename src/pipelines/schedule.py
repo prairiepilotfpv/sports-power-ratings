@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Schedule export pipeline with projection fields."""
+
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -54,6 +56,7 @@ SCHEDULE_EXPORT_COLUMNS: List[str] = [
 
 
 def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
+    """Return only games with recorded scores."""
     if df.empty:
         return df
     mask = df["home_score"].notna() & df["away_score"].notna()
@@ -61,6 +64,7 @@ def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _upcoming_games(df: pd.DataFrame) -> pd.DataFrame:
+    """Return only games without scores (future or incomplete)."""
     if df.empty:
         return df
     mask = df["home_score"].isna() | df["away_score"].isna()
@@ -68,10 +72,12 @@ def _upcoming_games(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _rating_lookup(rankings: pd.DataFrame) -> Dict[str, float]:
+    """Build a lookup for team name -> point-scale rating."""
     return {str(row["team"]).strip(): float(row["points"]) for _, row in rankings.iterrows()}
 
 
 def _safe_date(value: Any) -> str:
+    """Convert date-like values to an ISO date string."""
     if value is None:
         return ""
     try:
@@ -81,6 +87,7 @@ def _safe_date(value: Any) -> str:
 
 
 def _base_schedule_row(row: pd.Series) -> Dict[str, Any]:
+    """Normalize the base schedule fields shared by played and upcoming games."""
     neutral_raw = row.get("neutral", False)
     overtime_raw = row.get("overtime", False)
     neutral = False if pd.isna(neutral_raw) else bool(neutral_raw)
@@ -108,6 +115,7 @@ def _project_row(
     home_advantage: float,
     win_prob_k: float,
 ) -> Dict[str, Any]:
+    """Create a schedule export row with projections when ratings are available."""
     base = _base_schedule_row(row)
     home = base["home_team"]
     away = base["away_team"]
@@ -124,6 +132,7 @@ def _project_row(
     projected_total = None
 
     if home_rating is not None and away_rating is not None:
+        # Build projected spreads/totals when both team ratings are available.
         matchup_total = matchup_total_from_averages(home, away, scoring_averages)
         projection = project_game(
             home_rating,
@@ -174,6 +183,7 @@ def _project_row(
 
 
 def _order_schedule_export(schedule_df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure a consistent column order for downstream reporting."""
     expected_set = set(SCHEDULE_EXPORT_COLUMNS)
     missing = [col for col in SCHEDULE_EXPORT_COLUMNS if col not in schedule_df.columns]
     extra = [col for col in schedule_df.columns if col not in expected_set]
@@ -192,6 +202,7 @@ def build_schedule_with_projections(
     output_path: str | Path | None = None,
     upcoming_only: bool = False,
 ) -> Path:
+    """Build a schedule export containing projections for upcoming games."""
     rows = load_games(db_path, sport=sport, season=season)
     df = normalize_games(rows)
     if df.empty:

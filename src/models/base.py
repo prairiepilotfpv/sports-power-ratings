@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Base interfaces and helpers for prediction models."""
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from math import isnan
@@ -8,6 +10,7 @@ from typing import Any, Iterable, Mapping, Protocol
 
 @dataclass(frozen=True)
 class ModelMetadata:
+    """Metadata describing a model's capabilities."""
     name: str
     version: str
     supports_margin: bool
@@ -17,6 +20,7 @@ class ModelMetadata:
 
 @dataclass
 class GamePrediction:
+    """Unified prediction record for downstream pipelines."""
     game_id: str
     date: str
     home_team: str
@@ -33,6 +37,7 @@ class GamePrediction:
 
 
 class BaseModel(ABC):
+    """Base interface for predictive models in the system."""
     @abstractmethod
     def metadata(self) -> ModelMetadata:
         raise NotImplementedError
@@ -64,6 +69,7 @@ class PowerRatingModel(Protocol):
 
 
 def validate_probability(value: float | None, *, field_name: str = "probability") -> float:
+    """Ensure probabilities are valid floats in [0, 1]."""
     if value is None:
         raise ValueError(f"{field_name} is required.")
     try:
@@ -76,6 +82,7 @@ def validate_probability(value: float | None, *, field_name: str = "probability"
 
 
 def normalize_optional_float(value: float | None) -> float | None:
+    """Normalize NaN floats to None for easier downstream checks."""
     if value is None:
         return None
     if isinstance(value, float) and isnan(value):
@@ -84,6 +91,7 @@ def normalize_optional_float(value: float | None) -> float | None:
 
 
 def require_columns(df: Any, required: Iterable[str]) -> None:
+    """Validate that a DataFrame-like object has required columns."""
     missing = [column for column in required if column not in getattr(df, "columns", [])]
     if missing:
         raise ValueError(f"Missing required columns: {', '.join(missing)}")

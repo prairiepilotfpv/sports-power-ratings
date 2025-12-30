@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Normalization helpers for parsed game results."""
+
 from typing import Iterable, List
 
 from ingest.schema import GameResult
@@ -10,8 +12,10 @@ def normalize_games(
     sport: str | None = None,
     season: str | None = None,
 ) -> List[GameResult]:
+    """Normalize GameResult entries and backfill sport/season defaults."""
     normalized: List[GameResult] = []
     for game in games:
+        # Skip rows without core identity fields.
         if not game.home_team or not game.away_team or not game.date:
             continue
         normalized.append(

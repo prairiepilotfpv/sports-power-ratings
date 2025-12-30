@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Validation helpers for inbound game datasets."""
+
 import pandas as pd
 
 from models.base import require_columns
@@ -9,6 +11,7 @@ REQUIRED_COLUMNS = ["date", "home_team", "away_team", "home_score", "away_score"
 
 
 def validate_dataset(df: pd.DataFrame) -> pd.DataFrame:
+    """Validate a game dataset and return a cleaned copy."""
     if df is None:
         raise ValueError("Dataset is required.")
 
@@ -22,6 +25,7 @@ def validate_dataset(df: pd.DataFrame) -> pd.DataFrame:
     validated["date"] = parsed_dates.dt.normalize()
 
     for col in ["home_score", "away_score"]:
+        # Score columns are optional for future games, but must be numeric if provided.
         numeric = pd.to_numeric(validated[col], errors="coerce")
         invalid_mask = validated[col].notna() & numeric.isna()
         if invalid_mask.any():
@@ -33,6 +37,7 @@ def validate_dataset(df: pd.DataFrame) -> pd.DataFrame:
         validated[col] = numeric
 
     if "status" in validated.columns:
+        # "final" rows must include scores so downstream pipelines can trust the data.
         status = validated["status"].astype(str).str.lower()
         final_mask = status == "final"
         if final_mask.any():
@@ -56,6 +61,7 @@ def validate_dataset(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _ensure_game_id(df: pd.DataFrame) -> pd.DataFrame:
+    """Guarantee a stable game_id by building one from date/teams when missing."""
     if "game_id" not in df.columns:
         df = df.copy()
         df["game_id"] = None

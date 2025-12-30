@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+"""Bradley-Terry power rating model for win/loss outcomes."""
+
 from collections import defaultdict
 from math import exp, isnan, log
 from typing import Any, DefaultDict, Iterable, Mapping
 
 
 class BradleyTerry:
+    """Iterative Bradley-Terry solver with optional home advantage term."""
     def __init__(self, *, max_iter: int = 500, tol: float = 1e-8) -> None:
         self.max_iter = max_iter
         self.tol = tol
@@ -15,6 +18,7 @@ class BradleyTerry:
 
     @staticmethod
     def _sigmoid(score: float) -> float:
+        """Numerically stable sigmoid for logistic probability."""
         if score >= 0:
             z = exp(-score)
             return 1.0 / (1.0 + z)
@@ -22,6 +26,7 @@ class BradleyTerry:
         return z / (1.0 + z)
 
     def predict_probability(self, team_a: str, team_b: str, venue: str = "neutral") -> float:
+        """Predict win probability for team_a vs team_b with a venue adjustment."""
         rating_a = self.ratings[team_a]
         rating_b = self.ratings[team_b]
         score = log(rating_a) - log(rating_b)
@@ -32,10 +37,12 @@ class BradleyTerry:
         return self._sigmoid(score)
 
     def fit(self, games: Iterable[Mapping[str, Any]]) -> None:
+        """Fit Bradley-Terry ratings from game results."""
         teams: set[str] = set()
         games_list: list[tuple[str, str, float, bool]] = []
 
         for game in games:
+            # Drop rows without names or usable scores.
             home = str(game.get("home_team", "")).strip()
             away = str(game.get("away_team", "")).strip()
             if not home or not away:
@@ -75,6 +82,7 @@ class BradleyTerry:
             grad: dict[str, float] = {team: 0.0 for team in teams}
             grad_home_adv = 0.0
             for home, away, outcome, neutral in games_list:
+                # Log-odds include a home advantage term when not neutral.
                 score = theta[home] - theta[away] + (0.0 if neutral else home_adv)
                 win_prob = self._sigmoid(score)
                 diff = outcome - win_prob
@@ -99,4 +107,5 @@ class BradleyTerry:
         self.home_adv = home_adv
 
     def rankings(self) -> list[tuple[str, float]]:
+        """Return ratings ordered from strongest to weakest."""
         return sorted(self.ratings.items(), key=lambda item: item[1], reverse=True)

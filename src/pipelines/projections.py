@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Projection helpers for spreads, totals, and win probabilities."""
+
 from dataclasses import dataclass
 import math
 from typing import Iterable, Sequence
@@ -9,6 +11,7 @@ from config import DEFAULT_WIN_PROB_K
 
 @dataclass(frozen=True)
 class GameProjection:
+    """Derived metrics for a single projected game."""
     margin_neutral: float
     margin: float
     projected_winner: str | None
@@ -21,6 +24,7 @@ class GameProjection:
 
 
 def logistic_win_prob(away_minus_home: float, k: float) -> float:
+    """Convert a spread into a win probability using a logistic curve."""
     return 1.0 / (1.0 + math.exp(away_minus_home / k))
 
 
@@ -35,6 +39,7 @@ def project_game(
     home_team: str | None = None,
     away_team: str | None = None,
 ) -> GameProjection:
+    """Project margin, spread, totals, and win prob from power ratings."""
     margin_neutral = home_rating - away_rating
     margin = margin_neutral + (0.0 if neutral else home_advantage)
     # Convention: projected_spread is away_minus_home. Negative => home favored.
@@ -52,6 +57,7 @@ def project_game(
     projected_home_score = None
     projected_away_score = None
     if base_total is not None:
+        # Translate expected total + margin into implied team scores.
         projected_home_score = (base_total + margin) / 2.0
         projected_away_score = (base_total - margin) / 2.0
         projected_total = projected_home_score + projected_away_score
@@ -76,6 +82,7 @@ def project_game(
 
 
 def average_total_points(rows: Iterable[dict[str, object]]) -> float:
+    """Compute average combined score from completed games."""
     totals: list[float] = []
     for row in rows:
         try:
@@ -89,6 +96,7 @@ def average_total_points(rows: Iterable[dict[str, object]]) -> float:
 
 
 def team_scoring_averages(rows: Iterable[dict[str, object]]) -> dict[str, tuple[float, float]]:
+    """Compute per-team average points scored and allowed."""
     totals_for: dict[str, float] = {}
     totals_against: dict[str, float] = {}
     counts: dict[str, int] = {}
@@ -125,6 +133,7 @@ def matchup_total_from_averages(
     away_team: str,
     averages: dict[str, tuple[float, float]],
 ) -> float | None:
+    """Estimate a matchup total using each team's scoring averages."""
     home_avg = averages.get(home_team)
     away_avg = averages.get(away_team)
     if home_avg is None or away_avg is None:
@@ -143,6 +152,7 @@ def fit_win_prob_scale(
     max_k: float = 50.0,
     grid_steps: int = 100,
 ) -> float:
+    """Fit the win-probability scale using a coarse grid + golden-section search."""
     if not samples:
         return default_k
 
