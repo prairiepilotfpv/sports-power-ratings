@@ -8,14 +8,25 @@ from math import isnan
 from typing import Any, Iterable, Mapping, Protocol
 
 
+REQUIRED_PREDICTION_METADATA_KEYS = ("model_id", "model_version", "params")
+
+
 @dataclass(frozen=True)
 class ModelMetadata:
     """Metadata describing a model's capabilities."""
-    name: str
-    version: str
+    model_id: str
+    model_version: str
+    params: Mapping[str, Any]
     supports_margin: bool
     supports_total: bool
     supports_win_prob: bool
+
+    def identity_dict(self) -> dict[str, Any]:
+        return {
+            "model_id": self.model_id,
+            "model_version": self.model_version,
+            "params": dict(self.params),
+        }
 
 
 @dataclass
@@ -28,12 +39,20 @@ class GamePrediction:
     p_home_win: float
     pred_margin: float | None = None
     pred_total: float | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.p_home_win = validate_probability(self.p_home_win, field_name="p_home_win")
         self.pred_margin = normalize_optional_float(self.pred_margin)
         self.pred_total = normalize_optional_float(self.pred_total)
+        if not isinstance(self.metadata, dict):
+            raise ValueError("metadata must be a dict.")
+        missing = [
+            key for key in REQUIRED_PREDICTION_METADATA_KEYS if key not in self.metadata
+        ]
+        if missing:
+            raise ValueError(f"metadata missing required keys: {', '.join(missing)}")
 
 
 class BaseModel(ABC):
@@ -41,6 +60,18 @@ class BaseModel(ABC):
     @abstractmethod
     def metadata(self) -> ModelMetadata:
         raise NotImplementedError
+
+    @property
+    def model_id(self) -> str:
+        return self.metadata().model_id
+
+    @property
+    def model_version(self) -> str:
+        return self.metadata().model_version
+
+    @property
+    def params(self) -> Mapping[str, Any]:
+        return self.metadata().params
 
     @abstractmethod
     def fit(self, games_df: Any) -> None:
@@ -66,6 +97,34 @@ class PowerRatingModel(Protocol):
 
     def rankings(self) -> list[tuple[str, float]]:
         """Return sorted team ratings, high to low."""
+
+
+def resolve_model_identity(model: Any) -> dict[str, Any]:
+    """Extract required metadata fields from a model instance."""
+    if hasattr(model, "metadata") and callable(getattr(model, "metadata")):
+        meta = model.metadata()
+        if isinstance(meta, ModelMetadata):
+            return meta.identity_dict()
+        if isinstance(meta, dict):
+            return {
+                "model_id": meta.get("model_id"),
+                "model_version": meta.get("model_version"),
+                "params": meta.get("params"),
+            }
+
+    model_id = getattr(model, "model_id", None)
+    model_version = getattr(model, "model_version", None)
+    params = getattr(model, "params", None)
+    if callable(params):
+        params = params()
+
+    if model_id is None or model_version is None or params is None:
+        raise ValueError("Model is missing required identity fields.")
+    return {
+        "model_id": model_id,
+        "model_version": model_version,
+        "params": params,
+    }
 
 
 def validate_probability(value: float | None, *, field_name: str = "probability") -> float:

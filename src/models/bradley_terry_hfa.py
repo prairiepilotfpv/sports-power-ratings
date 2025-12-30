@@ -16,12 +16,18 @@ class BradleyTerryHFA(BaseModel):
         for margin and is not calibrated to points.
     """
     def __init__(self, *, max_iter: int = 500, tol: float = 1e-8) -> None:
+        self._max_iter = max_iter
+        self._tol = tol
         self._model = BradleyTerry(max_iter=max_iter, tol=tol)
 
     def metadata(self) -> ModelMetadata:
         return ModelMetadata(
-            name="bradley_terry_hfa",
-            version="1.0",
+            model_id="bradley_terry_hfa",
+            model_version="1.0",
+            params={
+                "max_iter": self._max_iter,
+                "tol": self._tol,
+            },
             supports_margin=True,
             supports_total=False,
             supports_win_prob=True,
@@ -35,6 +41,7 @@ class BradleyTerryHFA(BaseModel):
     def predict(self, upcoming_games_df: Any) -> list[GamePrediction]:
         require_columns(upcoming_games_df, ["date", "home_team", "away_team"])
         predictions: list[GamePrediction] = []
+        model_identity = self.metadata().identity_dict()
         for row in upcoming_games_df.to_dict(orient="records"):
             neutral = bool(row.get("neutral", False))
             venue = "neutral" if neutral else "home"
@@ -57,6 +64,7 @@ class BradleyTerryHFA(BaseModel):
                     away_team=str(row["away_team"]),
                     p_home_win=p_home_win,
                     pred_margin=pred_margin,
+                    metadata=dict(model_identity),
                 )
             )
         return predictions

@@ -34,6 +34,9 @@ class TOORPowerRating:
     """Power rating wrapper that reuses Bradley-Terry logistic strengths."""
 
     def __init__(self, *, max_iter: int = 500, tol: float = 1e-8) -> None:
+        self.model_id = "toor"
+        self.model_version = "1.0"
+        self.params = {"max_iter": max_iter, "tol": tol}
         self._model = BradleyTerry(max_iter=max_iter, tol=tol)
 
     def fit(self, games: Iterable[Mapping[str, Any]]) -> None:
@@ -47,14 +50,20 @@ class TOORModel(BaseModel):
     """TOOR backtest model that applies OLS to Bradley-Terry logistic strengths."""
 
     def __init__(self, *, max_iter: int = 500, tol: float = 1e-8) -> None:
+        self._max_iter = max_iter
+        self._tol = tol
         self._bt_model = BradleyTerry(max_iter=max_iter, tol=tol)
         self._coefficients = DEFAULT_COEFFICIENTS
         self._win_prob_k = DEFAULT_WIN_PROB_K
 
     def metadata(self) -> ModelMetadata:
         return ModelMetadata(
-            name="toor",
-            version="1.0",
+            model_id="toor",
+            model_version="1.0",
+            params={
+                "max_iter": self._max_iter,
+                "tol": self._tol,
+            },
             supports_margin=True,
             supports_total=False,
             supports_win_prob=True,
@@ -121,6 +130,7 @@ class TOORModel(BaseModel):
         predictions: list[GamePrediction] = []
         coefficients = self._coefficients
         win_prob_k = self._win_prob_k if self._win_prob_k > 0 else DEFAULT_WIN_PROB_K
+        model_identity = self.metadata().identity_dict()
 
         for row in upcoming_games_df.to_dict(orient="records"):
             home = str(row.get("home_team", "")).strip()
@@ -154,6 +164,7 @@ class TOORModel(BaseModel):
                     away_team=away,
                     p_home_win=p_home_win,
                     pred_margin=pred_margin,
+                    metadata=dict(model_identity),
                     extra={
                         "home_advantage": coefficients.home_advantage,
                         "home_coeff": coefficients.home_coeff,
@@ -164,4 +175,3 @@ class TOORModel(BaseModel):
                 )
             )
         return predictions
-

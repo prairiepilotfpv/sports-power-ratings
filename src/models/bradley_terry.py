@@ -10,6 +10,9 @@ from typing import Any, DefaultDict, Iterable, Mapping
 class BradleyTerry:
     """Iterative Bradley-Terry solver with optional home advantage term."""
     def __init__(self, *, max_iter: int = 500, tol: float = 1e-8) -> None:
+        self.model_id = "bradley-terry"
+        self.model_version = "1.0"
+        self.params = {"max_iter": max_iter, "tol": tol}
         self.max_iter = max_iter
         self.tol = tol
         self.ratings: DefaultDict[str, float] = defaultdict(lambda: 1.0)
