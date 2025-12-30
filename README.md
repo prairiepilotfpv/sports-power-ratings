@@ -1,72 +1,227 @@
 # Sports Power Ratings
 
-Lightweight pipeline for turning Sports-Reference schedules/results into SQLite data and Bradley-Terry power ratings (projections, matchup sims, Excel reports).
+A lightweight, local-first pipeline for turning Sports-Reference schedules/results into:
+
+- SQLite game databases (one DB per sport + season)
+- Bradley-Terry power ratings and calibration metrics
+- Matchup projections (spread, total, win probability)
+- Schedule exports with projections
+- Excel reports for daily review
+
+The project is intentionally minimal: everything runs locally with CSV/HTML inputs and a
+single command-line interface.
+
+## What this project does
+
+1. **Ingest** Sports-Reference schedules/results (HTML, CSV, or pasted CSV text)
+2. **Normalize + validate** the dataset into a consistent schema
+3. **Store** games in a SQLite database keyed by `(game_id, sport, season)`
+4. **Run rankings** using the Bradley-Terry model
+5. **Generate projections** for matchups and schedules
+6. **Export** results to CSV or Excel
+
+## Repository layout
+
+```
+src/
+  cli/                 Command-line entry points
+  data/                SQLite schema, read/write helpers, validation
+  ingest/              Sports-Reference parsing + normalization helpers
+  models/              Bradley-Terry implementation + model interfaces
+  pipelines/           Ranking, projections, reports, matchup logic
+  utils/               Small shared utilities
+
+data/
+  raw/                 Drop raw HTML/CSV inputs here
+  processed/           Output rankings/schedules/reports
+  db/<sport>/<season>.db  SQLite database per sport+season
+```
 
 ## Setup
-- python -m venv .pyenv
-- .\.pyenv\Scripts\Activate.ps1
-- pip install -r requirements.txt
-- For OCR/image ingestion, install Tesseract and set `OPENAI_API_KEY` (optional: `OPENAI_MODEL`).
-- Tests use pytest; install it alongside runtime deps: `pip install pytest`
 
-## Usage
+### 1) Create a virtual environment
 
-### Convert Sports-Reference schedules to CSV
-- HTML/CSV/Excel: `python -m src.pipelines.ingest_game_results data/raw/nba_schedule.html --mode auto --overwrite`
-- Screenshots: `python -m src.pipelines.ingest_game_results data/raw/nba_schedule.png --mode image` (uses Tesseract + OpenAI parsing)
-- Defaults: resolves missing paths under `data/raw/`, writes to `data/processed/<input_stem>.csv`, and requires `--overwrite` if the output exists.
+```bash
+python -m venv .pyenv
+```
 
-### Import games into SQLite
-- `python -m src.cli.pipeline import --sport nba --season 2025-26 --input data/processed/nba_schedule.csv`
-- `--sport` and `--season` are required and determine which SQLite database is used. The pipeline does not infer these from the CSV.
-- Accepts HTML/CSV files or `--input-text` for pasted CSV content. If `--input` is a bare filename, it is resolved under `data/raw/` first. Override the DB with `--db` (default `data/db/<sport>/<season>.db`).
-- Rows without scores are kept so the schedule can include future games.
-- Example for another league: `python -m src.cli.pipeline import --sport nfl --season 2024 --input data/raw/nfl_2024.csv`
+Activate it:
 
-### Update a database with a new CSV drop
-- Drop the latest Sports-Reference CSV in `data/raw/` (or point directly to the file path).
-- Re-run the import for the same `--sport`/`--season` to upsert new or updated games:
-  - `python -m src.cli.pipeline import --sport nba --season 2025-26 --input data/raw/nba_2025_26.csv`
-- The import uses `INSERT OR REPLACE` keyed on `(game_id, sport, season)`, so re-importing the full CSV refreshes existing rows and adds new games.
+- **Windows (PowerShell)**: `./.pyenv/Scripts/Activate.ps1`
+- **macOS/Linux**: `source .pyenv/bin/activate`
 
-### Run rankings
-- `python -m src.cli.pipeline rank --sport nba --season 2025-26 --model bradley-terry --output data/processed/nba/2025-26/rankings.csv --overwrite`
-- `--sport` and `--season` are required and must match the database you imported into.
-- Without `--output`, rankings write to `data/processed/<sport>/<season>/rankings.csv`. Uses the same DB as import unless `--db` is set. If the target file exists and `--overwrite` is omitted, a suffixed path (e.g., `rankings-1.csv`) is used instead.
-- The rankings step also saves `home_advantage`, `win_prob_k`, and `base_total` into the database for the selected model; those metrics are reused by projections/matchups to calibrate spreads, totals, and win probabilities.
+### 2) Install dependencies
 
-### Export schedule with projections
-- `python -m src.cli.pipeline schedule --sport nba --season 2025-26 --model bradley-terry --output data/processed/nba/2025-26/schedule_with_projections.csv`
-- Outputs played games and upcoming games in one calendar. Uses the same per-sport/per-season DB unless `--db` is set; defaults to writing `data/processed/<sport>/<season>/schedule_with_projections.csv` when `--output` is omitted.
-- Data columns:
-  - Schedule core: `date`, `home_team`, `away_team`, `home_score`, `away_score`, `neutral`, `overtime`, `game_id`
-  - Status: `status` is `final` for completed games and `scheduled` otherwise; rerunning after new scores moves rows to `final` and carries the latest points.
-  - Ratings/projections: `home_rating`/`away_rating` (model-derived point-scale ratings, expected neutral-court margin vs average), `projected_winner`, `projected_spread` (betting-format home spread, negative means home favored), `projected_win_prob` (home win probability), `projected_home_score`, `projected_away_score`, `projected_total` (sum of projected home/away scores; uses the league base total when available)
-  - Model calibration: `home_advantage`, `win_prob_k`, `base_total` pulled from the rankings step
-  - Results for completed games: `result_margin`, `result_total`
-- Use `--upcoming-only` to show just future games. Notes/model columns are intentionally omitted from the output.
+```bash
+pip install -r requirements.txt
+```
 
-### Predict a matchup
-- `python -m src.cli.pipeline matchup --sport nba --season 2025-26 --matchup "Lakers vs Celtics"`
-- `python -m src.cli.pipeline matchup --sport nfl --season 2023 --home Eagles --away Cowboys`
-- Uses the per-sport/per-season database and Bradley-Terry rankings to estimate a winner, spread (betting-format home spread), total points, and win probability (when `win_prob_k` is available from the latest rankings run).
+Optional dev dependencies (tests):
 
-### Rankings output columns
-- team
-- rating (Bradley-Terry strength)
-- points (log-scaled rating mapped to point-spread units; expected neutral-court margin vs an average team)
-- games
+```bash
+pip install -r requirements-dev.txt
+```
 
-### Generate Excel worksheet output
-- `python -m src.cli.pipeline report --sport nba --season 2025-26`
-- Writes to `data/processed/<sport>/<season>/report.xlsx` by default. Use `--output` to pick a different file or directory.
-- Pass `--models` with a comma-separated list to create one sheet per model (currently only `bradley-terry` is registered).
-- The daily report spreadsheet (see `src/pipelines/report.py`) includes a "Spreads" section where `home_rating`/`away_rating` are the model-derived power ratings for each team.
+### 3) Optional OCR dependencies
 
-## Automated tests
-- Activate the venv and install deps (including pytest), then run: `python -m pytest`
-- Quick checks:
-  - Import path resolution: `python -m pytest tests/cli/test_pipeline_import.py -q`
-  - Rankings pipeline: `python -m pytest tests/pipelines/test_run_rankings.py -q`
-  - Schedule projections: `python -m pytest tests/pipelines/test_schedule.py -q`
-- Tests use local fixtures only; no network calls are required.
+If you plan to ingest screenshots/images, install Tesseract and set:
+
+- `OPENAI_API_KEY` (optional, improves parsing)
+- `OPENAI_MODEL` (optional override)
+
+## Quickstart
+
+Assume you have a Sports-Reference CSV file at `data/raw/nba_2025_26.csv`.
+
+```bash
+# 1) Import results into SQLite
+python -m src.cli.pipeline import --sport nba --season 2025-26 --input data/raw/nba_2025_26.csv
+
+# 2) Run rankings
+python -m src.cli.pipeline rank --sport nba --season 2025-26 --model bradley-terry
+
+# 3) Export schedule with projections
+python -m src.cli.pipeline schedule --sport nba --season 2025-26 --model bradley-terry
+
+# 4) Predict a single matchup
+python -m src.cli.pipeline matchup --sport nba --season 2025-26 --matchup "Lakers vs Celtics"
+
+# 5) Generate an Excel report
+python -m src.cli.pipeline report --sport nba --season 2025-26
+```
+
+## CLI reference
+
+All commands are available via `python -m src.cli.pipeline`.
+
+### `import` (ingest into SQLite)
+
+```bash
+python -m src.cli.pipeline import --sport nba --season 2025-26 --input data/raw/nba_schedule.html
+```
+
+Options:
+
+- `--sport` / `--season`: required identifiers used to select the DB
+- `--input`: HTML or CSV file path
+- `--input-text`: pasted CSV text (for quick copy/paste ingestion)
+- `--db`: custom SQLite path (defaults to `data/db/<sport>/<season>.db`)
+
+Notes:
+
+- If `--input` is a bare filename, it is first resolved under `data/raw/`.
+- Ingestion accepts **future games with no scores** so the schedule can include upcoming matchups.
+
+### `rank` (run model + save rankings)
+
+```bash
+python -m src.cli.pipeline rank --sport nba --season 2025-26 --model bradley-terry
+```
+
+Options:
+
+- `--output`: output CSV path (defaults to `data/processed/<sport>/<season>/rankings.csv`)
+- `--overwrite`: overwrite the output if it already exists
+- `--db`: custom SQLite path
+
+This step also stores calibration metrics (`home_advantage`, `win_prob_k`, `base_total`) in the
+SQLite database for downstream projection steps.
+
+### `schedule` (export schedule with projections)
+
+```bash
+python -m src.cli.pipeline schedule --sport nba --season 2025-26 --model bradley-terry
+```
+
+Options:
+
+- `--output`: output CSV path (defaults to `data/processed/<sport>/<season>/schedule_with_projections.csv`)
+- `--upcoming-only`: include only games without scores
+
+Output includes:
+
+- Base schedule: `date`, `home_team`, `away_team`, `home_score`, `away_score`, `neutral`, `overtime`, `game_id`
+- Status: `status` (`final` or `scheduled`)
+- Ratings/projections: `home_rating`, `away_rating`, `projected_winner`, `projected_spread`,
+  `projected_win_prob`, `projected_home_score`, `projected_away_score`, `projected_total`
+- Calibration: `home_advantage` (team-specific residual or fallback)
+- Results for completed games: `result_margin`, `result_total`
+
+### `matchup` (predict a single matchup)
+
+```bash
+python -m src.cli.pipeline matchup --sport nba --season 2025-26 --matchup "Lakers vs Celtics"
+# or
+python -m src.cli.pipeline matchup --sport nba --season 2025-26 --home Lakers --away Celtics
+```
+
+Output includes a projected winner, spread, total points, and win probability when calibrated.
+
+### `report` (Excel output)
+
+```bash
+python -m src.cli.pipeline report --sport nba --season 2025-26
+```
+
+Options:
+
+- `--models`: comma-separated list of models (default: `bradley-terry`)
+- `--output`: output Excel path (defaults to `data/processed/<sport>/<season>/report.xlsx`)
+
+## Input formats
+
+The ingest layer is designed for Sports-Reference exports. It supports:
+
+- **HTML tables** from the schedule/results pages
+- **CSV exports** from Sports-Reference
+- **Pasted CSV text** via `--input-text`
+
+Important columns recognized:
+
+- `Date` / `Game Date`
+- `Visitor/Neutral` / `Away`
+- `Home/Neutral` / `Home`
+- `PTS` or `PTS_away` / `PTS_home`
+- `OT` / `Overtime`
+- `Box Score`
+
+If the CSV contains an unlabeled start-time column, the parser will realign columns automatically.
+
+## Output files
+
+- **SQLite DB**: `data/db/<sport>/<season>.db`
+  - `games` table
+  - `model_metrics` table
+- **Rankings CSV**: `data/processed/<sport>/<season>/rankings.csv`
+- **Schedule CSV**: `data/processed/<sport>/<season>/schedule_with_projections.csv`
+- **Excel report**: `data/processed/<sport>/<season>/report.xlsx`
+
+## Configuration
+
+Edit `src/config.py` to adjust defaults such as:
+
+- `DEFAULT_WIN_PROB_K`: logistic scale for converting spreads to win probabilities
+
+## Tests
+
+```bash
+python -m pytest
+```
+
+Focused checks:
+
+```bash
+python -m pytest tests/cli/test_pipeline_import.py -q
+python -m pytest tests/pipelines/test_run_rankings.py -q
+python -m pytest tests/pipelines/test_schedule.py -q
+```
+
+## Troubleshooting
+
+- **Missing columns**: the ingest parser expects date + home/away columns. Check CSV headers.
+- **Unknown teams in matchup**: run `rank` after new imports to update ratings.
+- **No completed games**: rankings/projections require at least one finished game.
+
+## License
+
+This project is provided as-is for internal analytics workflows.

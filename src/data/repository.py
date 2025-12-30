@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""SQLite persistence layer for games and model calibration metrics."""
+
 import sqlite3
 from datetime import date
 from pathlib import Path
@@ -9,6 +11,7 @@ from config import DEFAULT_WIN_PROB_K
 from ingest.schema import GameResult
 
 
+# Schema is small and append-only; migrations are handled via helper checks.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS games (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,6 +45,7 @@ CREATE TABLE IF NOT EXISTS model_metrics (
 
 
 def init_db(db_path: str | Path) -> None:
+    """Create the SQLite database (and tables) if they do not already exist."""
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:
@@ -51,6 +55,7 @@ def init_db(db_path: str | Path) -> None:
 
 
 def _ensure_model_metrics_columns(conn: sqlite3.Connection) -> None:
+    """Backfill columns for older databases that predate new metrics."""
     existing = {row[1] for row in conn.execute("PRAGMA table_info(model_metrics)").fetchall()}
     if "win_prob_k" not in existing:
         conn.execute(
@@ -61,6 +66,7 @@ def _ensure_model_metrics_columns(conn: sqlite3.Connection) -> None:
 
 
 def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
+    """Upsert game rows into the SQLite database and return change count."""
     init_db(db_path)
     rows = [
         (
@@ -107,6 +113,7 @@ def load_games(
     sport: str | None = None,
     season: str | None = None,
 ) -> List[GameResult]:
+    """Load games from SQLite, filtered by optional sport/season."""
     filters = []
     params: list[str] = []
 
@@ -160,6 +167,7 @@ def load_games(
 
 
 def list_sports(db_path: str | Path) -> List[str]:
+    """Return distinct sports stored in the games table."""
     with sqlite3.connect(Path(db_path)) as conn:
         rows = conn.execute(
             "SELECT DISTINCT sport FROM games WHERE sport IS NOT NULL ORDER BY sport"
@@ -168,6 +176,7 @@ def list_sports(db_path: str | Path) -> List[str]:
 
 
 def list_seasons(db_path: str | Path, sport: str) -> List[str]:
+    """Return distinct seasons for a given sport."""
     with sqlite3.connect(Path(db_path)) as conn:
         rows = conn.execute(
             """
@@ -192,6 +201,7 @@ def save_model_metrics(
     win_prob_k: float,
     base_total: float,
 ) -> None:
+    """Persist calibration metrics produced by the ranking step."""
     init_db(db_path)
     with sqlite3.connect(Path(db_path)) as conn:
         conn.execute(
@@ -219,6 +229,7 @@ def load_model_metrics(
     season: str,
     model: str,
 ) -> dict[str, float] | None:
+    """Load calibration metrics for a sport/season/model combination."""
     init_db(db_path)
     with sqlite3.connect(Path(db_path)) as conn:
         row = conn.execute(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Parsers for Sports-Reference schedule/results exports."""
+
 import csv
 import re
 from io import StringIO
@@ -12,12 +14,14 @@ from ingest.schema import GameResult
 
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Trim and lowercase column headers for more forgiving matching."""
     df = df.copy()
     df.columns = [c.strip().lower() for c in df.columns]
     return df
 
 
 def _rename_duplicate_pts(df: pd.DataFrame) -> pd.DataFrame:
+    """Disambiguate duplicate PTS columns (Visitor/Home)."""
     cols = list(df.columns)
     pts_indices = [i for i, c in enumerate(cols) if c == "pts"]
     if len(pts_indices) >= 2:
@@ -29,6 +33,7 @@ def _rename_duplicate_pts(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _find_column(df: pd.DataFrame, *names: str) -> str | None:
+    """Return the first matching column name from a list of aliases."""
     for name in names:
         if name in df.columns:
             return name
@@ -36,6 +41,7 @@ def _find_column(df: pd.DataFrame, *names: str) -> str | None:
 
 
 def _as_int(value) -> int | None:
+    """Convert numeric-like fields to integers, returning None on failure."""
     if pd.isna(value):
         return None
     try:
@@ -48,6 +54,7 @@ def _as_int(value) -> int | None:
 
 
 def _resolve_pts_columns(df: pd.DataFrame) -> tuple[str | None, str | None]:
+    """Detect the away/home points columns regardless of naming conventions."""
     if "pts_away" in df.columns and "pts_home" in df.columns:
         return "pts_away", "pts_home"
     pts_cols = [c for c in df.columns if c == "pts" or c.startswith("pts.")]
@@ -73,6 +80,7 @@ def _parse_sr_dataframe(
     sport: str | None = None,
     season: str | None = None,
 ) -> List[GameResult]:
+    """Convert a Sports-Reference dataframe into structured GameResult rows."""
     df = _normalize_columns(df)
     df = _rename_duplicate_pts(df)
 
@@ -98,6 +106,7 @@ def _parse_sr_dataframe(
 
     games: List[GameResult] = []
     for _, row in df.iterrows():
+        # Validate required fields and parse any available scoring data.
         raw_date = row.get(date_col)
         if pd.isna(raw_date) or pd.isna(row.get(away_col)) or pd.isna(row.get(home_col)):
             continue
@@ -181,12 +190,14 @@ def _load_csv_lenient(text: str) -> pd.DataFrame:
 
 
 def parse_sr_csv(path: str | Path, sport: str | None = None, season: str | None = None) -> List[GameResult]:
+    """Parse a Sports-Reference CSV file from disk."""
     text = Path(path).read_text(encoding="utf-8", errors="ignore")
     df = _load_csv_lenient(text)
     return _parse_sr_dataframe(df, sport=sport, season=season)
 
 
 def parse_sr_html(path: str | Path, sport: str | None = None, season: str | None = None) -> List[GameResult]:
+    """Parse a Sports-Reference HTML schedule/results table."""
     html = Path(path).read_text(encoding="utf-8", errors="ignore")
     tables = pd.read_html(StringIO(html), flavor="bs4")
     last_error: ValueError | None = None
@@ -202,5 +213,6 @@ def parse_sr_html(path: str | Path, sport: str | None = None, season: str | None
 
 
 def parse_sr_csv_text(text: str, sport: str | None = None, season: str | None = None) -> List[GameResult]:
+    """Parse pasted Sports-Reference CSV text."""
     df = _load_csv_lenient(text)
     return _parse_sr_dataframe(df, sport=sport, season=season)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Command-line pipeline for ingesting, ranking, and projecting sports results."""
+
 import argparse
 from pathlib import Path
 
@@ -27,6 +29,7 @@ from pipelines.schedule import build_schedule_with_projections
 
 
 def _parse_args() -> argparse.Namespace:
+    """Build the CLI argument parser with subcommands for each pipeline step."""
     parser = argparse.ArgumentParser(description="Sports power ratings pipeline.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -157,6 +160,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _import_games(args: argparse.Namespace) -> None:
+    """Load games from Sports-Reference sources, validate, and persist to SQLite."""
     if args.source != "sports-reference":
         raise ValueError(f"Unsupported source: {args.source}")
 
@@ -166,10 +170,12 @@ def _import_games(args: argparse.Namespace) -> None:
         raise ValueError("Provide only one of --input or --input-text.")
 
     if args.input_text:
+        # CSV pasted into the terminal / wrapper script.
         games = parse_sr_csv_text(args.input_text, sport=args.sport, season=args.season)
     else:
         in_path = Path(args.input)
         if not in_path.exists():
+            # Common convenience: try data/raw/<filename> when a bare name is provided.
             candidate = Path("data/raw") / args.input
             if candidate.exists():
                 in_path = candidate
@@ -188,6 +194,7 @@ def _import_games(args: argparse.Namespace) -> None:
 
 
 def _run_rankings(args: argparse.Namespace) -> None:
+    """Generate rankings for a sport/season and persist the CSV."""
     output_path = Path(args.output) if args.output else None
     if output_path is not None and output_path.exists() and not args.overwrite:
         output_path = _next_available_path(output_path)
@@ -205,6 +212,7 @@ def _run_rankings(args: argparse.Namespace) -> None:
 
 
 def _next_available_path(output_path: Path) -> Path:
+    """Return the first unused filename by appending a numeric suffix."""
     if not output_path.exists():
         return output_path
     stem = output_path.stem
@@ -220,6 +228,7 @@ def _next_available_path(output_path: Path) -> Path:
 
 
 def _parse_matchup_text(text: str) -> tuple[str, str]:
+    """Normalize a human-friendly matchup string into home/away names."""
     cleaned = text.replace("VS", "vs").replace("Vs", "vs").replace("v.", "vs").replace(" v ", " vs ")
     if "vs" not in cleaned:
         raise ValueError("Matchup must include 'vs' between team names.")
@@ -230,6 +239,7 @@ def _parse_matchup_text(text: str) -> tuple[str, str]:
 
 
 def _run_matchup(args: argparse.Namespace) -> None:
+    """Predict a single matchup using stored rankings data."""
     home = args.home
     away = args.away
     if args.matchup:
@@ -254,6 +264,7 @@ def _run_matchup(args: argparse.Namespace) -> None:
 
 
 def _run_schedule(args: argparse.Namespace) -> None:
+    """Export the schedule with projections for played and upcoming games."""
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
     output_path = Path(args.output) if args.output else None
     result_path = build_schedule_with_projections(
@@ -268,6 +279,7 @@ def _run_schedule(args: argparse.Namespace) -> None:
 
 
 def _run_report(args: argparse.Namespace) -> None:
+    """Build an Excel report with one sheet per model."""
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
     output_path = Path(args.output) if args.output else None
     models = None
@@ -284,6 +296,7 @@ def _run_report(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    """CLI entry point: route subcommands to their handlers."""
     args = _parse_args()
     if args.command == "import":
         _import_games(args)
