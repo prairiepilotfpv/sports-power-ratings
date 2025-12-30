@@ -30,8 +30,8 @@ def main() -> None:
     parser.add_argument("--season", required=True, help="Season identifier (e.g., 2023-24)")
     parser.add_argument(
         "--model",
-        default="bradley-terry",
-        help="Ranking model to run (default: bradley-terry)",
+        default=None,
+        help="Ranking model to run (default: run all available models)",
     )
     parser.add_argument(
         "-o",
@@ -62,7 +62,11 @@ def main() -> None:
         model=args.model,
         output_path=output_path,
     )
-    print(f"Saved rankings -> {result_path}")
+    if isinstance(result_path, list):
+        for path in result_path:
+            print(f"Saved rankings -> {path}")
+    else:
+        print(f"Saved rankings -> {result_path}")
 
 
 if __name__ == "__main__":

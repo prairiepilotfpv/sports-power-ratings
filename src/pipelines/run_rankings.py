@@ -19,7 +19,7 @@ ensure_src_on_path()
 import pandas as pd
 
 from data.repository import load_games, save_model_metrics
-from models.registry import get_model
+from models.registry import get_model, get_model_abbreviation, list_models
 from pipelines.common import normalize_games
 from config import DEFAULT_WIN_PROB_K
 from pipelines.projections import average_total_points, fit_win_prob_scale
@@ -128,35 +128,71 @@ def _center_ratings(ratings: Dict[str, float]) -> Dict[str, float]:
     return {team: value - mean_rating for team, value in ratings.items()}
 
 
+def _resolve_models(model: str | None) -> list[str]:
+    if model is None:
+        return list_models()
+    return [model]
+
+
+def _resolve_output_path(
+    output_path: str | Path | None,
+    *,
+    sport: str,
+    season: str,
+    default_name: str,
+    model: str,
+    add_prefix: bool,
+) -> Path:
+    if output_path is None:
+        resolved = Path("data/processed") / sport / season / default_name
+    else:
+        resolved = Path(output_path)
+        if resolved.is_dir() or resolved.suffix == "":
+            resolved = resolved / default_name
+    if add_prefix:
+        abbrev = get_model_abbreviation(model)
+        resolved = resolved.with_name(f"{abbrev}_{resolved.name}")
+    return resolved
+
+
 def run_rankings(
     db_path: str | Path,
     *,
     sport: str,
     season: str,
-    model: str = "bradley-terry",
+    model: str | None = None,
     output_path: str | Path | None = None,
-) -> Path:
+) -> Path | list[Path]:
     """Load games from SQLite, generate rankings, and write them to CSV."""
     rows = load_games(db_path, sport=sport, season=season)
     df = normalize_games(rows)
     if df.empty:
         raise ValueError(f"No games found for sport={sport!r}, season={season!r}")
-    try:
-        rankings = build_rankings(df, model=model)
-    except ValueError as exc:
-        if "No completed games" in str(exc):
-            raise ValueError(f"No completed games found for sport={sport!r}, season={season!r}") from exc
-        raise
-    if output_path is None:
-        output_path = Path("data/processed") / sport / season / "rankings.csv"
-    else:
-        output_path = Path(output_path)
-        if output_path.is_dir() or output_path.suffix == "":
-            output_path = output_path / "rankings.csv"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    rankings.to_csv(output_path, index=False)
-    _store_model_metrics(db_path, df, rankings, sport=sport, season=season, model=model)
-    return output_path
+    models = _resolve_models(model)
+    multiple = len(models) > 1
+    results: list[Path] = []
+    for model_name in models:
+        try:
+            rankings = build_rankings(df, model=model_name)
+        except ValueError as exc:
+            if "No completed games" in str(exc):
+                raise ValueError(
+                    f"No completed games found for sport={sport!r}, season={season!r}"
+                ) from exc
+            raise
+        resolved_output = _resolve_output_path(
+            output_path,
+            sport=sport,
+            season=season,
+            default_name="rankings.csv",
+            model=model_name,
+            add_prefix=multiple,
+        )
+        resolved_output.parent.mkdir(parents=True, exist_ok=True)
+        rankings.to_csv(resolved_output, index=False)
+        _store_model_metrics(db_path, df, rankings, sport=sport, season=season, model=model_name)
+        results.append(resolved_output)
+    return results[0] if len(results) == 1 else results
 
 
 def _store_model_metrics(

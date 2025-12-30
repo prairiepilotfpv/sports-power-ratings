@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Type
 
 from models.base import BaseModel, PowerRatingModel
@@ -9,6 +10,10 @@ from models.bradley_terry_hfa import BradleyTerryHFA
 
 _REGISTRY: dict[str, Type[PowerRatingModel]] = {
     "bradley-terry": BradleyTerry,
+}
+
+_MODEL_ABBREVIATIONS: dict[str, str] = {
+    "bradley-terry": "bt",
 }
 
 _BACKTEST_REGISTRY: dict[str, Type[BaseModel]] = {
@@ -25,6 +30,15 @@ def get_model(name: str) -> Type[PowerRatingModel]:
 
 def list_models() -> list[str]:
     return sorted(_REGISTRY.keys())
+
+
+def get_model_abbreviation(name: str) -> str:
+    if name in _MODEL_ABBREVIATIONS:
+        return _MODEL_ABBREVIATIONS[name]
+    parts = [part for part in re.split(r"[^A-Za-z0-9]+", name) if part]
+    if not parts:
+        return name
+    return "".join(part[0] for part in parts).lower()
 
 
 def get_backtest_model(name: str) -> Type[BaseModel]:

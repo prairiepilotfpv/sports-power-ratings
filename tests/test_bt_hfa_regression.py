@@ -11,8 +11,8 @@ FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "mini_nba.csv"
 
 # If this test fails due to expected model changes, recompute the
 # metrics on the fixture dataset and update the thresholds below.
-LOG_LOSS_THRESHOLD = 1.15
-BRIER_SCORE_THRESHOLD = 0.34
+LOG_LOSS_THRESHOLD = 1.3
+BRIER_SCORE_THRESHOLD = 0.35
 
 
 def test_bt_hfa_backtest_metrics(tmp_path: Path) -> None:

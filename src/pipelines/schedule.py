@@ -27,6 +27,7 @@ from pipelines.projections import (
     project_game,
     team_scoring_averages,
 )
+from models.registry import get_model_abbreviation, list_models
 from pipelines.run_rankings import build_rankings
 
 
@@ -193,21 +194,44 @@ def _order_schedule_export(schedule_df: pd.DataFrame) -> pd.DataFrame:
     return schedule_df[SCHEDULE_EXPORT_COLUMNS]
 
 
-def build_schedule_with_projections(
-    db_path: str | Path,
+def _resolve_models(model: str | None) -> list[str]:
+    if model is None:
+        return list_models()
+    return [model]
+
+
+def _resolve_output_path(
+    output_path: str | Path | None,
     *,
     sport: str,
     season: str,
-    model: str = "bradley-terry",
-    output_path: str | Path | None = None,
-    upcoming_only: bool = False,
+    default_name: str,
+    model: str,
+    add_prefix: bool,
 ) -> Path:
-    """Build a schedule export containing projections for upcoming games."""
-    rows = load_games(db_path, sport=sport, season=season)
-    df = normalize_games(rows)
-    if df.empty:
-        raise ValueError(f"No games found for sport={sport!r}, season={season!r}")
+    if output_path is None:
+        resolved = Path("data/processed") / sport / season / default_name
+    else:
+        resolved = Path(output_path)
+        if resolved.is_dir() or resolved.suffix == "":
+            resolved = resolved / default_name
+    if add_prefix:
+        abbrev = get_model_abbreviation(model)
+        resolved = resolved.with_name(f"{abbrev}_{resolved.name}")
+    return resolved
 
+
+def _build_schedule_for_model(
+    df: pd.DataFrame,
+    *,
+    db_path: str | Path,
+    sport: str,
+    season: str,
+    model: str,
+    output_path: str | Path | None,
+    upcoming_only: bool,
+    add_prefix: bool,
+) -> Path:
     played = _completed_games(df)
     upcoming = _upcoming_games(df)
 
@@ -258,14 +282,49 @@ def build_schedule_with_projections(
             ["_dt", "game_id", "away_team", "home_team"]
         ).drop(columns=["_dt"], errors="ignore")
 
-    if output_path is None:
-        output_path = Path("data/processed") / sport / season / "schedule_with_projections.csv"
-    else:
-        output_path = Path(output_path)
-        if output_path.is_dir() or output_path.suffix == "":
-            output_path = output_path / "schedule_with_projections.csv"
+    resolved_output = _resolve_output_path(
+        output_path,
+        sport=sport,
+        season=season,
+        default_name="schedule_with_projections.csv",
+        model=model,
+        add_prefix=add_prefix,
+    )
 
     schedule_df = _order_schedule_export(schedule_df)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    schedule_df.to_csv(output_path, index=False)
-    return output_path
+    resolved_output.parent.mkdir(parents=True, exist_ok=True)
+    schedule_df.to_csv(resolved_output, index=False)
+    return resolved_output
+
+
+def build_schedule_with_projections(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str | None = None,
+    output_path: str | Path | None = None,
+    upcoming_only: bool = False,
+) -> Path | list[Path]:
+    """Build a schedule export containing projections for upcoming games."""
+    rows = load_games(db_path, sport=sport, season=season)
+    df = normalize_games(rows)
+    if df.empty:
+        raise ValueError(f"No games found for sport={sport!r}, season={season!r}")
+
+    models = _resolve_models(model)
+    multiple = len(models) > 1
+    results = [
+        _build_schedule_for_model(
+            df,
+            db_path=db_path,
+            sport=sport,
+            season=season,
+            model=model_name,
+            output_path=output_path,
+            upcoming_only=upcoming_only,
+            add_prefix=multiple,
+        )
+        for model_name in models
+    ]
+    return results[0] if len(results) == 1 else results
