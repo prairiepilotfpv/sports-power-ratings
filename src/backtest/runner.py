@@ -64,6 +64,7 @@ def run_backtest(
     evaluation_dates = sorted(evaluation["date"].unique())
 
     prediction_frames: list[pd.DataFrame] = []
+    model_identity: dict[str, str] | None = None
     for current_date in evaluation_dates:
         train_data = games[games["date"] < current_date]
         if window == "rolling":
@@ -77,6 +78,8 @@ def run_backtest(
             continue
 
         model = model_factory()
+        if model_identity is None:
+            model_identity = resolve_model_identity(model)
         model.fit(train_data)
 
         day_games = evaluation[evaluation["date"] == current_date]
@@ -104,24 +107,43 @@ def run_backtest(
     metrics_by_date = _aggregate_metrics_by_date(predictions_df)
     metrics_overall = _aggregate_overall_metrics(predictions_df)
     calibration = _calibration_table(predictions_df)
+    model_id = model_identity.get("model_id") if model_identity else None
+    for frame in (metrics_by_date, metrics_overall, calibration):
+        frame["model_id"] = model_id
 
     resolved_model_name = model_name or "model"
     target_dir = Path(output_dir) if output_dir else Path("outputs/backtests") / resolved_model_name
     target_dir.mkdir(parents=True, exist_ok=True)
 
     run_id = _build_run_id(start_dt, end_dt, window, rolling_days, rolling_games)
-    if not predictions_df.empty:
-        predictions_df.to_csv(target_dir / f"predictions_{run_id}.csv", index=False)
-    metrics_by_date.to_csv(target_dir / f"metrics_by_date_{run_id}.csv", index=False)
-    metrics_overall.to_csv(target_dir / f"metrics_overall_{run_id}.csv", index=False)
-    calibration.to_csv(target_dir / f"calibration_{run_id}.csv", index=False)
-
-    return BacktestOutputs(
+    outputs = BacktestOutputs(
         predictions=predictions_df,
         metrics_by_date=metrics_by_date,
         metrics_overall=metrics_overall,
         calibration=calibration,
         output_dir=target_dir,
+    )
+    export_backtest_outputs(outputs, run_id=run_id)
+    return outputs
+
+
+def export_backtest_outputs(outputs: BacktestOutputs, *, run_id: str) -> None:
+    if not outputs.predictions.empty:
+        outputs.predictions.to_csv(
+            outputs.output_dir / f"predictions_{run_id}.csv",
+            index=False,
+        )
+    outputs.metrics_by_date.to_csv(
+        outputs.output_dir / f"metrics_by_date_{run_id}.csv",
+        index=False,
+    )
+    outputs.metrics_overall.to_csv(
+        outputs.output_dir / f"metrics_overall_{run_id}.csv",
+        index=False,
+    )
+    outputs.calibration.to_csv(
+        outputs.output_dir / f"calibration_{run_id}.csv",
+        index=False,
     )
 
 
@@ -156,6 +178,7 @@ def _predictions_to_frame(predictions: Iterable[GamePrediction]) -> pd.DataFrame
             "p_home_win": pred.p_home_win,
             "pred_margin": pred.pred_margin,
             "pred_total": pred.pred_total,
+            "model_id": pred.metadata.get("model_id"),
         }
         if pred.extra:
             row["extra"] = pred.extra
