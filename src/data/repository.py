@@ -3,6 +3,7 @@ from __future__ import annotations
 """SQLite persistence layer for games and model calibration metrics."""
 
 import sqlite3
+from contextlib import closing
 from datetime import date
 from pathlib import Path
 from typing import Any, Iterable, List
@@ -48,7 +49,7 @@ def init_db(db_path: str | Path) -> None:
     """Create the SQLite database (and tables) if they do not already exist."""
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn:
         conn.executescript(SCHEMA)
         _ensure_model_metrics_columns(conn)
         conn.commit()
@@ -85,7 +86,7 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
         for g in games
     ]
 
-    with sqlite3.connect(Path(db_path)) as conn:
+    with closing(sqlite3.connect(Path(db_path))) as conn:
         conn.executemany(
             """
             INSERT OR REPLACE INTO games (
@@ -145,7 +146,7 @@ def load_games(
         ORDER BY date, away_team, home_team
     """
 
-    with sqlite3.connect(Path(db_path)) as conn:
+    with closing(sqlite3.connect(Path(db_path))) as conn:
         rows = conn.execute(query, params).fetchall()
 
     return [
@@ -168,7 +169,7 @@ def load_games(
 
 def list_sports(db_path: str | Path) -> List[str]:
     """Return distinct sports stored in the games table."""
-    with sqlite3.connect(Path(db_path)) as conn:
+    with closing(sqlite3.connect(Path(db_path))) as conn:
         rows = conn.execute(
             "SELECT DISTINCT sport FROM games WHERE sport IS NOT NULL ORDER BY sport"
         ).fetchall()
@@ -177,7 +178,7 @@ def list_sports(db_path: str | Path) -> List[str]:
 
 def list_seasons(db_path: str | Path, sport: str) -> List[str]:
     """Return distinct seasons for a given sport."""
-    with sqlite3.connect(Path(db_path)) as conn:
+    with closing(sqlite3.connect(Path(db_path))) as conn:
         rows = conn.execute(
             """
             SELECT DISTINCT season
@@ -203,7 +204,7 @@ def save_model_metrics(
 ) -> None:
     """Persist calibration metrics produced by the ranking step."""
     init_db(db_path)
-    with sqlite3.connect(Path(db_path)) as conn:
+    with closing(sqlite3.connect(Path(db_path))) as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO model_metrics (
@@ -231,7 +232,7 @@ def load_model_metrics(
 ) -> dict[str, float] | None:
     """Load calibration metrics for a sport/season/model combination."""
     init_db(db_path)
-    with sqlite3.connect(Path(db_path)) as conn:
+    with closing(sqlite3.connect(Path(db_path))) as conn:
         row = conn.execute(
             """
             SELECT home_advantage, model_error, win_prob_k, base_total

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Schedule export pipeline with projection fields."""
 
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -57,6 +58,17 @@ SCHEDULE_EXPORT_COLUMNS: List[str] = [
     "projected_home_score",
     "projected_away_score",
     "projected_total",
+]
+
+DASHBOARD_COLUMNS: List[str] = [
+    "model",
+    "date",
+    "game",
+    "projected_home_score",
+    "projected_away_score",
+    "projected_total",
+    "projected_winner",
+    "projected_spread",
 ]
 
 
@@ -305,6 +317,43 @@ def _build_schedule_dataframe(
     return schedule_df
 
 
+def _format_game_name(away_team: Any, home_team: Any) -> str:
+    """Render a simple matchup label."""
+    away = str(away_team or "").strip()
+    home = str(home_team or "").strip()
+    if away and home:
+        return f"{away} @ {home}"
+    return away or home
+
+
+def _dashboard_rows_for_today(schedule_df: pd.DataFrame, model_name: str, as_of_date: date | None = None) -> list[Dict[str, Any]]:
+    """Collect scheduled games for the current day for the dashboard sheet."""
+    if schedule_df.empty:
+        return []
+
+    today = as_of_date or pd.Timestamp.today().date()
+    df = schedule_df.assign(_date=pd.to_datetime(schedule_df["date"], errors="coerce").dt.date)
+    df = df[(df["status"] == "scheduled") & (df["_date"] == today)]
+    if df.empty:
+        return []
+
+    rows: list[Dict[str, Any]] = []
+    for _, row in df.iterrows():
+        rows.append(
+            {
+                "model": model_name,
+                "date": row.get("date"),
+                "game": _format_game_name(row.get("away_team"), row.get("home_team")),
+                "projected_home_score": row.get("projected_home_score"),
+                "projected_away_score": row.get("projected_away_score"),
+                "projected_total": row.get("projected_total"),
+                "projected_winner": row.get("projected_winner"),
+                "projected_spread": row.get("projected_spread"),
+            }
+        )
+    return rows
+
+
 def _build_schedule_for_model(
     df: pd.DataFrame,
     *,
@@ -392,6 +441,7 @@ def build_schedule_excel_report(
         season=season,
         default_name="schedule_with_projections.xlsx",
     )
+    dashboard_rows: list[Dict[str, Any]] = []
     with pd.ExcelWriter(report_path) as writer:
         for model_name in models:
             schedule_df = _build_schedule_dataframe(
@@ -403,4 +453,8 @@ def build_schedule_excel_report(
                 upcoming_only=upcoming_only,
             )
             schedule_df.to_excel(writer, sheet_name=model_name, index=False)
+            dashboard_rows.extend(_dashboard_rows_for_today(schedule_df, model_name))
+
+        dashboard_df = pd.DataFrame(dashboard_rows, columns=DASHBOARD_COLUMNS)
+        dashboard_df.to_excel(writer, sheet_name="dashboard", index=False)
     return report_path
