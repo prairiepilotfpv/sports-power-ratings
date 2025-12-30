@@ -42,6 +42,7 @@ def test_run_rankings_smoke(tmp_path: Path) -> None:
         db_path,
         sport="nba",
         season="2023-24",
+        model="bradley-terry",
         output_path=output_dir,
     )
 

@@ -48,6 +48,7 @@ def test_build_schedule_with_projections(tmp_path: Path) -> None:
         db_path,
         sport="nba",
         season="2024-25",
+        model="bradley-terry",
         output_path=tmp_path / "schedule.csv",
     )
 
@@ -85,6 +86,7 @@ def test_schedule_uses_latest_scores(tmp_path: Path) -> None:
         db_path,
         sport="nba",
         season="2024-25",
+        model="bradley-terry",
         output_path=output_path,
     )
     initial_df = pd.read_csv(output_path)
@@ -109,6 +111,7 @@ def test_schedule_uses_latest_scores(tmp_path: Path) -> None:
         db_path,
         sport="nba",
         season="2024-25",
+        model="bradley-terry",
         output_path=output_path,
     )
     updated_df = pd.read_csv(output_path)
@@ -214,6 +217,7 @@ def test_schedule_upcoming_only_filters_completed(tmp_path: Path) -> None:
         db_path,
         sport="nba",
         season="2024-25",
+        model="bradley-terry",
         output_path=tmp_path / "schedule.csv",
         upcoming_only=True,
     )
@@ -253,6 +257,7 @@ def test_schedule_neutral_games_use_zero_home_advantage(tmp_path: Path) -> None:
         db_path,
         sport="nba",
         season="2024-25",
+        model="bradley-terry",
         output_path=tmp_path / "schedule.csv",
     )
 

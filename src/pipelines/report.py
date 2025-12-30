@@ -13,6 +13,7 @@ ensure_src_on_path()
 
 from data.repository import load_games
 from pipelines.common import normalize_games
+from models.registry import get_model_abbreviation, list_models
 from pipelines.run_rankings import build_rankings
 from pipelines.schedule import build_schedule_with_projections
 
@@ -56,13 +57,41 @@ def _write_section(
     return start_row + len(df) + 3
 
 
-def build_excel_report(
+def _resolve_models(model: str | None) -> list[str]:
+    if model is None:
+        return list_models()
+    return [model]
+
+
+def _resolve_output_path(
+    output_path: str | Path | None,
+    *,
+    sport: str,
+    season: str,
+    default_name: str,
+    model: str,
+    add_prefix: bool,
+) -> Path:
+    if output_path is None:
+        resolved = Path("data/processed") / sport / season / default_name
+    else:
+        resolved = Path(output_path)
+        if resolved.is_dir() or resolved.suffix == "":
+            resolved = resolved / default_name
+    if add_prefix:
+        abbrev = get_model_abbreviation(model)
+        resolved = resolved.with_name(f"{abbrev}_{resolved.name}")
+    return resolved
+
+
+def _build_single_report(
     db_path: str | Path,
     *,
     sport: str,
     season: str,
-    model: str = "bradley-terry",
-    output_path: str | Path | None = None,
+    model: str,
+    output_path: str | Path | None,
+    add_prefix: bool,
 ) -> Path:
     rows = load_games(db_path, sport=sport, season=season)
     df = normalize_games(rows)
@@ -79,12 +108,14 @@ def build_excel_report(
     schedule_df = pd.read_csv(schedule_path)
     spreads = _today_spreads(schedule_df)
 
-    if output_path is None:
-        output_path = Path("data/processed") / sport / season / "daily_report.xlsx"
-    else:
-        output_path = Path(output_path)
-        if output_path.is_dir() or output_path.suffix == "":
-            output_path = output_path / "daily_report.xlsx"
+    output_path = _resolve_output_path(
+        output_path,
+        sport=sport,
+        season=season,
+        default_name="daily_report.xlsx",
+        model=model,
+        add_prefix=add_prefix,
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
@@ -94,7 +125,7 @@ def build_excel_report(
         start_row = _write_section(
             writer,
             "Summary",
-            "Aggregated (Bradley-Terry only)",
+            f"Aggregated ({model})",
             rankings,
             start_row,
         )
@@ -107,3 +138,27 @@ def build_excel_report(
         )
 
     return output_path
+
+
+def build_excel_report(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str | None = None,
+    output_path: str | Path | None = None,
+) -> Path | list[Path]:
+    models = _resolve_models(model)
+    multiple = len(models) > 1
+    results = [
+        _build_single_report(
+            db_path,
+            sport=sport,
+            season=season,
+            model=model_name,
+            output_path=output_path,
+            add_prefix=multiple,
+        )
+        for model_name in models
+    ]
+    return results[0] if len(results) == 1 else results

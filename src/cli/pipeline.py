@@ -24,6 +24,7 @@ from ingest.normalize import normalize_games
 from ingest.sports_reference import parse_sr_csv, parse_sr_csv_text, parse_sr_html
 from pipelines.matchups import format_matchup, predict_matchup
 from pipelines.excel_report import build_excel_report
+from models.registry import list_models
 from pipelines.run_rankings import run_rankings
 from pipelines.schedule import build_schedule_with_projections
 
@@ -67,8 +68,8 @@ def _parse_args() -> argparse.Namespace:
     rank_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
     rank_parser.add_argument(
         "--model",
-        default="bradley-terry",
-        help="Ranking model to run (default: bradley-terry)",
+        default=None,
+        help="Ranking model to run (default: run all available models)",
     )
     rank_parser.add_argument(
         "--output",
@@ -99,8 +100,8 @@ def _parse_args() -> argparse.Namespace:
     matchup_parser.add_argument("--away", help="Away team name.")
     matchup_parser.add_argument(
         "--model",
-        default="bradley-terry",
-        help="Ranking model to run (default: bradley-terry)",
+        default=None,
+        help="Ranking model to run (default: run all available models)",
     )
     matchup_parser.add_argument(
         "--db",
@@ -119,8 +120,8 @@ def _parse_args() -> argparse.Namespace:
     schedule_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
     schedule_parser.add_argument(
         "--model",
-        default="bradley-terry",
-        help="Ranking model to use for projections (default: bradley-terry)",
+        default=None,
+        help="Ranking model to use for projections (default: run all available models)",
     )
     schedule_parser.add_argument(
         "--output",
@@ -145,7 +146,7 @@ def _parse_args() -> argparse.Namespace:
     report_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
     report_parser.add_argument(
         "--models",
-        help="Comma-separated list of ranking models (default: bradley-terry).",
+        help="Comma-separated list of ranking models (default: all available models).",
     )
     report_parser.add_argument(
         "--output",
@@ -208,7 +209,11 @@ def _run_rankings(args: argparse.Namespace) -> None:
         model=args.model,
         output_path=output_path,
     )
-    print(f"Saved rankings -> {result_path}")
+    if isinstance(result_path, list):
+        for path in result_path:
+            print(f"Saved rankings -> {path}")
+    else:
+        print(f"Saved rankings -> {result_path}")
 
 
 def _next_available_path(output_path: Path) -> Path:
@@ -249,18 +254,20 @@ def _run_matchup(args: argparse.Namespace) -> None:
         raise ValueError("Provide --matchup or both --home and --away.")
 
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
-    prediction = predict_matchup(
-        db_path,
-        sport=args.sport,
-        season=args.season,
-        home_team=home,
-        away_team=away,
-        model=args.model,
-    )
-    line, metrics = format_matchup(prediction)
-    print(line)
-    print(f"Spread: {metrics['spread']:.2f}")
-    print(f"Total Points: {metrics['total_points']:.2f}")
+    models = list_models() if args.model is None else [args.model]
+    for model in models:
+        prediction = predict_matchup(
+            db_path,
+            sport=args.sport,
+            season=args.season,
+            home_team=home,
+            away_team=away,
+            model=model,
+        )
+        line, metrics = format_matchup(prediction)
+        print(f"[{model}] {line}")
+        print(f"[{model}] Spread: {metrics['spread']:.2f}")
+        print(f"[{model}] Total Points: {metrics['total_points']:.2f}")
 
 
 def _run_schedule(args: argparse.Namespace) -> None:
@@ -275,7 +282,11 @@ def _run_schedule(args: argparse.Namespace) -> None:
         output_path=output_path,
         upcoming_only=args.upcoming_only,
     )
-    print(f"Saved schedule with projections -> {result_path}")
+    if isinstance(result_path, list):
+        for path in result_path:
+            print(f"Saved schedule with projections -> {path}")
+    else:
+        print(f"Saved schedule with projections -> {result_path}")
 
 
 def _run_report(args: argparse.Namespace) -> None:
@@ -292,7 +303,11 @@ def _run_report(args: argparse.Namespace) -> None:
         models=models,
         output_path=output_path,
     )
-    print(f"Saved Excel report -> {result_path}")
+    if isinstance(result_path, list):
+        for path in result_path:
+            print(f"Saved Excel report -> {path}")
+    else:
+        print(f"Saved Excel report -> {result_path}")
 
 
 def main() -> None:

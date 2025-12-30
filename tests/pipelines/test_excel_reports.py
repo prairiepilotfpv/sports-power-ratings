@@ -44,6 +44,7 @@ def test_multi_sheet_excel_report(tmp_path: Path) -> None:
         db_path,
         sport="nba",
         season="2024-25",
+        models=["bradley-terry"],
         output_path=tmp_path / "report.xlsx",
     )
 
@@ -63,6 +64,7 @@ def test_daily_excel_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
         db_path,
         sport="nba",
         season="2024-25",
+        model="bradley-terry",
         output_path=tmp_path / "daily_report.xlsx",
     )
 
