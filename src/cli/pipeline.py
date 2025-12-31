@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 from pathlib import Path
 import sys
 
 
 def _ensure_src_on_path() -> None:
     src_dir = Path(__file__).resolve().parents[2] / "src"
-    if importlib.util.find_spec("data") is None and str(src_dir) not in sys.path:
+    if str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
 
 
