@@ -75,6 +75,54 @@ def test_build_schedule_with_projections(tmp_path: Path) -> None:
     assert upcoming["projected_total"] > 0
 
 
+def test_build_schedule_with_elo_projections(tmp_path: Path) -> None:
+    db_path = tmp_path / "games.db"
+    games = [
+        GameResult(
+            date=date(2024, 1, 1),
+            home_team="Team A",
+            away_team="Team B",
+            home_score=100,
+            away_score=90,
+            sport="nba",
+            season="2024-25",
+        ),
+        GameResult(
+            date=date(2024, 1, 2),
+            home_team="Team C",
+            away_team="Team A",
+            home_score=95,
+            away_score=110,
+            sport="nba",
+            season="2024-25",
+        ),
+        GameResult(
+            date=date(2024, 1, 5),
+            home_team="Team B",
+            away_team="Team C",
+            home_score=None,
+            away_score=None,
+            sport="nba",
+            season="2024-25",
+        ),
+    ]
+    save_games(db_path, games)
+
+    output_path = build_schedule_with_projections(
+        db_path,
+        sport="nba",
+        season="2024-25",
+        model="elo",
+        output_path=tmp_path / "schedule.csv",
+    )
+
+    df = pd.read_csv(output_path)
+    upcoming = df[df["status"] == "scheduled"].iloc[0]
+    assert pd.notna(upcoming["projected_winner"])
+    assert pd.notna(upcoming["projected_spread"])
+    assert upcoming["projected_total"] > 0
+
+
 def test_schedule_uses_latest_scores(tmp_path: Path) -> None:
     db_path = tmp_path / "games.db"
     game_id = "2024-01-03|Team A|Team B"
@@ -305,7 +353,7 @@ def test_schedule_excel_report_matches_csv_outputs(tmp_path: Path) -> None:
         output_path=tmp_path / "schedule.xlsx",
     )
 
-    for model in ["bradley-terry", "toor"]:
+    for model in ["bradley-terry", "elo", "toor"]:
         csv_path = build_schedule_with_projections(
             db_path,
             sport="nba",
@@ -391,6 +439,48 @@ def test_schedule_excel_dashboard_includes_today_games(tmp_path: Path) -> None:
     assert total_value == pytest.approx(home_score + away_score)
 
 
+def test_schedule_excel_report_includes_elo_dashboard_rows(tmp_path: Path) -> None:
+    db_path = tmp_path / "games.db"
+    today = date.today()
+    games = [
+        GameResult(
+            date=today - timedelta(days=1),
+            home_team="Team A",
+            away_team="Team B",
+            home_score=100,
+            away_score=90,
+            sport="nba",
+            season="2024-25",
+        ),
+        GameResult(
+            date=today,
+            home_team="Team A",
+            away_team="Team B",
+            home_score=None,
+            away_score=None,
+            sport="nba",
+            season="2024-25",
+        ),
+    ]
+    save_games(db_path, games)
+
+    workbook_path = build_schedule_excel_report(
+        db_path,
+        sport="nba",
+        season="2024-25",
+        output_path=tmp_path / "schedule.xlsx",
+    )
+
+    workbook = openpyxl.load_workbook(workbook_path)
+    assert "elo" in workbook.sheetnames
+
+    dashboard = pd.read_excel(workbook_path, sheet_name="dashboard")
+    assert "elo" in set(dashboard["model"])
+    elo_rows = dashboard[dashboard["model"] == "elo"]
+    assert elo_rows["projected_winner"].notna().all()
+    assert elo_rows["projected_spread"].notna().all()
+
+
 def test_schedule_excel_report_includes_model_metadata(tmp_path: Path) -> None:
     db_path = tmp_path / "games.db"
     games = [
@@ -423,7 +513,7 @@ def test_schedule_excel_report_includes_model_metadata(tmp_path: Path) -> None:
     )
 
     workbook = openpyxl.load_workbook(workbook_path)
-    for model in ["bradley-terry", "toor"]:
+    for model in ["bradley-terry", "elo", "toor"]:
         ws = workbook[model]
         metadata: dict[str, str] = {}
         for row in ws.iter_rows(min_row=2, max_row=10, min_col=1, max_col=2, values_only=True):
