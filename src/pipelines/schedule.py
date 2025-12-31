@@ -75,6 +75,7 @@ DASHBOARD_COLUMNS: List[str] = [
     "projected_total",
     "projected_winner",
     "projected_spread",
+    "total",
 ]
 
 MODEL_METADATA_DATA_START_ROW = 10
@@ -365,16 +366,23 @@ def _dashboard_rows_for_today(schedule_df: pd.DataFrame, model_name: str, as_of_
 
     rows: list[Dict[str, Any]] = []
     for _, row in df.iterrows():
+        projected_home_score = row.get("projected_home_score")
+        projected_away_score = row.get("projected_away_score")
+        projected_total = None
+        if projected_home_score is not None and projected_away_score is not None:
+            if not pd.isna(projected_home_score) and not pd.isna(projected_away_score):
+                projected_total = float(projected_home_score) + float(projected_away_score)
         rows.append(
             {
                 "model": model_name,
                 "date": row.get("date"),
                 "game": _format_game_name(row.get("away_team"), row.get("home_team")),
-                "projected_home_score": row.get("projected_home_score"),
-                "projected_away_score": row.get("projected_away_score"),
+                "projected_home_score": projected_home_score,
+                "projected_away_score": projected_away_score,
                 "projected_total": row.get("projected_total"),
                 "projected_winner": row.get("projected_winner"),
                 "projected_spread": row.get("projected_spread"),
+                "total": projected_total,
             }
         )
     return rows
