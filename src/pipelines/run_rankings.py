@@ -1,31 +1,17 @@
-from __future__ import annotations
-
 """Ranking pipeline for fitting power ratings and storing calibration metrics."""
+
+from __future__ import annotations
 
 import math
 from pathlib import Path
 from typing import Dict
 
-try:  # Allow execution from repository root or nested directories
-    from bootstrap import ensure_src_on_path
-except ModuleNotFoundError:  # pragma: no cover - fallback when bootstrap isn't on sys.path
-    import sys
-
-    sys.path.append(str(Path(__file__).resolve().parents[2]))
-    from bootstrap import ensure_src_on_path
-
-ensure_src_on_path()
-
 import pandas as pd
 
+from data.paths import processed_path_for
 from data.repository import load_games, save_model_metrics
-from models.registry import (
-    get_model,
-    get_model_abbreviation,
-    list_models,
-    normalize_model_name,
-)
-from pipelines.common import normalize_games
+from models.registry import get_model, list_models, normalize_model_name
+from pipelines.common import normalize_games, resolve_output_path
 from config import DEFAULT_WIN_PROB_K
 from pipelines.projections import average_total_points, fit_win_prob_scale
 
@@ -142,27 +128,6 @@ def _resolve_models(model: str | None) -> list[str]:
     return [normalize_model_name(model)]
 
 
-def _resolve_output_path(
-    output_path: str | Path | None,
-    *,
-    sport: str,
-    season: str,
-    default_name: str,
-    model: str,
-    add_prefix: bool,
-) -> Path:
-    if output_path is None:
-        resolved = Path("data/processed") / sport / season / default_name
-    else:
-        resolved = Path(output_path)
-        if resolved.is_dir() or resolved.suffix == "":
-            resolved = resolved / default_name
-    if add_prefix:
-        abbrev = get_model_abbreviation(model)
-        resolved = resolved.with_name(f"{abbrev}_{resolved.name}")
-    return resolved
-
-
 def run_rankings(
     db_path: str | Path,
     *,
@@ -189,17 +154,18 @@ def run_rankings(
                     f"No completed games found for sport={sport!r}, season={season!r}"
                 ) from exc
             raise
-        resolved_output = _resolve_output_path(
+        default_path = processed_path_for(sport, season, "rankings.csv")
+        resolved_output = resolve_output_path(
             output_path,
-            sport=sport,
-            season=season,
-            default_name="rankings.csv",
+            default_path=default_path,
             model=model_name,
             add_prefix=multiple,
         )
         resolved_output.parent.mkdir(parents=True, exist_ok=True)
         rankings.to_csv(resolved_output, index=False)
-        _store_model_metrics(db_path, model_df, rankings, sport=sport, season=season, model=model_name)
+        _store_model_metrics(
+            db_path, model_df, rankings, sport=sport, season=season, model=model_name
+        )
         results.append(resolved_output)
     return results[0] if len(results) == 1 else results
 
@@ -220,7 +186,9 @@ def _store_model_metrics(
     if played.empty:
         return
 
-    ratings = {str(row["team"]).strip(): float(row["points"]) for _, row in rankings.iterrows()}
+    ratings = {
+        str(row["team"]).strip(): float(row["points"]) for _, row in rankings.iterrows()
+    }
     neutral_mask = played.get("neutral")
     if neutral_mask is not None:
         non_neutral = played[~neutral_mask.astype(bool)]
@@ -246,7 +214,9 @@ def _store_model_metrics(
             continue
         neutral_raw = row.get("neutral", False)
         neutral = False if pd.isna(neutral_raw) else bool(neutral_raw)
-        predicted_margin = (ratings[home] - ratings[away]) + (0.0 if neutral else home_advantage)
+        predicted_margin = (ratings[home] - ratings[away]) + (
+            0.0 if neutral else home_advantage
+        )
         errors.append(predicted_margin - margin)
         if margin == 0:
             continue

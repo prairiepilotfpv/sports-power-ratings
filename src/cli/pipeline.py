@@ -1,36 +1,24 @@
-from __future__ import annotations
-
 """Command-line pipeline for ingesting, ranking, and projecting sports results."""
 
+from __future__ import annotations
+
 import argparse
+import importlib.util
 from pathlib import Path
+import sys
 
-import pandas as pd
 
-try:  # Allow execution from repository root or nested directories
-    from bootstrap import ensure_src_on_path
-except ModuleNotFoundError:  # pragma: no cover - fallback when bootstrap isn't on sys.path
-    import sys
-
-    sys.path.append(str(Path(__file__).resolve().parents[2]))
-    from bootstrap import ensure_src_on_path
-
-ensure_src_on_path()
-
-from data.validation import validate_dataset
-from data.paths import db_path_for
-from data.repository import save_games
-from ingest.normalize import normalize_games
-from ingest.sports_reference import parse_sr_csv, parse_sr_csv_text, parse_sr_html
-from pipelines.matchups import format_matchup, predict_matchup
-from pipelines.excel_report import build_excel_report
-from models.registry import list_models
-from pipelines.run_rankings import run_rankings
-from pipelines.schedule import build_schedule_excel_report, build_schedule_with_projections
+def _ensure_src_on_path() -> None:
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    if importlib.util.find_spec("data") is None and str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
 
 
 def _parse_args() -> argparse.Namespace:
     """Build the CLI argument parser with subcommands for each pipeline step."""
+    _ensure_src_on_path()
+    from data.paths import db_dir, processed_dir
+
     parser = argparse.ArgumentParser(description="Sports power ratings pipeline.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -39,8 +27,12 @@ def _parse_args() -> argparse.Namespace:
         aliases=["input"],
         help="Import game results into the per-sport/per-season database.",
     )
-    import_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
-    import_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
+    import_parser.add_argument(
+        "--sport", required=True, help="Sport identifier (e.g., nba)"
+    )
+    import_parser.add_argument(
+        "--season", required=True, help="Season identifier (e.g., 2024-25)"
+    )
     import_parser.add_argument(
         "--source",
         default="sports-reference",
@@ -56,7 +48,7 @@ def _parse_args() -> argparse.Namespace:
     )
     import_parser.add_argument(
         "--db",
-        help="Optional SQLite DB path override (default: data/db/<sport>/<season>.db)",
+        help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db)",
     )
 
     rank_parser = subparsers.add_parser(
@@ -64,8 +56,12 @@ def _parse_args() -> argparse.Namespace:
         aliases=["run_model", "run-model"],
         help="Generate rankings from the per-sport/per-season database.",
     )
-    rank_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
-    rank_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
+    rank_parser.add_argument(
+        "--sport", required=True, help="Sport identifier (e.g., nba)"
+    )
+    rank_parser.add_argument(
+        "--season", required=True, help="Season identifier (e.g., 2024-25)"
+    )
     rank_parser.add_argument(
         "--model",
         default=None,
@@ -73,11 +69,14 @@ def _parse_args() -> argparse.Namespace:
     )
     rank_parser.add_argument(
         "--output",
-        help="Optional output CSV path. Defaults to data/processed/<sport>/<season>/rankings.csv",
+        help=(
+            "Optional output CSV path. Defaults to "
+            f"{processed_dir()}/<sport>/<season>/rankings.csv"
+        ),
     )
     rank_parser.add_argument(
         "--db",
-        help="Optional SQLite DB path override (default: data/db/<sport>/<season>.db)",
+        help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db)",
     )
     rank_parser.add_argument(
         "--overwrite",
@@ -90,8 +89,12 @@ def _parse_args() -> argparse.Namespace:
         aliases=["predict", "predict_matchup"],
         help="Predict a matchup using stored rankings data.",
     )
-    matchup_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
-    matchup_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
+    matchup_parser.add_argument(
+        "--sport", required=True, help="Sport identifier (e.g., nba)"
+    )
+    matchup_parser.add_argument(
+        "--season", required=True, help="Season identifier (e.g., 2024-25)"
+    )
     matchup_parser.add_argument(
         "--matchup",
         help='Matchup string like "Eagles vs Cowboys".',
@@ -105,7 +108,7 @@ def _parse_args() -> argparse.Namespace:
     )
     matchup_parser.add_argument(
         "--db",
-        help="Optional SQLite DB path override (default: data/db/<sport>/<season>.db)",
+        help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db)",
     )
 
     schedule_parser = subparsers.add_parser(
@@ -116,8 +119,12 @@ def _parse_args() -> argparse.Namespace:
             "(includes home_rating/away_rating power ratings from build_rankings)."
         ),
     )
-    schedule_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
-    schedule_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
+    schedule_parser.add_argument(
+        "--sport", required=True, help="Sport identifier (e.g., nba)"
+    )
+    schedule_parser.add_argument(
+        "--season", required=True, help="Season identifier (e.g., 2024-25)"
+    )
     schedule_parser.add_argument(
         "--model",
         default=None,
@@ -126,7 +133,8 @@ def _parse_args() -> argparse.Namespace:
     schedule_parser.add_argument(
         "--output",
         help=(
-            "Optional output path. Defaults to data/processed/<sport>/<season>/schedule_with_projections.xlsx. "
+            "Optional output path. Defaults to "
+            f"{processed_dir()}/<sport>/<season>/schedule_with_projections.xlsx. "
             "Use a .csv extension to force CSV output."
         ),
     )
@@ -137,7 +145,7 @@ def _parse_args() -> argparse.Namespace:
     )
     schedule_parser.add_argument(
         "--db",
-        help="Optional SQLite DB path override (default: data/db/<sport>/<season>.db)",
+        help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db)",
     )
 
     report_parser = subparsers.add_parser(
@@ -145,19 +153,26 @@ def _parse_args() -> argparse.Namespace:
         aliases=["excel", "excel_report"],
         help="Generate an Excel report with rankings per model.",
     )
-    report_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
-    report_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
+    report_parser.add_argument(
+        "--sport", required=True, help="Sport identifier (e.g., nba)"
+    )
+    report_parser.add_argument(
+        "--season", required=True, help="Season identifier (e.g., 2024-25)"
+    )
     report_parser.add_argument(
         "--models",
         help="Comma-separated list of ranking models (default: all available models).",
     )
     report_parser.add_argument(
         "--output",
-        help="Optional output Excel path. Defaults to data/processed/<sport>/<season>/report.xlsx",
+        help=(
+            "Optional output Excel path. Defaults to "
+            f"{processed_dir()}/<sport>/<season>/report.xlsx"
+        ),
     )
     report_parser.add_argument(
         "--db",
-        help="Optional SQLite DB path override (default: data/db/<sport>/<season>.db)",
+        help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db)",
     )
 
     return parser.parse_args()
@@ -165,6 +180,12 @@ def _parse_args() -> argparse.Namespace:
 
 def _import_games(args: argparse.Namespace) -> None:
     """Load games from Sports-Reference sources, validate, and persist to SQLite."""
+    _ensure_src_on_path()
+    from data.paths import db_path_for
+    from data.repository import save_games
+    from ingest.registry import get_ingest_source
+    from pipelines.ingest import ingest_games, resolve_input_path
+
     if args.source != "sports-reference":
         raise ValueError(f"Unsupported source: {args.source}")
 
@@ -173,25 +194,15 @@ def _import_games(args: argparse.Namespace) -> None:
     if args.input and args.input_text:
         raise ValueError("Provide only one of --input or --input-text.")
 
-    if args.input_text:
-        # CSV pasted into the terminal / wrapper script.
-        games = parse_sr_csv_text(args.input_text, sport=args.sport, season=args.season)
-    else:
-        in_path = Path(args.input)
-        if not in_path.exists():
-            # Common convenience: try data/raw/<filename> when a bare name is provided.
-            candidate = Path("data/raw") / args.input
-            if candidate.exists():
-                in_path = candidate
-            else:
-                raise FileNotFoundError(f"Input not found: {in_path} (also tried {candidate})")
-        if in_path.suffix.lower() in {".html", ".htm"}:
-            games = parse_sr_html(in_path, sport=args.sport, season=args.season)
-        else:
-            games = parse_sr_csv(in_path, sport=args.sport, season=args.season)
-
-    games = normalize_games(games, sport=args.sport, season=args.season)
-    validate_dataset(pd.DataFrame([game.model_dump() for game in games]))
+    ingest_source = get_ingest_source(args.source)()
+    input_path = resolve_input_path(args.input) if args.input else None
+    games = ingest_games(
+        ingest_source,
+        input_path=input_path,
+        input_text=args.input_text,
+        sport=args.sport,
+        season=args.season,
+    )
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
     saved = save_games(db_path, games)
     print(f"Saved {saved} games to {db_path}")
@@ -199,10 +210,16 @@ def _import_games(args: argparse.Namespace) -> None:
 
 def _run_rankings(args: argparse.Namespace) -> None:
     """Generate rankings for a sport/season and persist the CSV."""
+    _ensure_src_on_path()
+    from data.paths import db_path_for
+    from pipelines.run_rankings import run_rankings
+
     output_path = Path(args.output) if args.output else None
     if output_path is not None and output_path.exists() and not args.overwrite:
         output_path = _next_available_path(output_path)
-        print(f"Output exists: {args.output}. Writing to {output_path}. Use --overwrite to replace.")
+        print(
+            f"Output exists: {args.output}. Writing to {output_path}. Use --overwrite to replace."
+        )
 
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
     result_path = run_rankings(
@@ -237,7 +254,12 @@ def _next_available_path(output_path: Path) -> Path:
 
 def _parse_matchup_text(text: str) -> tuple[str, str]:
     """Normalize a human-friendly matchup string into home/away names."""
-    cleaned = text.replace("VS", "vs").replace("Vs", "vs").replace("v.", "vs").replace(" v ", " vs ")
+    cleaned = (
+        text.replace("VS", "vs")
+        .replace("Vs", "vs")
+        .replace("v.", "vs")
+        .replace(" v ", " vs ")
+    )
     if "vs" not in cleaned:
         raise ValueError("Matchup must include 'vs' between team names.")
     parts = [part.strip() for part in cleaned.split("vs") if part.strip()]
@@ -248,6 +270,11 @@ def _parse_matchup_text(text: str) -> tuple[str, str]:
 
 def _run_matchup(args: argparse.Namespace) -> None:
     """Predict a single matchup using stored rankings data."""
+    _ensure_src_on_path()
+    from data.paths import db_path_for
+    from models.registry import list_models
+    from pipelines.matchups import format_matchup, predict_matchup
+
     home = args.home
     away = args.away
     if args.matchup:
@@ -275,6 +302,13 @@ def _run_matchup(args: argparse.Namespace) -> None:
 
 def _run_schedule(args: argparse.Namespace) -> None:
     """Export the schedule with projections for played and upcoming games."""
+    _ensure_src_on_path()
+    from data.paths import db_path_for
+    from pipelines.schedule import (
+        build_schedule_excel_report,
+        build_schedule_with_projections,
+    )
+
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
     output_path = Path(args.output) if args.output else None
     if output_path is not None and output_path.suffix.lower() == ".csv":
@@ -306,6 +340,10 @@ def _run_schedule(args: argparse.Namespace) -> None:
 
 def _run_report(args: argparse.Namespace) -> None:
     """Build an Excel report with one sheet per model."""
+    _ensure_src_on_path()
+    from data.paths import db_path_for
+    from pipelines.excel_report import build_excel_report
+
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
     output_path = Path(args.output) if args.output else None
     models = None

@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Parsers for Sports-Reference schedule/results exports."""
+
+from __future__ import annotations
 
 import csv
 import re
@@ -71,7 +71,9 @@ def _resolve_pts_columns(df: pd.DataFrame) -> tuple[str | None, str | None]:
         "ptsaway",
         "pts away",
     )
-    home_pts = _find_column(df, "home pts", "home_pts", "pts_home", "ptshome", "pts home")
+    home_pts = _find_column(
+        df, "home pts", "home_pts", "pts_home", "ptshome", "pts home"
+    )
     return away_pts, home_pts
 
 
@@ -85,7 +87,9 @@ def _parse_sr_dataframe(
     df = _rename_duplicate_pts(df)
 
     date_col = _find_column(df, "date", "game date")
-    away_col = _find_column(df, "visitor/neutral", "visitor", "away", "away/neutral", "road", "road team")
+    away_col = _find_column(
+        df, "visitor/neutral", "visitor", "away", "away/neutral", "road", "road team"
+    )
     home_col = _find_column(df, "home/neutral", "home", "home team")
     ot_col = _find_column(df, "ot", "overtime")
     box_col = _find_column(df, "box score", "boxscore", "box")
@@ -108,7 +112,11 @@ def _parse_sr_dataframe(
     for _, row in df.iterrows():
         # Validate required fields and parse any available scoring data.
         raw_date = row.get(date_col)
-        if pd.isna(raw_date) or pd.isna(row.get(away_col)) or pd.isna(row.get(home_col)):
+        if (
+            pd.isna(raw_date)
+            or pd.isna(row.get(away_col))
+            or pd.isna(row.get(home_col))
+        ):
             continue
 
         parsed_date = pd.to_datetime(raw_date, errors="coerce")
@@ -176,7 +184,11 @@ def _load_csv_lenient(text: str) -> pd.DataFrame:
             continue
 
         if len(row) > len(header):
-            if len(row) == len(header) + 1 and len(row) >= 2 and time_re.search(row[1] or ""):
+            if (
+                len(row) == len(header) + 1
+                and len(row) >= 2
+                and time_re.search(row[1] or "")
+            ):
                 # Drop unlabeled start time to realign columns
                 row = row[:1] + row[2:]
             else:
@@ -189,14 +201,18 @@ def _load_csv_lenient(text: str) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=header)
 
 
-def parse_sr_csv(path: str | Path, sport: str | None = None, season: str | None = None) -> List[GameResult]:
+def parse_sr_csv(
+    path: str | Path, sport: str | None = None, season: str | None = None
+) -> List[GameResult]:
     """Parse a Sports-Reference CSV file from disk."""
     text = Path(path).read_text(encoding="utf-8", errors="ignore")
     df = _load_csv_lenient(text)
     return _parse_sr_dataframe(df, sport=sport, season=season)
 
 
-def parse_sr_html(path: str | Path, sport: str | None = None, season: str | None = None) -> List[GameResult]:
+def parse_sr_html(
+    path: str | Path, sport: str | None = None, season: str | None = None
+) -> List[GameResult]:
     """Parse a Sports-Reference HTML schedule/results table."""
     html = Path(path).read_text(encoding="utf-8", errors="ignore")
     tables = pd.read_html(StringIO(html), flavor="bs4")
@@ -212,7 +228,9 @@ def parse_sr_html(path: str | Path, sport: str | None = None, season: str | None
     raise ValueError("No tables found in HTML input")
 
 
-def parse_sr_csv_text(text: str, sport: str | None = None, season: str | None = None) -> List[GameResult]:
+def parse_sr_csv_text(
+    text: str, sport: str | None = None, season: str | None = None
+) -> List[GameResult]:
     """Parse pasted Sports-Reference CSV text."""
     df = _load_csv_lenient(text)
     return _parse_sr_dataframe(df, sport=sport, season=season)

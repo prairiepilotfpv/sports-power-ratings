@@ -1,4 +1,5 @@
 """Power rating models."""
+
 from __future__ import annotations
 
 from .base import (
@@ -13,7 +14,6 @@ from .base import (
 from .bradley_terry import BradleyTerry
 from .bradley_terry_hfa import BradleyTerryHFA
 from .elo import EloPowerRating
-from .gssd import GSSDPowerRating
 from .toor import TOORModel, TOORPowerRating
 
 __all__ = [
@@ -24,7 +24,6 @@ __all__ = [
     "BradleyTerry",
     "BradleyTerryHFA",
     "EloPowerRating",
-    "GSSDPowerRating",
     "TOORModel",
     "TOORPowerRating",
     "normalize_optional_float",

@@ -1,10 +1,12 @@
-from __future__ import annotations
-
 """Elo power rating model."""
+
+from __future__ import annotations
 
 from collections import defaultdict
 from math import isnan
 from typing import Any, DefaultDict, Iterable, Mapping
+
+from models.base import ModelMetadata
 
 
 class EloPowerRating:
@@ -30,7 +32,19 @@ class EloPowerRating:
         self.home_advantage = float(home_advantage)
         self.initial_rating = float(initial_rating)
         self.min_rating = float(min_rating)
-        self._ratings: DefaultDict[str, float] = defaultdict(lambda: self.initial_rating)
+        self._ratings: DefaultDict[str, float] = defaultdict(
+            lambda: self.initial_rating
+        )
+
+    def metadata(self) -> ModelMetadata:
+        return ModelMetadata(
+            model_id=self.model_id,
+            model_version=self.model_version,
+            params=self.params,
+            supports_margin=True,
+            supports_total=False,
+            supports_win_prob=True,
+        )
 
     def fit(self, games: Iterable[Mapping[str, Any]]) -> None:
         """Fit Elo ratings from game results."""
@@ -64,7 +78,9 @@ class EloPowerRating:
 
             home_rating = ratings[home]
             away_rating = ratings[away]
-            expected_home = self._expected_score(home_rating, away_rating, home_advantage)
+            expected_home = self._expected_score(
+                home_rating, away_rating, home_advantage
+            )
             expected_away = 1.0 - expected_home
 
             home_rating += self.k_factor * (outcome_home - expected_home)
@@ -80,6 +96,8 @@ class EloPowerRating:
         return sorted(self._ratings.items(), key=lambda item: item[1], reverse=True)
 
     @staticmethod
-    def _expected_score(team_rating: float, opp_rating: float, home_advantage: float) -> float:
+    def _expected_score(
+        team_rating: float, opp_rating: float, home_advantage: float
+    ) -> float:
         rating_diff = (opp_rating - (team_rating + home_advantage)) / 400.0
-        return 1.0 / (1.0 + 10 ** rating_diff)
+        return 1.0 / (1.0 + 10**rating_diff)

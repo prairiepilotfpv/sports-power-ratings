@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Validation helpers for inbound game datasets."""
+
+from __future__ import annotations
 
 import pandas as pd
 
@@ -41,7 +41,11 @@ def validate_dataset(df: pd.DataFrame) -> pd.DataFrame:
         status = validated["status"].astype(str).str.lower()
         final_mask = status == "final"
         if final_mask.any():
-            missing_scores = validated.loc[final_mask, ["home_score", "away_score"]].isna().any(axis=1)
+            missing_scores = (
+                validated.loc[final_mask, ["home_score", "away_score"]]
+                .isna()
+                .any(axis=1)
+            )
             if missing_scores.any():
                 raise ValueError("Final games must include home_score and away_score.")
 

@@ -177,7 +177,10 @@ def test_schedule_uses_latest_scores(tmp_path: Path) -> None:
     assert updated_row["away_score"] == 99
     assert updated_row["status"] == "final"
 
-    db_games = {game.game_id: game for game in load_games(db_path, sport="nba", season="2024-25")}
+    db_games = {
+        game.game_id: game
+        for game in load_games(db_path, sport="nba", season="2024-25")
+    }
     assert db_games[game_id].home_score == updated_row["home_score"]
     assert db_games[game_id].away_score == updated_row["away_score"]
 
@@ -431,11 +434,23 @@ def test_schedule_excel_dashboard_includes_today_games(tmp_path: Path) -> None:
     assert not dashboard.empty
     assert set(dashboard["model"]) == {"bradley-terry"}
     assert set(dashboard["game"]) == {"Team B @ Team A"}
-    assert dashboard.loc[dashboard["game"] == "Team B @ Team A", "projected_winner"].notna().all()
-    assert dashboard.loc[dashboard["game"] == "Team B @ Team A", "projected_spread"].notna().all()
+    assert (
+        dashboard.loc[dashboard["game"] == "Team B @ Team A", "projected_winner"]
+        .notna()
+        .all()
+    )
+    assert (
+        dashboard.loc[dashboard["game"] == "Team B @ Team A", "projected_spread"]
+        .notna()
+        .all()
+    )
     total_value = dashboard.loc[dashboard["game"] == "Team B @ Team A", "total"].iloc[0]
-    home_score = dashboard.loc[dashboard["game"] == "Team B @ Team A", "projected_home_score"].iloc[0]
-    away_score = dashboard.loc[dashboard["game"] == "Team B @ Team A", "projected_away_score"].iloc[0]
+    home_score = dashboard.loc[
+        dashboard["game"] == "Team B @ Team A", "projected_home_score"
+    ].iloc[0]
+    away_score = dashboard.loc[
+        dashboard["game"] == "Team B @ Team A", "projected_away_score"
+    ].iloc[0]
     assert total_value == pytest.approx(home_score + away_score)
 
 
@@ -516,7 +531,9 @@ def test_schedule_excel_report_includes_model_metadata(tmp_path: Path) -> None:
     for model in ["bradley-terry", "elo", "toor"]:
         ws = workbook[model]
         metadata: dict[str, str] = {}
-        for row in ws.iter_rows(min_row=2, max_row=10, min_col=1, max_col=2, values_only=True):
+        for row in ws.iter_rows(
+            min_row=2, max_row=10, min_col=1, max_col=2, values_only=True
+        ):
             key, value = row
             if key:
                 metadata[str(key)] = str(value) if value is not None else ""

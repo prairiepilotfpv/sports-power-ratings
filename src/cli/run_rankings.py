@@ -1,33 +1,34 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 from pathlib import Path
+import sys
 
-try:  # Allow execution from repository root or nested directories
-    from bootstrap import ensure_src_on_path
-except ModuleNotFoundError:  # pragma: no cover - fallback when bootstrap isn't on sys.path
-    import sys
 
-    sys.path.append(str(Path(__file__).resolve().parents[2]))
-    from bootstrap import ensure_src_on_path
-
-ensure_src_on_path()
-
-from data.paths import db_path_for
-from pipelines.run_rankings import run_rankings
+def _ensure_src_on_path() -> None:
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    if importlib.util.find_spec("data") is None and str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
 
 
 def main() -> None:
+    _ensure_src_on_path()
+    from data.paths import db_dir, db_path_for, processed_dir
+    from pipelines.run_rankings import run_rankings
+
     parser = argparse.ArgumentParser(
         description="Run rankings for a given sport/season from the repository database."
     )
     parser.add_argument(
         "--db",
         default=None,
-        help="SQLite DB path override (default: data/db/<sport>/<season>.db)",
+        help=f"SQLite DB path override (default: {db_dir()}/<sport>/<season>.db)",
     )
     parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
-    parser.add_argument("--season", required=True, help="Season identifier (e.g., 2023-24)")
+    parser.add_argument(
+        "--season", required=True, help="Season identifier (e.g., 2023-24)"
+    )
     parser.add_argument(
         "--model",
         default=None,
@@ -36,7 +37,10 @@ def main() -> None:
     parser.add_argument(
         "-o",
         "--output",
-        help="Optional output CSV path. Defaults to data/processed/<sport>/<season>/rankings.csv",
+        help=(
+            "Optional output CSV path. Defaults to "
+            f"{processed_dir()}/<sport>/<season>/rankings.csv"
+        ),
     )
     parser.add_argument(
         "--overwrite",
@@ -45,7 +49,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    print("Warning: src.cli.run_rankings is legacy. Prefer: python -m src.cli.pipeline rank")
+    print(
+        "Warning: src.cli.run_rankings is legacy. Prefer: python -m src.cli.pipeline rank"
+    )
 
     output_path = Path(args.output) if args.output else None
     if output_path is not None and output_path.exists() and not args.overwrite:

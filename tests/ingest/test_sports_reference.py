@@ -5,8 +5,12 @@ import pytest
 from ingest.sports_reference import parse_sr_csv, parse_sr_csv_text, parse_sr_html
 
 
-FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "sports_reference" / "nba"
-NFL_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "sports_reference" / "nfl"
+FIXTURES_DIR = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "sports_reference" / "nba"
+)
+NFL_FIXTURES = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "sports_reference" / "nfl"
+)
 
 
 def test_parse_sr_csv() -> None:

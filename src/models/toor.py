@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """TOOR (Team OLS Optimized Rating) model."""
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from math import log
@@ -39,6 +39,16 @@ class TOORPowerRating:
         self.params = {"max_iter": max_iter, "tol": tol}
         self._ratings: dict[str, float] = {}
 
+    def metadata(self) -> ModelMetadata:
+        return ModelMetadata(
+            model_id=self.model_id,
+            model_version=self.model_version,
+            params=self.params,
+            supports_margin=True,
+            supports_total=False,
+            supports_win_prob=True,
+        )
+
     def fit(self, games: Iterable[Mapping[str, Any]]) -> None:
         teams: list[str] = []
         seen: set[str] = set()
@@ -62,7 +72,11 @@ class TOORPowerRating:
                 teams.append(away)
 
             neutral_raw = game.get("neutral", False)
-            neutral = False if isinstance(neutral_raw, float) and np.isnan(neutral_raw) else bool(neutral_raw)
+            neutral = (
+                False
+                if isinstance(neutral_raw, float) and np.isnan(neutral_raw)
+                else bool(neutral_raw)
+            )
             home_advantage = 0.0 if neutral else 1.0
 
             samples.append((home, away, margin, home_advantage))
@@ -93,10 +107,7 @@ class TOORPowerRating:
         team_coeffs = coeffs[: len(teams)]
         mean_coeff = float(np.mean(team_coeffs)) if team_coeffs.size else 0.0
         centered = team_coeffs - mean_coeff
-        self._ratings = {
-            team: float(np.exp(centered[index[team]]))
-            for team in teams
-        }
+        self._ratings = {team: float(np.exp(centered[index[team]])) for team in teams}
 
     def rankings(self) -> list[tuple[str, float]]:
         return sorted(self._ratings.items(), key=lambda item: item[1], reverse=True)
@@ -126,7 +137,9 @@ class TOORModel(BaseModel):
         )
 
     def fit(self, games_df: Any) -> None:
-        require_columns(games_df, ["home_team", "away_team", "home_score", "away_score"])
+        require_columns(
+            games_df, ["home_team", "away_team", "home_score", "away_score"]
+        )
         games = games_df.to_dict(orient="records")
         self._bt_model.fit(games)
 
@@ -145,7 +158,11 @@ class TOORModel(BaseModel):
                 continue
 
             neutral_raw = game.get("neutral", False)
-            neutral = False if isinstance(neutral_raw, float) and np.isnan(neutral_raw) else bool(neutral_raw)
+            neutral = (
+                False
+                if isinstance(neutral_raw, float) and np.isnan(neutral_raw)
+                else bool(neutral_raw)
+            )
             home_advantage = 0.0 if neutral else 1.0
 
             home_rating = self._bt_model.ratings[home]
@@ -165,7 +182,9 @@ class TOORModel(BaseModel):
             coeffs, *_ = np.linalg.lstsq(matrix, target, rcond=None)
             predictions = matrix @ coeffs
             residuals = predictions - target
-            error_term = float(np.sqrt(np.mean(residuals ** 2))) if residuals.size else 0.0
+            error_term = (
+                float(np.sqrt(np.mean(residuals**2))) if residuals.size else 0.0
+            )
             self._coefficients = ToorCoefficients(
                 home_advantage=float(coeffs[0]),
                 home_coeff=float(coeffs[1]),
@@ -173,13 +192,19 @@ class TOORModel(BaseModel):
                 error_term=error_term,
             )
 
-            for predicted_margin, actual_margin in zip(predictions, target, strict=False):
+            for predicted_margin, actual_margin in zip(
+                predictions, target, strict=False
+            ):
                 if actual_margin == 0:
                     continue
                 projected_spread = -float(predicted_margin)
-                win_prob_samples.append((projected_spread, 1 if actual_margin > 0 else 0))
+                win_prob_samples.append(
+                    (projected_spread, 1 if actual_margin > 0 else 0)
+                )
 
-        self._win_prob_k = fit_win_prob_scale(win_prob_samples, default_k=DEFAULT_WIN_PROB_K)
+        self._win_prob_k = fit_win_prob_scale(
+            win_prob_samples, default_k=DEFAULT_WIN_PROB_K
+        )
 
     def predict(self, upcoming_games_df: Any) -> list[GamePrediction]:
         require_columns(upcoming_games_df, ["date", "home_team", "away_team"])
@@ -195,7 +220,11 @@ class TOORModel(BaseModel):
                 continue
 
             neutral_raw = row.get("neutral", False)
-            neutral = False if isinstance(neutral_raw, float) and np.isnan(neutral_raw) else bool(neutral_raw)
+            neutral = (
+                False
+                if isinstance(neutral_raw, float) and np.isnan(neutral_raw)
+                else bool(neutral_raw)
+            )
             home_advantage = 0.0 if neutral else 1.0
 
             home_rating = self._bt_model.ratings[home]
