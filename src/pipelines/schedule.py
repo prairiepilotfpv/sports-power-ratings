@@ -75,7 +75,6 @@ DASHBOARD_COLUMNS: List[str] = [
     "projected_total",
     "projected_winner",
     "projected_spread",
-    "total",
 ]
 
 MODEL_METADATA_DATA_START_ROW = 10
@@ -368,10 +367,6 @@ def _dashboard_rows_for_today(schedule_df: pd.DataFrame, model_name: str, as_of_
     for _, row in df.iterrows():
         projected_home_score = row.get("projected_home_score")
         projected_away_score = row.get("projected_away_score")
-        projected_total = None
-        if projected_home_score is not None and projected_away_score is not None:
-            if not pd.isna(projected_home_score) and not pd.isna(projected_away_score):
-                projected_total = float(projected_home_score) + float(projected_away_score)
         rows.append(
             {
                 "model": model_name,
@@ -382,7 +377,6 @@ def _dashboard_rows_for_today(schedule_df: pd.DataFrame, model_name: str, as_of_
                 "projected_total": row.get("projected_total"),
                 "projected_winner": row.get("projected_winner"),
                 "projected_spread": row.get("projected_spread"),
-                "total": projected_total,
             }
         )
     return rows
@@ -561,6 +555,13 @@ def build_schedule_excel_report(
             )
             dashboard_rows.extend(_dashboard_rows_for_today(schedule_df, model_name))
 
-        dashboard_df = pd.DataFrame(dashboard_rows, columns=DASHBOARD_COLUMNS)
+        dashboard_df = pd.DataFrame(dashboard_rows)
+        if not dashboard_df.empty:
+            model_order = {name: idx for idx, name in enumerate(models)}
+            dashboard_df = dashboard_df.assign(
+                _model_order=dashboard_df["model"].map(model_order).fillna(len(model_order))
+            ).sort_values(["date", "game", "_model_order", "model"])
+            dashboard_df = dashboard_df.drop(columns=["_model_order"], errors="ignore")
+        dashboard_df = dashboard_df.reindex(columns=DASHBOARD_COLUMNS)
         dashboard_df.to_excel(writer, sheet_name="dashboard", index=False)
     return report_path
