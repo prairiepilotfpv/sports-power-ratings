@@ -21,3 +21,10 @@
 - add rank column to excel output
 - make sure I don't need the "import sports reference" sectoin as it's kind of outdated. 
 - seperate the reports from the math, meaning when I add or remove a column from the report, I just want it to change what's added to the report, I still want all the math done and want to track overtime/neutral site etc
+
+
+create simple commands to ingest, do maths and return reports unless detailed\specific needs
+
+on the "dashboard" page, group up results by games, rather than model, so you can easily copy/paste the results
+
+add a totals column to the "dashboard" page
