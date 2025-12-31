@@ -385,6 +385,10 @@ def test_schedule_excel_dashboard_includes_today_games(tmp_path: Path) -> None:
     assert set(dashboard["game"]) == {"Team B @ Team A"}
     assert dashboard.loc[dashboard["game"] == "Team B @ Team A", "projected_winner"].notna().all()
     assert dashboard.loc[dashboard["game"] == "Team B @ Team A", "projected_spread"].notna().all()
+    total_value = dashboard.loc[dashboard["game"] == "Team B @ Team A", "total"].iloc[0]
+    home_score = dashboard.loc[dashboard["game"] == "Team B @ Team A", "projected_home_score"].iloc[0]
+    away_score = dashboard.loc[dashboard["game"] == "Team B @ Team A", "projected_away_score"].iloc[0]
+    assert total_value == pytest.approx(home_score + away_score)
 
 
 def test_schedule_excel_report_includes_model_metadata(tmp_path: Path) -> None:
