@@ -6,18 +6,21 @@ from typing import Type
 from models.base import BaseModel, PowerRatingModel
 from models.bradley_terry import BradleyTerry
 from models.bradley_terry_hfa import BradleyTerryHFA
+from models.elo import EloPowerRating
 from models.gssd import GSSDPowerRating
 from models.toor import TOORModel, TOORPowerRating
 
 
 _REGISTRY: dict[str, Type[PowerRatingModel]] = {
     "bradley-terry": BradleyTerry,
+    "elo": EloPowerRating,
     "gssd": GSSDPowerRating,
     "toor": TOORPowerRating,
 }
 
 _MODEL_ABBREVIATIONS: dict[str, str] = {
     "bradley-terry": "bt",
+    "elo": "elo",
     "gssd": "gssd",
     "toor": "toor",
 }

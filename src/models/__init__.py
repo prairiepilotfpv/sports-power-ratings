@@ -12,6 +12,7 @@ from .base import (
 )
 from .bradley_terry import BradleyTerry
 from .bradley_terry_hfa import BradleyTerryHFA
+from .elo import EloPowerRating
 from .gssd import GSSDPowerRating
 from .toor import TOORModel, TOORPowerRating
 
@@ -22,6 +23,7 @@ __all__ = [
     "PowerRatingModel",
     "BradleyTerry",
     "BradleyTerryHFA",
+    "EloPowerRating",
     "GSSDPowerRating",
     "TOORModel",
     "TOORPowerRating",
