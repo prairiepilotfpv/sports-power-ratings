@@ -1,29 +1,50 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+import importlib
+import importlib.util
 import re
 from typing import Type
 
 from models.base import BaseModel, PowerRatingModel
-from models.bradley_terry import BradleyTerry
 from models.bradley_terry_hfa import BradleyTerryHFA
-from models.elo import EloPowerRating
-from models.gssd import GSSDPowerRating
-from models.toor import TOORModel, TOORPowerRating
+from models.toor import TOORModel
 
 
-_REGISTRY: dict[str, Type[PowerRatingModel]] = {
-    "bradley-terry": BradleyTerry,
-    "elo": EloPowerRating,
-    "gssd": GSSDPowerRating,
-    "toor": TOORPowerRating,
+@dataclass(frozen=True)
+class ModelSpec:
+    name: str
+    path: str
+    abbreviation: str
+    required_module: str | None = None
+
+
+_MODEL_SPECS: dict[str, ModelSpec] = {
+    "bradley-terry": ModelSpec(
+        name="bradley-terry",
+        path="models.bradley_terry.BradleyTerry",
+        abbreviation="bt",
+    ),
+    "elo": ModelSpec(
+        name="elo",
+        path="models.elo.EloPowerRating",
+        abbreviation="elo",
+    ),
+    "gssd": ModelSpec(
+        name="gssd",
+        path="models.gssd.GSSDPowerRating",
+        abbreviation="gssd",
+        required_module="ssat",
+    ),
+    "toor": ModelSpec(
+        name="toor",
+        path="models.toor.TOORPowerRating",
+        abbreviation="toor",
+    ),
 }
 
-_MODEL_ABBREVIATIONS: dict[str, str] = {
-    "bradley-terry": "bt",
-    "elo": "elo",
-    "gssd": "gssd",
-    "toor": "toor",
-}
+_DYNAMIC_MODELS: dict[str, Type[PowerRatingModel]] = {}
+_DYNAMIC_ABBREVIATIONS: dict[str, str] = {}
 
 _BACKTEST_REGISTRY: dict[str, Type[BaseModel]] = {
     "bradley_terry_hfa": BradleyTerryHFA,
@@ -31,22 +52,44 @@ _BACKTEST_REGISTRY: dict[str, Type[BaseModel]] = {
 }
 
 
+def _model_available(spec: ModelSpec) -> bool:
+    if spec.required_module is None:
+        return True
+    return importlib.util.find_spec(spec.required_module) is not None
+
+
+def _load_model_class(spec: ModelSpec) -> Type[PowerRatingModel]:
+    module_name, class_name = spec.path.rsplit(".", 1)
+    module = importlib.import_module(module_name)
+    return getattr(module, class_name)
+
+
 def get_model(name: str) -> Type[PowerRatingModel]:
     name = normalize_model_name(name)
-    try:
-        return _REGISTRY[name]
-    except KeyError as exc:
-        raise ValueError(f"Unsupported model: {name}") from exc
+    if name in _DYNAMIC_MODELS:
+        return _DYNAMIC_MODELS[name]
+    if name not in _MODEL_SPECS:
+        raise ValueError(f"Unsupported model: {name}")
+    spec = _MODEL_SPECS[name]
+    if not _model_available(spec):
+        raise ValueError(
+            f"Model {name!r} requires optional dependency '{spec.required_module}'."
+        )
+    return _load_model_class(spec)
 
 
 def list_models() -> list[str]:
-    return sorted(_REGISTRY.keys())
+    static = [name for name, spec in _MODEL_SPECS.items() if _model_available(spec)]
+    return sorted(set(static + list(_DYNAMIC_MODELS.keys())))
 
 
 def get_model_abbreviation(name: str) -> str:
     name = normalize_model_name(name)
-    if name in _MODEL_ABBREVIATIONS:
-        return _MODEL_ABBREVIATIONS[name]
+    if name in _DYNAMIC_ABBREVIATIONS:
+        return _DYNAMIC_ABBREVIATIONS[name]
+    spec = _MODEL_SPECS.get(name)
+    if spec is not None:
+        return spec.abbreviation
     parts = [part for part in re.split(r"[^A-Za-z0-9]+", name) if part]
     if not parts:
         return name
@@ -67,3 +110,23 @@ def list_backtest_models() -> list[str]:
 
 def normalize_model_name(name: str) -> str:
     return name.strip().lower()
+
+
+def register_model(
+    name: str,
+    model_cls: Type[PowerRatingModel],
+    *,
+    abbreviation: str | None = None,
+) -> None:
+    """Register a power rating model (primarily for tests)."""
+    normalized = normalize_model_name(name)
+    _DYNAMIC_MODELS[normalized] = model_cls
+    if abbreviation:
+        _DYNAMIC_ABBREVIATIONS[normalized] = abbreviation
+
+
+def unregister_model(name: str) -> None:
+    """Remove a dynamically registered model."""
+    normalized = normalize_model_name(name)
+    _DYNAMIC_MODELS.pop(normalized, None)
+    _DYNAMIC_ABBREVIATIONS.pop(normalized, None)

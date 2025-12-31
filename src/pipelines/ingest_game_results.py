@@ -2,16 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-try:  # Allow execution from repository root or nested directories
-    from bootstrap import ensure_src_on_path
-except ModuleNotFoundError:  # pragma: no cover - fallback when bootstrap isn't on sys.path
-    import sys
-
-    sys.path.append(str(Path(__file__).resolve().parents[2]))
-    from bootstrap import ensure_src_on_path
-
-ensure_src_on_path()
-
 import argparse
 import os
 from typing import Any, Dict, List
@@ -21,15 +11,13 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel
 
+from data.paths import processed_dir, raw_data_dir
 from data.validation import validate_dataset
-# Make parse_sr_scores optional to avoid ImportError
-from parsers.sr_table_parser import parse_sr_workbook
-try:
-    from parsers.sr_table_parser import parse_sr_scores  # type: ignore
-except Exception:
-    parse_sr_scores = None  # HTML parsing not available
-
 from ocr.ocr import ocr_image
+from parsers import sr_table_parser
+
+parse_sr_scores = getattr(sr_table_parser, "parse_sr_scores", None)
+parse_sr_workbook = sr_table_parser.parse_sr_workbook
 
 
 def _write_rows_to_csv(rows: List[Dict[str, Any]], output_path: Path) -> int:
@@ -83,7 +71,9 @@ class GameRows(BaseModel):
 def _extract_games_structured(text: str) -> List[Dict[str, Any]]:
     load_dotenv()
     if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("OPENAI_API_KEY not set. Add it to your environment or .env.")
+        raise RuntimeError(
+            "OPENAI_API_KEY not set. Add it to your environment or .env."
+        )
 
     client = OpenAI()
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -123,7 +113,10 @@ def main() -> None:
     )
     parser.add_argument(
         "input",
-        help="Input HTML, Excel workbook, or image file. If not an existing path, resolved under data/raw/.",
+        help=(
+            "Input HTML, Excel workbook, or image file. If not an existing path, "
+            f"resolved under {raw_data_dir()}/."
+        ),
     )
     parser.add_argument(
         "output",
@@ -134,7 +127,7 @@ def main() -> None:
         "-o",
         "--output",
         dest="output_flag",
-        help="Output CSV path. Defaults to data/processed/<input_stem>.csv",
+        help=f"Output CSV path. Defaults to {processed_dir()}/<input_stem>.csv",
     )
     parser.add_argument(
         "--mode",
@@ -149,8 +142,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    raw_dir = Path("data/raw")
-    processed_dir = Path("data/processed")
+    raw_dir = raw_data_dir()
+    processed_root = processed_dir()
 
     in_path = Path(args.input)
     if not in_path.exists():
@@ -158,16 +151,18 @@ def main() -> None:
         if candidate.exists():
             in_path = candidate
         else:
-            raise FileNotFoundError(f"Input not found: '{args.input}' (also tried '{candidate}')")
+            raise FileNotFoundError(
+                f"Input not found: '{args.input}' (also tried '{candidate}')"
+            )
 
-    # Default output to data/processed/<stem>.csv (we write CSV regardless of extension)
+    # Default output to processed/<stem>.csv (we write CSV regardless of extension)
     # Determine output path: priority is explicit flag > positional > default
     if args.output_flag:
         out_path = Path(args.output_flag)
     elif args.output:
         out_path = Path(args.output)
     else:
-        out_path = processed_dir / f"{in_path.stem}.csv"
+        out_path = processed_root / f"{in_path.stem}.csv"
     if out_path.is_dir():
         out_path = out_path / f"{in_path.stem}.csv"
     if out_path.exists() and not args.overwrite:
@@ -187,7 +182,11 @@ def main() -> None:
             # Peek at file to guess
             try:
                 head = in_path.read_text(encoding="utf-8", errors="ignore")[0:2000]
-                mode = "html" if ("<html" in head.lower() or "<table" in head.lower()) else "image"
+                mode = (
+                    "html"
+                    if ("<html" in head.lower() or "<table" in head.lower())
+                    else "image"
+                )
             except Exception:
                 mode = "image"
 

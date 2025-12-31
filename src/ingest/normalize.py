@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Normalization helpers for parsed game results."""
+
+from __future__ import annotations
 
 from typing import Iterable, List
 

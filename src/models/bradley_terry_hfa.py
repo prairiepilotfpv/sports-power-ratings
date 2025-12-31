@@ -15,6 +15,7 @@ class BradleyTerryHFA(BaseModel):
         (log(rating_home) - log(rating_away) + HFA). This is a linear proxy
         for margin and is not calibrated to points.
     """
+
     def __init__(self, *, max_iter: int = 500, tol: float = 1e-8) -> None:
         self._max_iter = max_iter
         self._tol = tol
@@ -34,7 +35,9 @@ class BradleyTerryHFA(BaseModel):
         )
 
     def fit(self, games_df: Any) -> None:
-        require_columns(games_df, ["home_team", "away_team", "home_score", "away_score"])
+        require_columns(
+            games_df, ["home_team", "away_team", "home_score", "away_score"]
+        )
         games = games_df.to_dict(orient="records")
         self._model.fit(games)
 
@@ -55,7 +58,10 @@ class BradleyTerryHFA(BaseModel):
                 str(row["away_team"]),
                 neutral=neutral,
             )
-            game_id = row.get("game_id") or f"{row['date']}_{row['home_team']}_{row['away_team']}"
+            game_id = (
+                row.get("game_id")
+                or f"{row['date']}_{row['home_team']}_{row['away_team']}"
+            )
             predictions.append(
                 GamePrediction(
                     game_id=str(game_id),

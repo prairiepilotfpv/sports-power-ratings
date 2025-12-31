@@ -4,20 +4,10 @@ from pathlib import Path
 
 import pandas as pd
 
-import sys
-
-sys.path.append(str(Path(__file__).resolve().parents[2]))
-from bootstrap import ensure_src_on_path
-
-ensure_src_on_path()
-
+from data.paths import processed_path_for
 from data.repository import load_games
-from pipelines.common import normalize_games
-from models.registry import (
-    get_model_abbreviation,
-    list_models,
-    normalize_model_name,
-)
+from pipelines.common import normalize_games, resolve_output_path
+from models.registry import list_models, normalize_model_name
 from pipelines.run_rankings import build_rankings
 from pipelines.schedule import build_schedule_with_projections
 
@@ -26,7 +16,9 @@ def _today_spreads(schedule_df: pd.DataFrame) -> pd.DataFrame:
     if schedule_df.empty:
         return schedule_df
     today = pd.Timestamp.today().date()
-    df = schedule_df.assign(_date=pd.to_datetime(schedule_df["date"], errors="coerce").dt.date)
+    df = schedule_df.assign(
+        _date=pd.to_datetime(schedule_df["date"], errors="coerce").dt.date
+    )
     df = df[(df["status"] == "scheduled") & (df["_date"] == today)]
     return df[
         [
@@ -67,27 +59,6 @@ def _resolve_models(model: str | None) -> list[str]:
     return [normalize_model_name(model)]
 
 
-def _resolve_output_path(
-    output_path: str | Path | None,
-    *,
-    sport: str,
-    season: str,
-    default_name: str,
-    model: str,
-    add_prefix: bool,
-) -> Path:
-    if output_path is None:
-        resolved = Path("data/processed") / sport / season / default_name
-    else:
-        resolved = Path(output_path)
-        if resolved.is_dir() or resolved.suffix == "":
-            resolved = resolved / default_name
-    if add_prefix:
-        abbrev = get_model_abbreviation(model)
-        resolved = resolved.with_name(f"{abbrev}_{resolved.name}")
-    return resolved
-
-
 def _build_single_report(
     db_path: str | Path,
     *,
@@ -112,11 +83,10 @@ def _build_single_report(
     schedule_df = pd.read_csv(schedule_path)
     spreads = _today_spreads(schedule_df)
 
-    output_path = _resolve_output_path(
+    default_path = processed_path_for(sport, season, "daily_report.xlsx")
+    output_path = resolve_output_path(
         output_path,
-        sport=sport,
-        season=season,
-        default_name="daily_report.xlsx",
+        default_path=default_path,
         model=model,
         add_prefix=add_prefix,
     )

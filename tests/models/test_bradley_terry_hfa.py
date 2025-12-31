@@ -7,7 +7,9 @@ import pytest
 
 from models.bradley_terry_hfa import BradleyTerryHFA
 
-FIXTURE_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "bradley_terry_hfa" / "games.csv"
+FIXTURE_PATH = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "bradley_terry_hfa" / "games.csv"
+)
 
 
 def test_bradley_terry_hfa_fit_fixture_dataset() -> None:
@@ -25,7 +27,12 @@ def test_bradley_terry_hfa_predictions_stable() -> None:
     upcoming_df = pd.DataFrame(
         [
             {"date": "2024-01-01", "home_team": "Alpha", "away_team": "Beta"},
-            {"date": "2024-01-02", "home_team": "Gamma", "away_team": "Alpha", "neutral": True},
+            {
+                "date": "2024-01-02",
+                "home_team": "Gamma",
+                "away_team": "Alpha",
+                "neutral": True,
+            },
         ]
     )
 

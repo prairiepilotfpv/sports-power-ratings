@@ -1,52 +1,17 @@
-from __future__ import annotations
-
 """Excel report pipeline for ranking summaries."""
+
+from __future__ import annotations
 
 from pathlib import Path
 from typing import Iterable, List
 
-try:  # Allow execution from repository root or nested directories
-    from bootstrap import ensure_src_on_path
-except ModuleNotFoundError:  # pragma: no cover - fallback when bootstrap isn't on sys.path
-    import sys
-
-    sys.path.append(str(Path(__file__).resolve().parents[2]))
-    from bootstrap import ensure_src_on_path
-
-ensure_src_on_path()
-
 import pandas as pd
 
+from data.paths import processed_path_for
 from data.repository import load_games
-from pipelines.common import normalize_games
-from models.registry import (
-    get_model_abbreviation,
-    list_models,
-    normalize_model_name,
-)
+from pipelines.common import normalize_games, resolve_output_path
+from models.registry import list_models, normalize_model_name
 from pipelines.run_rankings import build_rankings
-
-
-def _resolve_output_path(
-    output_path: str | Path | None,
-    *,
-    sport: str,
-    season: str,
-    model: str,
-    add_prefix: bool,
-) -> Path:
-    """Resolve output location, allowing directory paths."""
-    if output_path is None:
-        resolved = Path("data/processed") / sport / season / "report.xlsx"
-    else:
-        resolved = Path(output_path)
-        if resolved.is_dir() or resolved.suffix == "":
-            resolved = resolved / "report.xlsx"
-    if add_prefix:
-        abbrev = get_model_abbreviation(model)
-        resolved = resolved.with_name(f"{abbrev}_{resolved.name}")
-    resolved.parent.mkdir(parents=True, exist_ok=True)
-    return resolved
 
 
 def build_excel_report(
@@ -71,13 +36,14 @@ def build_excel_report(
     multiple = len(requested_models) > 1
     report_paths: list[Path] = []
     for model in requested_models:
-        report_path = _resolve_output_path(
+        default_path = processed_path_for(sport, season, "report.xlsx")
+        report_path = resolve_output_path(
             output_path,
-            sport=sport,
-            season=season,
+            default_path=default_path,
             model=model,
             add_prefix=multiple,
         )
+        report_path.parent.mkdir(parents=True, exist_ok=True)
         with pd.ExcelWriter(report_path) as writer:
             try:
                 rankings = build_rankings(df.copy(deep=True), model=model)

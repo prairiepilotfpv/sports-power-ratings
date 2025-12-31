@@ -1,14 +1,17 @@
-from __future__ import annotations
-
 """Bradley-Terry power rating model for win/loss outcomes."""
+
+from __future__ import annotations
 
 from collections import defaultdict
 from math import exp, isnan, log
 from typing import Any, DefaultDict, Iterable, Mapping
 
+from models.base import ModelMetadata
+
 
 class BradleyTerry:
     """Iterative Bradley-Terry solver with optional home advantage term."""
+
     def __init__(self, *, max_iter: int = 500, tol: float = 1e-8) -> None:
         self.model_id = "bradley-terry"
         self.model_version = "1.0"
@@ -19,6 +22,16 @@ class BradleyTerry:
         self.games_played: DefaultDict[str, int] = defaultdict(int)
         self.home_adv = 0.0
 
+    def metadata(self) -> ModelMetadata:
+        return ModelMetadata(
+            model_id=self.model_id,
+            model_version=self.model_version,
+            params=self.params,
+            supports_margin=True,
+            supports_total=False,
+            supports_win_prob=True,
+        )
+
     @staticmethod
     def _sigmoid(score: float) -> float:
         """Numerically stable sigmoid for logistic probability."""
@@ -28,7 +41,9 @@ class BradleyTerry:
         z = exp(score)
         return z / (1.0 + z)
 
-    def predict_probability(self, team_a: str, team_b: str, venue: str = "neutral") -> float:
+    def predict_probability(
+        self, team_a: str, team_b: str, venue: str = "neutral"
+    ) -> float:
         """Predict win probability for team_a vs team_b with a venue adjustment."""
         rating_a = self.ratings[team_a]
         rating_b = self.ratings[team_b]

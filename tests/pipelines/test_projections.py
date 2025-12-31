@@ -15,40 +15,60 @@ from pipelines.schedule import _project_row
 
 
 def test_margin_neutral_is_rating_diff() -> None:
-    projection = project_game(5.0, -3.0, home_advantage=2.0, neutral=True, base_total=200.0)
+    projection = project_game(
+        5.0, -3.0, home_advantage=2.0, neutral=True, base_total=200.0
+    )
     assert projection.margin_neutral == 8.0
 
 
 def test_margin_adds_home_advantage_when_not_neutral() -> None:
-    neutral_projection = project_game(4.0, 1.0, home_advantage=2.5, neutral=True, base_total=200.0)
-    non_neutral_projection = project_game(4.0, 1.0, home_advantage=2.5, neutral=False, base_total=200.0)
+    neutral_projection = project_game(
+        4.0, 1.0, home_advantage=2.5, neutral=True, base_total=200.0
+    )
+    non_neutral_projection = project_game(
+        4.0, 1.0, home_advantage=2.5, neutral=False, base_total=200.0
+    )
     assert neutral_projection.margin == 3.0
     assert non_neutral_projection.margin == 5.5
 
 
 def test_projected_spread_is_negative_margin() -> None:
-    projection = project_game(6.0, 2.0, home_advantage=1.0, neutral=False, base_total=200.0)
+    projection = project_game(
+        6.0, 2.0, home_advantage=1.0, neutral=False, base_total=200.0
+    )
     assert projection.projected_spread == -projection.margin
     assert projection.projected_home_spread == projection.margin
 
 
 def test_projected_scores_difference_equals_margin() -> None:
-    projection = project_game(6.0, 2.0, home_advantage=1.0, neutral=False, base_total=200.0)
+    projection = project_game(
+        6.0, 2.0, home_advantage=1.0, neutral=False, base_total=200.0
+    )
     diff = projection.projected_home_score - projection.projected_away_score
     assert math.isclose(diff, projection.margin, rel_tol=1e-9)
 
 
 def test_win_prob_monotonic_and_half_at_zero_margin() -> None:
-    low = project_game(1.0, 3.0, home_advantage=0.0, neutral=True, k=10.0, base_total=200.0)
-    mid = project_game(2.0, 2.0, home_advantage=0.0, neutral=True, k=10.0, base_total=200.0)
-    high = project_game(3.0, 1.0, home_advantage=0.0, neutral=True, k=10.0, base_total=200.0)
+    low = project_game(
+        1.0, 3.0, home_advantage=0.0, neutral=True, k=10.0, base_total=200.0
+    )
+    mid = project_game(
+        2.0, 2.0, home_advantage=0.0, neutral=True, k=10.0, base_total=200.0
+    )
+    high = project_game(
+        3.0, 1.0, home_advantage=0.0, neutral=True, k=10.0, base_total=200.0
+    )
     assert low.projected_win_prob < mid.projected_win_prob < high.projected_win_prob
     assert math.isclose(mid.projected_win_prob, 0.5, rel_tol=1e-9)
 
 
 def test_win_prob_uses_away_minus_home_spread() -> None:
-    home_favored = project_game(5.0, 1.0, home_advantage=0.0, neutral=True, k=10.0, base_total=200.0)
-    away_favored = project_game(1.0, 5.0, home_advantage=0.0, neutral=True, k=10.0, base_total=200.0)
+    home_favored = project_game(
+        5.0, 1.0, home_advantage=0.0, neutral=True, k=10.0, base_total=200.0
+    )
+    away_favored = project_game(
+        1.0, 5.0, home_advantage=0.0, neutral=True, k=10.0, base_total=200.0
+    )
     assert home_favored.projected_spread < 0
     assert away_favored.projected_spread > 0
     assert home_favored.projected_win_prob > 0.5

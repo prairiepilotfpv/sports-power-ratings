@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Matchup prediction pipeline built on power ratings."""
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +26,7 @@ from models.registry import normalize_model_name
 @dataclass(frozen=True)
 class MatchupPrediction:
     """Structured response from a matchup projection."""
+
     home_team: str
     away_team: str
     winner: str
@@ -43,7 +44,9 @@ def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
     return df[mask]
 
 
-def team_home_advantages(df: pd.DataFrame, ratings: Dict[str, float]) -> Dict[str, float]:
+def team_home_advantages(
+    df: pd.DataFrame, ratings: Dict[str, float]
+) -> Dict[str, float]:
     """Estimate team-specific home advantages from residual margins."""
     if df.empty or not ratings:
         return {}
@@ -76,7 +79,9 @@ def team_home_advantages(df: pd.DataFrame, ratings: Dict[str, float]) -> Dict[st
 
 def _rating_lookup(rankings: pd.DataFrame) -> Dict[str, float]:
     """Map team name to point-scale rating."""
-    return {str(row["team"]).strip(): float(row["points"]) for _, row in rankings.iterrows()}
+    return {
+        str(row["team"]).strip(): float(row["points"]) for _, row in rankings.iterrows()
+    }
 
 
 def predict_matchup(
@@ -131,7 +136,9 @@ def predict_matchup(
         home_advantage=home_advantage,
         neutral=False,
         k=win_prob_k,
-        base_total=model_total or matchup_total or (applied_total if applied_total > 0 else None),
+        base_total=model_total
+        or matchup_total
+        or (applied_total if applied_total > 0 else None),
         home_team=home_key,
         away_team=away_key,
     )

@@ -49,7 +49,9 @@ def test_validate_dataset_requires_scores_for_final_status() -> None:
     df = _base_df()
     df["status"] = ["final", "scheduled"]
     df.loc[0, "home_score"] = None
-    with pytest.raises(ValueError, match="Final games must include home_score and away_score"):
+    with pytest.raises(
+        ValueError, match="Final games must include home_score and away_score"
+    ):
         validate_dataset(df)
 
 

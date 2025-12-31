@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Base interfaces and helpers for prediction models."""
+
+from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -14,6 +14,7 @@ REQUIRED_PREDICTION_METADATA_KEYS = ("model_id", "model_version", "params")
 @dataclass(frozen=True)
 class ModelMetadata:
     """Metadata describing a model's capabilities."""
+
     model_id: str
     model_version: str
     params: Mapping[str, Any]
@@ -32,6 +33,7 @@ class ModelMetadata:
 @dataclass
 class GamePrediction:
     """Unified prediction record for downstream pipelines."""
+
     game_id: str
     date: str
     home_team: str
@@ -57,6 +59,7 @@ class GamePrediction:
 
 class BaseModel(ABC):
     """Base interface for predictive models in the system."""
+
     @abstractmethod
     def metadata(self) -> ModelMetadata:
         raise NotImplementedError
@@ -91,6 +94,9 @@ class BaseModel(ABC):
 
 class PowerRatingModel(Protocol):
     """Protocol for power rating models."""
+
+    def metadata(self) -> ModelMetadata:
+        """Return metadata describing the model."""
 
     def fit(self, games: Iterable[Mapping[str, Any]]) -> None:
         """Fit the model on iterable game results."""
@@ -127,7 +133,9 @@ def resolve_model_identity(model: Any) -> dict[str, Any]:
     }
 
 
-def validate_probability(value: float | None, *, field_name: str = "probability") -> float:
+def validate_probability(
+    value: float | None, *, field_name: str = "probability"
+) -> float:
     """Ensure probabilities are valid floats in [0, 1]."""
     if value is None:
         raise ValueError(f"{field_name} is required.")
@@ -151,6 +159,8 @@ def normalize_optional_float(value: float | None) -> float | None:
 
 def require_columns(df: Any, required: Iterable[str]) -> None:
     """Validate that a DataFrame-like object has required columns."""
-    missing = [column for column in required if column not in getattr(df, "columns", [])]
+    missing = [
+        column for column in required if column not in getattr(df, "columns", [])
+    ]
     if missing:
         raise ValueError(f"Missing required columns: {', '.join(missing)}")

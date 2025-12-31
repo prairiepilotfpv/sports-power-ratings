@@ -71,7 +71,9 @@ def test_backtest_pipeline_runs_all_models(tmp_path, monkeypatch) -> None:
             model_name=model_name,
         )
 
-        assert not outputs.predictions.empty, "Expected predictions for pipeline output."
+        assert (
+            not outputs.predictions.empty
+        ), "Expected predictions for pipeline output."
         assert outputs.predictions["model_id"].nunique() == 1
         assert outputs.predictions["model_id"].iloc[0] == expected_model_id
 
