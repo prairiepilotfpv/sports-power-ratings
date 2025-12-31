@@ -1,26 +1,17 @@
-from __future__ import annotations
-
 """Schedule export pipeline with projection fields."""
+
+from __future__ import annotations
 
 import json
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
-try:  # Allow execution from repository root or nested directories
-    from bootstrap import ensure_src_on_path
-except ModuleNotFoundError:  # pragma: no cover - fallback when bootstrap isn't on sys.path
-    import sys
-
-    sys.path.append(str(Path(__file__).resolve().parents[2]))
-    from bootstrap import ensure_src_on_path
-
-ensure_src_on_path()
-
 import pandas as pd
 
+from data.paths import processed_path_for
 from data.repository import load_games, load_model_metrics
-from pipelines.common import normalize_games
+from pipelines.common import normalize_games, resolve_output_path
 from pipelines.matchups import team_home_advantages
 from config import DEFAULT_WIN_PROB_K
 from pipelines.projections import (
@@ -31,12 +22,7 @@ from pipelines.projections import (
     total_from_ratings,
     team_scoring_averages,
 )
-from models.registry import (
-    get_model,
-    get_model_abbreviation,
-    list_models,
-    normalize_model_name,
-)
+from models.registry import get_model, list_models, normalize_model_name
 from pipelines.run_rankings import build_rankings
 from models.base import resolve_model_identity
 from pipelines.metadata import prediction_hash
@@ -72,7 +58,7 @@ DASHBOARD_COLUMNS: List[str] = [
     "game",
     "projected_home_score",
     "projected_away_score",
-    "projected_total",
+    "total",
     "projected_winner",
     "projected_spread",
 ]
@@ -98,7 +84,9 @@ def _upcoming_games(df: pd.DataFrame) -> pd.DataFrame:
 
 def _rating_lookup(rankings: pd.DataFrame) -> Dict[str, float]:
     """Build a lookup for team name -> point-scale rating."""
-    return {str(row["team"]).strip(): float(row["points"]) for _, row in rankings.iterrows()}
+    return {
+        str(row["team"]).strip(): float(row["points"]) for _, row in rankings.iterrows()
+    }
 
 
 def _safe_date(value: Any) -> str:
@@ -170,7 +158,9 @@ def _project_row(
                 intercept=total_intercept,
                 slope=total_slope,
             )
-        applied_total = model_total or matchup_total or (base_total if base_total > 0 else None)
+        applied_total = (
+            model_total or matchup_total or (base_total if base_total > 0 else None)
+        )
         projection = project_game(
             home_rating,
             away_rating,
@@ -225,7 +215,9 @@ def _order_schedule_export(schedule_df: pd.DataFrame) -> pd.DataFrame:
     missing = [col for col in SCHEDULE_EXPORT_COLUMNS if col not in schedule_df.columns]
     extra = [col for col in schedule_df.columns if col not in expected_set]
     if missing or extra:
-        raise ValueError(f"Schedule export column mismatch. Missing: {missing or 'none'}, extra: {extra or 'none'}")
+        raise ValueError(
+            f"Schedule export column mismatch. Missing: {missing or 'none'}, extra: {extra or 'none'}"
+        )
     # report-only ordering; do not modify upstream calculations.
     return schedule_df[SCHEDULE_EXPORT_COLUMNS]
 
@@ -236,27 +228,6 @@ def _resolve_models(model: str | None) -> list[str]:
     return [normalize_model_name(model)]
 
 
-def _resolve_output_path(
-    output_path: str | Path | None,
-    *,
-    sport: str,
-    season: str,
-    default_name: str,
-    model: str,
-    add_prefix: bool,
-) -> Path:
-    if output_path is None:
-        resolved = Path("data/processed") / sport / season / default_name
-    else:
-        resolved = Path(output_path)
-        if resolved.is_dir() or resolved.suffix == "":
-            resolved = resolved / default_name
-    if add_prefix:
-        abbrev = get_model_abbreviation(model)
-        resolved = resolved.with_name(f"{abbrev}_{resolved.name}")
-    return resolved
-
-
 def _resolve_workbook_path(
     output_path: str | Path | None,
     *,
@@ -264,12 +235,11 @@ def _resolve_workbook_path(
     season: str,
     default_name: str,
 ) -> Path:
-    if output_path is None:
-        resolved = Path("data/processed") / sport / season / default_name
-    else:
-        resolved = Path(output_path)
-        if resolved.is_dir() or resolved.suffix == "":
-            resolved = resolved / default_name
+    default_path = processed_path_for(sport, season, default_name)
+    resolved = resolve_output_path(
+        output_path,
+        default_path=default_path,
+    )
     resolved.parent.mkdir(parents=True, exist_ok=True)
     return resolved
 
@@ -335,9 +305,11 @@ def _build_schedule_dataframe(
 
     schedule_df = pd.DataFrame(schedule_rows)
     if not schedule_df.empty and "date" in schedule_df.columns:
-        schedule_df = schedule_df.assign(_dt=pd.to_datetime(schedule_df["date"], errors="coerce")).sort_values(
-            ["_dt", "game_id", "away_team", "home_team"]
-        ).drop(columns=["_dt"], errors="ignore")
+        schedule_df = (
+            schedule_df.assign(_dt=pd.to_datetime(schedule_df["date"], errors="coerce"))
+            .sort_values(["_dt", "game_id", "away_team", "home_team"])
+            .drop(columns=["_dt"], errors="ignore")
+        )
 
     schedule_df = _order_schedule_export(schedule_df)
     return schedule_df
@@ -352,13 +324,17 @@ def _format_game_name(away_team: Any, home_team: Any) -> str:
     return away or home
 
 
-def _dashboard_rows_for_today(schedule_df: pd.DataFrame, model_name: str, as_of_date: date | None = None) -> list[Dict[str, Any]]:
+def _dashboard_rows_for_today(
+    schedule_df: pd.DataFrame, model_name: str, as_of_date: date | None = None
+) -> list[Dict[str, Any]]:
     """Collect scheduled games for the current day for the dashboard sheet."""
     if schedule_df.empty:
         return []
 
     today = as_of_date or pd.Timestamp.today().date()
-    df = schedule_df.assign(_date=pd.to_datetime(schedule_df["date"], errors="coerce").dt.date)
+    df = schedule_df.assign(
+        _date=pd.to_datetime(schedule_df["date"], errors="coerce").dt.date
+    )
     df = df[(df["status"] == "scheduled") & (df["_date"] == today)]
     if df.empty:
         return []
@@ -367,6 +343,11 @@ def _dashboard_rows_for_today(schedule_df: pd.DataFrame, model_name: str, as_of_
     for _, row in df.iterrows():
         projected_home_score = row.get("projected_home_score")
         projected_away_score = row.get("projected_away_score")
+        projected_total = row.get("projected_total")
+        if projected_home_score is not None and projected_away_score is not None:
+            total = float(projected_home_score) + float(projected_away_score)
+        else:
+            total = projected_total
         rows.append(
             {
                 "model": model_name,
@@ -374,7 +355,7 @@ def _dashboard_rows_for_today(schedule_df: pd.DataFrame, model_name: str, as_of_
                 "game": _format_game_name(row.get("away_team"), row.get("home_team")),
                 "projected_home_score": projected_home_score,
                 "projected_away_score": projected_away_score,
-                "projected_total": row.get("projected_total"),
+                "total": total,
                 "projected_winner": row.get("projected_winner"),
                 "projected_spread": row.get("projected_spread"),
             }
@@ -460,11 +441,10 @@ def _build_schedule_for_model(
         model=model,
         upcoming_only=upcoming_only,
     )
-    resolved_output = _resolve_output_path(
+    default_path = processed_path_for(sport, season, "schedule_with_projections.csv")
+    resolved_output = resolve_output_path(
         output_path,
-        sport=sport,
-        season=season,
-        default_name="schedule_with_projections.csv",
+        default_path=default_path,
         model=model,
         add_prefix=add_prefix,
     )
@@ -522,7 +502,6 @@ def build_schedule_excel_report(
         raise ValueError(f"No games found for sport={sport!r}, season={season!r}")
 
     models = _resolve_models(model)
-    played = _completed_games(df)
     report_path = _resolve_workbook_path(
         output_path,
         sport=sport,
@@ -559,7 +538,9 @@ def build_schedule_excel_report(
         if not dashboard_df.empty:
             model_order = {name: idx for idx, name in enumerate(models)}
             dashboard_df = dashboard_df.assign(
-                _model_order=dashboard_df["model"].map(model_order).fillna(len(model_order))
+                _model_order=dashboard_df["model"]
+                .map(model_order)
+                .fillna(len(model_order))
             ).sort_values(["date", "game", "_model_order", "model"])
             dashboard_df = dashboard_df.drop(columns=["_model_order"], errors="ignore")
         dashboard_df = dashboard_df.reindex(columns=DASHBOARD_COLUMNS)

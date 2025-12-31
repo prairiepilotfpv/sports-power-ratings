@@ -57,6 +57,9 @@ def test_init_db_adds_missing_model_metrics_columns(tmp_path: Path) -> None:
     init_db(db_path)
 
     with sqlite3.connect(db_path) as conn:
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(model_metrics)").fetchall()}
+        cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(model_metrics)").fetchall()
+        }
 
     assert {"win_prob_k", "base_total"}.issubset(cols)

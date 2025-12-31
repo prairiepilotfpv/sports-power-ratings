@@ -33,7 +33,9 @@ def test_ingest_html_to_csv_requires_parser(tmp_path: Path) -> None:
         ingest_game_results.ingest_html_to_csv(input_path, tmp_path / "out.csv")
 
 
-def test_ingest_image_to_csv_uses_structured_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ingest_image_to_csv_uses_structured_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     def fake_ocr(path: str) -> str:
         return "fake text"
 

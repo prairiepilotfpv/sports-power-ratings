@@ -3,12 +3,19 @@
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+.coverage
+htmlcov/
 
 # Data
 data/raw/
+data/db/
+data/processed/
 output/
 
 # OS/editor
 .DS_Store
 Thumbs.db
 .vscode/
+*~
+*.un~
+*.swp

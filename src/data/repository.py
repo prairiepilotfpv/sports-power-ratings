@@ -1,12 +1,12 @@
-from __future__ import annotations
-
 """SQLite persistence layer for games and model calibration metrics."""
+
+from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
 from datetime import date
 from pathlib import Path
-from typing import Any, Iterable, List
+from typing import Iterable, List
 
 from config import DEFAULT_WIN_PROB_K
 from ingest.schema import GameResult
@@ -57,13 +57,17 @@ def init_db(db_path: str | Path) -> None:
 
 def _ensure_model_metrics_columns(conn: sqlite3.Connection) -> None:
     """Backfill columns for older databases that predate new metrics."""
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(model_metrics)").fetchall()}
+    existing = {
+        row[1] for row in conn.execute("PRAGMA table_info(model_metrics)").fetchall()
+    }
     if "win_prob_k" not in existing:
         conn.execute(
             f"ALTER TABLE model_metrics ADD COLUMN win_prob_k REAL NOT NULL DEFAULT {DEFAULT_WIN_PROB_K}"
         )
     if "base_total" not in existing:
-        conn.execute("ALTER TABLE model_metrics ADD COLUMN base_total REAL NOT NULL DEFAULT 0.0")
+        conn.execute(
+            "ALTER TABLE model_metrics ADD COLUMN base_total REAL NOT NULL DEFAULT 0.0"
+        )
 
 
 def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:

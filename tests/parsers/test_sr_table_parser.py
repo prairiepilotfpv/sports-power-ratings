@@ -26,7 +26,9 @@ def test_parse_sr_workbook_csv(tmp_path: Path) -> None:
     assert "game_id" in rows[0]
 
 
-def test_parse_sr_workbook_missing_engine(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_parse_sr_workbook_missing_engine(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     excel_path = tmp_path / "schedule.xlsx"
     excel_path.write_text("fake", encoding="utf-8")
 

@@ -1,12 +1,14 @@
-from __future__ import annotations
-
 """GSSD (Generalized Scores Standard Deviation) power rating model."""
+
+from __future__ import annotations
 
 from math import exp
 from typing import Any, Iterable, Mapping
 
 import pandas as pd
 from ssat.frequentist import GSSD
+
+from models.base import ModelMetadata
 
 
 class GSSDPowerRating:
@@ -18,6 +20,16 @@ class GSSDPowerRating:
         self.params: dict[str, Any] = {}
         self._model = GSSD()
         self._ratings: dict[str, float] = {}
+
+    def metadata(self) -> ModelMetadata:
+        return ModelMetadata(
+            model_id=self.model_id,
+            model_version=self.model_version,
+            params=self.params,
+            supports_margin=True,
+            supports_total=False,
+            supports_win_prob=True,
+        )
 
     def fit(self, games: Iterable[Mapping[str, Any]]) -> None:
         rows: list[dict[str, object]] = []

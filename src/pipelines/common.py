@@ -1,10 +1,13 @@
-from __future__ import annotations
-
 """Shared helpers for pipeline data normalization."""
 
+from __future__ import annotations
+
+from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 import pandas as pd
+
+from models.registry import get_model_abbreviation
 
 
 def normalize_games(rows: Iterable[Any]) -> pd.DataFrame:
@@ -24,5 +27,26 @@ def normalize_games(rows: Iterable[Any]) -> pd.DataFrame:
     if "date" in df.columns:
         dt = pd.to_datetime(df["date"], errors="coerce")
         if dt.notna().any():
-            df = df.assign(_dt=dt).sort_values(["_dt", "game_id"]).drop(columns=["_dt"], errors="ignore")
+            df = (
+                df.assign(_dt=dt)
+                .sort_values(["_dt", "game_id"])
+                .drop(columns=["_dt"], errors="ignore")
+            )
     return df
+
+
+def resolve_output_path(
+    output_path: str | Path | None,
+    *,
+    default_path: Path,
+    model: str | None = None,
+    add_prefix: bool = False,
+) -> Path:
+    """Resolve an output path, allowing directory inputs and model prefixes."""
+    resolved = Path(output_path) if output_path is not None else default_path
+    if resolved.is_dir() or resolved.suffix == "":
+        resolved = resolved / default_path.name
+    if add_prefix and model:
+        abbrev = get_model_abbreviation(model)
+        resolved = resolved.with_name(f"{abbrev}_{resolved.name}")
+    return resolved

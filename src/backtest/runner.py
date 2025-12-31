@@ -11,6 +11,7 @@ import pandas as pd
 from data.validation import validate_dataset
 from models.base import BaseModel, GamePrediction, resolve_model_identity
 from pipelines.metadata import prediction_hash
+
 DEFAULT_BUCKET_EDGES = np.linspace(0.0, 1.0, 11)
 
 
@@ -57,7 +58,9 @@ def run_backtest(
     if "neutral" not in games.columns:
         games["neutral"] = False
 
-    start_dt = pd.to_datetime(start_date).normalize() if start_date else games["date"].min()
+    start_dt = (
+        pd.to_datetime(start_date).normalize() if start_date else games["date"].min()
+    )
     end_dt = pd.to_datetime(end_date).normalize() if end_date else games["date"].max()
 
     evaluation = games[(games["date"] >= start_dt) & (games["date"] <= end_dt)]
@@ -83,7 +86,9 @@ def run_backtest(
         model.fit(train_data)
 
         day_games = evaluation[evaluation["date"] == current_date]
-        predict_input = day_games.drop(columns=["home_score", "away_score"], errors="ignore")
+        predict_input = day_games.drop(
+            columns=["home_score", "away_score"], errors="ignore"
+        )
         predictions = model.predict(predict_input)
         _attach_prediction_metadata(predictions, model=model, train_data=train_data)
         pred_df = _predictions_to_frame(predictions)
@@ -112,7 +117,11 @@ def run_backtest(
         frame["model_id"] = model_id
 
     resolved_model_name = model_name or "model"
-    target_dir = Path(output_dir) if output_dir else Path("outputs/backtests") / resolved_model_name
+    target_dir = (
+        Path(output_dir)
+        if output_dir
+        else Path("outputs/backtests") / resolved_model_name
+    )
     target_dir.mkdir(parents=True, exist_ok=True)
 
     run_id = _build_run_id(start_dt, end_dt, window, rolling_days, rolling_games)

@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Projection helpers for spreads, totals, and win probabilities."""
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 import math
@@ -12,6 +12,7 @@ from config import DEFAULT_WIN_PROB_K
 @dataclass(frozen=True)
 class GameProjection:
     """Derived metrics for a single projected game."""
+
     margin_neutral: float
     margin: float
     projected_winner: str | None
@@ -150,7 +151,9 @@ def total_from_ratings(
     return total if total > 0 else None
 
 
-def team_scoring_averages(rows: Iterable[dict[str, object]]) -> dict[str, tuple[float, float]]:
+def team_scoring_averages(
+    rows: Iterable[dict[str, object]],
+) -> dict[str, tuple[float, float]]:
     """Compute per-team average points scored and allowed."""
     totals_for: dict[str, float] = {}
     totals_against: dict[str, float] = {}
