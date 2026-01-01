@@ -215,6 +215,18 @@ def _parse_args() -> argparse.Namespace:
         required=True,
         help="CSV path containing historical games for backtesting.",
     )
+    backtest_parser.add_argument(
+        "--sport",
+        help="Optional sport identifier for persisting backtest calibration metrics.",
+    )
+    backtest_parser.add_argument(
+        "--season",
+        help="Optional season identifier for persisting backtest calibration metrics.",
+    )
+    backtest_parser.add_argument(
+        "--db",
+        help="Optional SQLite DB path to persist backtest calibration metrics.",
+    )
 
     return parser.parse_args()
 
@@ -407,9 +419,15 @@ def _run_report(args: argparse.Namespace) -> None:
 def _run_backtest(args: argparse.Namespace) -> None:
     """Run a backtest pipeline for a single model."""
     _ensure_src_on_path()
+    from data.paths import db_path_for
     from pipelines.backtest import run_backtest_pipeline
 
     output_dir = Path(args.output_dir) if args.output_dir else None
+    db_path = None
+    if args.db:
+        db_path = Path(args.db)
+    elif args.sport and args.season:
+        db_path = db_path_for(args.sport, args.season)
     outputs = run_backtest_pipeline(
         csv_path=Path(args.csv),
         model=args.model,
@@ -419,6 +437,9 @@ def _run_backtest(args: argparse.Namespace) -> None:
         rolling_days=args.rolling_days,
         rolling_games=args.rolling_games,
         output_dir=output_dir,
+        db_path=db_path,
+        sport=args.sport,
+        season=args.season,
     )
     print(f"Saved backtest outputs to {outputs.output_dir}")
 

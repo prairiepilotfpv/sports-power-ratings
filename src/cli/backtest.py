@@ -15,6 +15,7 @@ def _ensure_src_on_path() -> None:
 def main() -> None:
     _ensure_src_on_path()
     from backtest.runner import load_games_df_from_csv, run_backtest
+    from data.paths import db_path_for
     from models.registry import get_backtest_model, list_backtest_models
 
     parser = argparse.ArgumentParser(
@@ -54,10 +55,27 @@ def main() -> None:
         "--output-dir",
         help="Optional output directory override.",
     )
+    parser.add_argument(
+        "--sport",
+        help="Optional sport identifier for persisting backtest calibration metrics.",
+    )
+    parser.add_argument(
+        "--season",
+        help="Optional season identifier for persisting backtest calibration metrics.",
+    )
+    parser.add_argument(
+        "--db",
+        help="Optional SQLite DB path to persist backtest calibration metrics.",
+    )
     args = parser.parse_args()
 
     model_cls = get_backtest_model(args.model)
     games_df = load_games_df_from_csv(Path(args.csv))
+    db_path = None
+    if args.db:
+        db_path = Path(args.db)
+    elif args.sport and args.season:
+        db_path = db_path_for(args.sport, args.season)
 
     outputs = run_backtest(
         model_factory=model_cls,
@@ -69,6 +87,9 @@ def main() -> None:
         rolling_games=args.rolling_games,
         output_dir=args.output_dir,
         model_name=args.model,
+        db_path=db_path,
+        sport=args.sport,
+        season=args.season,
     )
 
     print(f"Saved backtest outputs to {outputs.output_dir}")
