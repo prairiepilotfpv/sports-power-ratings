@@ -140,6 +140,8 @@ def run_backtest(
 
 
 def export_backtest_outputs(outputs: BacktestOutputs, *, run_id: str) -> None:
+    from backtest.export import export_backtest_outputs_excel
+
     if not outputs.predictions.empty:
         outputs.predictions.to_csv(
             outputs.output_dir / f"predictions_{run_id}.csv",
@@ -157,6 +159,7 @@ def export_backtest_outputs(outputs: BacktestOutputs, *, run_id: str) -> None:
         outputs.output_dir / f"calibration_{run_id}.csv",
         index=False,
     )
+    export_backtest_outputs_excel(outputs, run_id=run_id)
 
 
 def _build_run_id(

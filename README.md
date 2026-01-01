@@ -88,6 +88,9 @@ python -m src.cli.pipeline matchup --sport nba --season 2025-26 --matchup "Laker
 
 # 5) Generate an Excel report
 python -m src.cli.pipeline report --sport nba --season 2025-26
+
+# 6) Run a backtest (Excel + CSV outputs)
+python -m src.cli.pipeline backtest --model bradley_terry_hfa --start 2024-11-01 --end 2024-12-01
 ```
 
 ## CLI reference
@@ -168,6 +171,22 @@ Options:
 - `--models`: comma-separated list of models (default: `bradley-terry`)
 - `--output`: output Excel path (defaults to `data/processed/<sport>/<season>/report.xlsx`)
 
+### `backtest` (model accuracy on historical games)
+
+```bash
+python -m src.cli.pipeline backtest --model bradley_terry_hfa --start 2024-11-01 --end 2024-12-01
+```
+
+Options:
+
+- `--model`: backtest model to run (default: `bradley_terry_hfa`)
+- `--start` / `--end`: evaluation window (YYYY-MM-DD)
+- `--window`: training window type (`expanding` or `rolling`)
+- `--rolling-days` / `--rolling-games`: rolling window size for `rolling` runs
+- `--output-dir`: output directory override (default: `outputs/backtests/<model>`)
+- `--sport` / `--season`: dataset selection
+- `--db`: custom SQLite path
+
 ## Input formats
 
 The ingest layer is designed for Sports-Reference exports. It supports:
@@ -195,6 +214,7 @@ If the CSV contains an unlabeled start-time column, the parser will realign colu
 - **Rankings CSV**: `data/processed/<sport>/<season>/rankings.csv`
 - **Schedule CSV**: `data/processed/<sport>/<season>/schedule_with_projections.csv`
 - **Excel report**: `data/processed/<sport>/<season>/report.xlsx`
+- **Backtest outputs**: `outputs/backtests/<model>/` (CSV + Excel workbook per run)
 
 ## Configuration
 

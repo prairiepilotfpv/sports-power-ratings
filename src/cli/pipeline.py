@@ -174,6 +174,53 @@ def _parse_args() -> argparse.Namespace:
         help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db)",
     )
 
+    backtest_parser = subparsers.add_parser(
+        "backtest",
+        aliases=["bt"],
+        help="Run a model backtest on historical games.",
+    )
+    backtest_parser.add_argument(
+        "--model",
+        default="bradley_terry_hfa",
+        help="Backtest model to run (default: bradley_terry_hfa).",
+    )
+    backtest_parser.add_argument(
+        "--start", required=True, help="Backtest start date (YYYY-MM-DD)."
+    )
+    backtest_parser.add_argument(
+        "--end", required=True, help="Backtest end date (YYYY-MM-DD)."
+    )
+    backtest_parser.add_argument(
+        "--window",
+        default="expanding",
+        choices=["expanding", "rolling"],
+        help="Training window type (default: expanding).",
+    )
+    backtest_parser.add_argument(
+        "--rolling-days",
+        type=int,
+        help="Rolling window size in days (required for rolling).",
+    )
+    backtest_parser.add_argument(
+        "--rolling-games",
+        type=int,
+        help="Rolling window size in games (optional alternative for rolling).",
+    )
+    backtest_parser.add_argument(
+        "--output-dir",
+        help="Optional output directory override (default: outputs/backtests/<model>).",
+    )
+    backtest_parser.add_argument(
+        "--sport", default="nba", help="Sport identifier (default: nba)."
+    )
+    backtest_parser.add_argument(
+        "--season", default="2025-26", help="Season identifier (default: 2025-26)."
+    )
+    backtest_parser.add_argument(
+        "--db",
+        help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db).",
+    )
+
     return parser.parse_args()
 
 
@@ -362,6 +409,29 @@ def _run_report(args: argparse.Namespace) -> None:
         print(f"Saved Excel report -> {result_path}")
 
 
+def _run_backtest(args: argparse.Namespace) -> None:
+    """Run a backtest pipeline for a single model."""
+    _ensure_src_on_path()
+    from data.paths import db_path_for
+    from pipelines.backtest import run_backtest_pipeline
+
+    db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
+    output_dir = Path(args.output_dir) if args.output_dir else None
+    outputs = run_backtest_pipeline(
+        db_path=db_path,
+        sport=args.sport,
+        season=args.season,
+        model=args.model,
+        start_date=args.start,
+        end_date=args.end,
+        window=args.window,
+        rolling_days=args.rolling_days,
+        rolling_games=args.rolling_games,
+        output_dir=output_dir,
+    )
+    print(f"Saved backtest outputs to {outputs.output_dir}")
+
+
 def main() -> None:
     """CLI entry point: route subcommands to their handlers."""
     args = _parse_args()
@@ -375,6 +445,8 @@ def main() -> None:
         _run_schedule(args)
     elif args.command == "report":
         _run_report(args)
+    elif args.command == "backtest":
+        _run_backtest(args)
     else:
         raise ValueError(f"Unknown command: {args.command}")
 
