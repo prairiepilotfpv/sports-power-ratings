@@ -51,6 +51,18 @@ def load_games_df_from_db(
     return pd.DataFrame(rows)
 
 
+def load_games_df_from_csv(csv_path: str | Path) -> pd.DataFrame:
+    csv_path = Path(csv_path)
+    if not csv_path.exists():
+        raise FileNotFoundError(
+            f"CSV not found at {csv_path}. Provide a valid CSV path."
+        )
+    df = pd.read_csv(csv_path)
+    if df.empty:
+        raise ValueError(f"No rows found in CSV at {csv_path}.")
+    return df
+
+
 def run_backtest(
     model_factory: Callable[[], BaseModel],
     games_df: pd.DataFrame,
@@ -79,6 +91,12 @@ def run_backtest(
 
     evaluation = games[(games["date"] >= start_dt) & (games["date"] <= end_dt)]
     evaluation_dates = sorted(evaluation["date"].unique())
+    if not evaluation_dates:
+        raise ValueError(
+            "No evaluation dates found for backtest window "
+            f"{start_dt.date().isoformat()} to {end_dt.date().isoformat()}. "
+            "Confirm the --start/--end dates overlap the dataset."
+        )
 
     prediction_frames: list[pd.DataFrame] = []
     model_identity: dict[str, str] | None = None
@@ -123,7 +141,11 @@ def run_backtest(
     if prediction_frames:
         predictions_df = pd.concat(prediction_frames, ignore_index=True)
     else:
-        predictions_df = pd.DataFrame()
+        raise ValueError(
+            "Backtest produced no predictions. "
+            "This happens when each evaluation date has no training data "
+            "(games must exist before each evaluation date)."
+        )
 
     metrics_by_date = _aggregate_metrics_by_date(predictions_df)
     metrics_overall = _aggregate_overall_metrics(predictions_df)
