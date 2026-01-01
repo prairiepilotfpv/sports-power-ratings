@@ -14,8 +14,7 @@ def _ensure_src_on_path() -> None:
 
 def main() -> None:
     _ensure_src_on_path()
-    from backtest.runner import load_games_df_from_db, run_backtest
-    from data.paths import db_dir, db_path_for
+    from backtest.runner import load_games_df_from_csv, run_backtest
     from models.registry import get_backtest_model, list_backtest_models
 
     parser = argparse.ArgumentParser(
@@ -47,14 +46,9 @@ def main() -> None:
         help="Rolling window size in games (optional alternative for rolling).",
     )
     parser.add_argument(
-        "--db",
-        help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db).",
-    )
-    parser.add_argument(
-        "--sport", default="nba", help="Sport identifier (default: nba)."
-    )
-    parser.add_argument(
-        "--season", default="2025-26", help="Season identifier (default: 2025-26)."
+        "--csv",
+        required=True,
+        help="CSV path containing historical games for backtesting.",
     )
     parser.add_argument(
         "--output-dir",
@@ -63,8 +57,7 @@ def main() -> None:
     args = parser.parse_args()
 
     model_cls = get_backtest_model(args.model)
-    db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
-    games_df = load_games_df_from_db(db_path, sport=args.sport, season=args.season)
+    games_df = load_games_df_from_csv(Path(args.csv))
 
     outputs = run_backtest(
         model_factory=model_cls,

@@ -4,15 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from backtest.runner import BacktestOutputs, load_games_df_from_db, run_backtest
+from backtest.runner import BacktestOutputs, load_games_df_from_csv, run_backtest
 from models.registry import get_backtest_model
 
 
 def run_backtest_pipeline(
     *,
-    db_path: str | Path,
-    sport: str,
-    season: str,
+    csv_path: str | Path,
     model: str,
     start_date: str,
     end_date: str,
@@ -23,7 +21,7 @@ def run_backtest_pipeline(
 ) -> BacktestOutputs:
     """Run a backtest for a single model and export outputs."""
     model_cls = get_backtest_model(model)
-    games_df = load_games_df_from_db(db_path, sport=sport, season=season)
+    games_df = load_games_df_from_csv(csv_path)
     return run_backtest(
         model_factory=model_cls,
         games_df=games_df,
