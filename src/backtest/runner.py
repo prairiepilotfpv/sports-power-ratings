@@ -144,6 +144,9 @@ def run_backtest(
     rolling_games: int | None = None,
     output_dir: str | Path | None = None,
     model_name: str | None = None,
+    db_path: str | Path | None = None,
+    sport: str | None = None,
+    season: str | None = None,
 ) -> BacktestOutputs:
     if window not in {"expanding", "rolling"}:
         raise ValueError("window must be 'expanding' or 'rolling'.")
@@ -241,6 +244,14 @@ def run_backtest(
         output_dir=target_dir,
     )
     export_backtest_outputs(outputs, run_id=run_id)
+    _persist_backtest_metrics(
+        outputs,
+        run_id=run_id,
+        db_path=db_path,
+        sport=sport,
+        season=season,
+        model_name=model_name,
+    )
     return outputs
 
 
@@ -265,6 +276,42 @@ def export_backtest_outputs(outputs: BacktestOutputs, *, run_id: str) -> None:
         index=False,
     )
     export_backtest_outputs_excel(outputs, run_id=run_id)
+
+
+def _persist_backtest_metrics(
+    outputs: BacktestOutputs,
+    *,
+    run_id: str,
+    db_path: str | Path | None,
+    sport: str | None,
+    season: str | None,
+    model_name: str | None,
+) -> None:
+    if db_path is None or sport is None or season is None or model_name is None:
+        return
+    from data.repository import save_backtest_metrics
+
+    metrics = (
+        outputs.metrics_overall.iloc[0].to_dict()
+        if not outputs.metrics_overall.empty
+        else {}
+    )
+    log_loss = metrics.get("log_loss")
+    brier_score = metrics.get("brier_score")
+    mae_margin = metrics.get("mae_margin")
+    win_prob_k = _extract_backtest_win_prob_k(outputs.predictions)
+
+    save_backtest_metrics(
+        db_path,
+        sport=sport,
+        season=season,
+        model=model_name,
+        log_loss=log_loss,
+        brier_score=brier_score,
+        mae_margin=mae_margin,
+        win_prob_k=win_prob_k,
+        run_id=run_id,
+    )
 
 
 def _build_run_id(
@@ -319,6 +366,26 @@ def _prediction_hash_columns(pred_df: pd.DataFrame) -> list[str]:
     if "extra" in pred_df.columns:
         columns.append("extra")
     return columns
+
+
+def _extract_backtest_win_prob_k(predictions_df: pd.DataFrame) -> float | None:
+    if predictions_df.empty or "extra" not in predictions_df.columns:
+        return None
+    values: list[float] = []
+    for extra in predictions_df["extra"]:
+        if isinstance(extra, dict):
+            value = extra.get("win_prob_k")
+            if value is None:
+                continue
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                values.append(value)
+    if not values:
+        return None
+    return float(np.median(values))
 
 
 def _training_date_range(train_data: pd.DataFrame) -> str:

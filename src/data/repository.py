@@ -39,6 +39,12 @@ CREATE TABLE IF NOT EXISTS model_metrics (
     model_error REAL NOT NULL,
     win_prob_k REAL NOT NULL,
     base_total REAL NOT NULL,
+    backtest_log_loss REAL,
+    backtest_brier_score REAL,
+    backtest_mae_margin REAL,
+    backtest_win_prob_k REAL,
+    backtest_run_id TEXT,
+    backtest_updated_at TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(sport, season, model)
 );
@@ -68,6 +74,18 @@ def _ensure_model_metrics_columns(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE model_metrics ADD COLUMN base_total REAL NOT NULL DEFAULT 0.0"
         )
+    if "backtest_log_loss" not in existing:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_log_loss REAL")
+    if "backtest_brier_score" not in existing:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_brier_score REAL")
+    if "backtest_mae_margin" not in existing:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_mae_margin REAL")
+    if "backtest_win_prob_k" not in existing:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_win_prob_k REAL")
+    if "backtest_run_id" not in existing:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_run_id TEXT")
+    if "backtest_updated_at" not in existing:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_updated_at TEXT")
 
 
 def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
@@ -227,19 +245,117 @@ def save_model_metrics(
         conn.commit()
 
 
+def save_backtest_metrics(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+    log_loss: float | None,
+    brier_score: float | None,
+    mae_margin: float | None,
+    win_prob_k: float | None,
+    run_id: str,
+) -> None:
+    """Persist backtest calibration metrics for a sport/season/model combination."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT home_advantage,
+                   model_error,
+                   win_prob_k,
+                   base_total,
+                   backtest_log_loss,
+                   backtest_brier_score,
+                   backtest_mae_margin,
+                   backtest_win_prob_k
+            FROM model_metrics
+            WHERE sport = ? AND season = ? AND model = ?
+            """,
+            (sport, season, model),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                """
+                INSERT INTO model_metrics (
+                    sport,
+                    season,
+                    model,
+                    home_advantage,
+                    model_error,
+                    win_prob_k,
+                    base_total,
+                    backtest_log_loss,
+                    backtest_brier_score,
+                    backtest_mae_margin,
+                    backtest_win_prob_k,
+                    backtest_run_id,
+                    backtest_updated_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                """,
+                (
+                    sport,
+                    season,
+                    model,
+                    0.0,
+                    0.0,
+                    DEFAULT_WIN_PROB_K,
+                    0.0,
+                    log_loss,
+                    brier_score,
+                    mae_margin,
+                    win_prob_k,
+                    run_id,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE model_metrics
+                SET backtest_log_loss = ?,
+                    backtest_brier_score = ?,
+                    backtest_mae_margin = ?,
+                    backtest_win_prob_k = ?,
+                    backtest_run_id = ?,
+                    backtest_updated_at = datetime('now')
+                WHERE sport = ? AND season = ? AND model = ?
+                """,
+                (
+                    log_loss,
+                    brier_score,
+                    mae_margin,
+                    win_prob_k,
+                    run_id,
+                    sport,
+                    season,
+                    model,
+                ),
+            )
+        conn.commit()
+
+
 def load_model_metrics(
     db_path: str | Path,
     *,
     sport: str,
     season: str,
     model: str,
-) -> dict[str, float] | None:
+) -> dict[str, float | None] | None:
     """Load calibration metrics for a sport/season/model combination."""
     init_db(db_path)
     with closing(sqlite3.connect(Path(db_path))) as conn:
         row = conn.execute(
             """
-            SELECT home_advantage, model_error, win_prob_k, base_total
+            SELECT home_advantage,
+                   model_error,
+                   win_prob_k,
+                   base_total,
+                   backtest_log_loss,
+                   backtest_brier_score,
+                   backtest_mae_margin,
+                   backtest_win_prob_k
             FROM model_metrics
             WHERE sport = ? AND season = ? AND model = ?
             """,
@@ -247,9 +363,18 @@ def load_model_metrics(
         ).fetchone()
     if row is None:
         return None
-    return {
+    metrics: dict[str, float | None] = {
         "home_advantage": float(row[0]),
         "model_error": float(row[1]),
         "win_prob_k": float(row[2]),
         "base_total": float(row[3]),
     }
+    backtest_values = {
+        "backtest_log_loss": row[4],
+        "backtest_brier_score": row[5],
+        "backtest_mae_margin": row[6],
+        "backtest_win_prob_k": row[7],
+    }
+    if any(value is not None for value in backtest_values.values()):
+        metrics.update(backtest_values)
+    return metrics

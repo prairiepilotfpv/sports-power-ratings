@@ -106,7 +106,14 @@ def predict_matchup(
     home_advantages = team_home_advantages(played, ratings)
     metrics = load_model_metrics(db_path, sport=sport, season=season, model=model) or {}
     fallback_home_advantage = float(metrics.get("home_advantage", 0.0))
-    win_prob_k = float(metrics.get("win_prob_k", DEFAULT_WIN_PROB_K))
+    backtest_win_prob_k = metrics.get("backtest_win_prob_k")
+    win_prob_k = float(
+        backtest_win_prob_k
+        if backtest_win_prob_k is not None
+        else metrics.get("win_prob_k", DEFAULT_WIN_PROB_K)
+    )
+    if win_prob_k <= 0:
+        win_prob_k = DEFAULT_WIN_PROB_K
     base_total = float(metrics.get("base_total", 0.0))
     played_records = played.to_dict(orient="records")
     total_intercept, total_slope = fit_total_model(played_records, ratings)

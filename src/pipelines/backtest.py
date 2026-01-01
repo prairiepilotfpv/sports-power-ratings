@@ -18,6 +18,9 @@ def run_backtest_pipeline(
     rolling_days: int | None = None,
     rolling_games: int | None = None,
     output_dir: str | Path | None = None,
+    db_path: str | Path | None = None,
+    sport: str | None = None,
+    season: str | None = None,
 ) -> BacktestOutputs:
     """Run a backtest for a single model and export outputs."""
     model_cls = get_backtest_model(model)
@@ -32,4 +35,7 @@ def run_backtest_pipeline(
         rolling_games=rolling_games,
         output_dir=output_dir,
         model_name=model,
+        db_path=db_path,
+        sport=sport,
+        season=season,
     )
