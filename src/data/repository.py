@@ -39,6 +39,10 @@ CREATE TABLE IF NOT EXISTS model_metrics (
     model_error REAL NOT NULL,
     win_prob_k REAL NOT NULL,
     base_total REAL NOT NULL,
+    margin_std REAL,
+    total_std REAL,
+    margin_mean REAL,
+    total_mean REAL,
     backtest_log_loss REAL,
     backtest_brier_score REAL,
     backtest_mae_margin REAL,
@@ -82,6 +86,14 @@ def _ensure_model_metrics_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_mae_margin REAL")
     if "backtest_win_prob_k" not in existing:
         conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_win_prob_k REAL")
+    if "margin_std" not in existing:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN margin_std REAL")
+    if "total_std" not in existing:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN total_std REAL")
+    if "margin_mean" not in existing:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN margin_mean REAL")
+    if "total_mean" not in existing:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN total_mean REAL")
     if "backtest_run_id" not in existing:
         conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_run_id TEXT")
     if "backtest_updated_at" not in existing:
@@ -223,6 +235,10 @@ def save_model_metrics(
     model_error: float,
     win_prob_k: float,
     base_total: float,
+    margin_std: float | None = None,
+    total_std: float | None = None,
+    margin_mean: float | None = None,
+    total_mean: float | None = None,
 ) -> None:
     """Persist calibration metrics produced by the ranking step."""
     init_db(db_path)
@@ -237,10 +253,26 @@ def save_model_metrics(
                 model_error,
                 win_prob_k,
                 base_total,
+                margin_std,
+                total_std,
+                margin_mean,
+                total_mean,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
-            (sport, season, model, home_advantage, model_error, win_prob_k, base_total),
+            (
+                sport,
+                season,
+                model,
+                home_advantage,
+                model_error,
+                win_prob_k,
+                base_total,
+                margin_std,
+                total_std,
+                margin_mean,
+                total_mean,
+            ),
         )
         conn.commit()
 
@@ -266,6 +298,10 @@ def save_backtest_metrics(
                    model_error,
                    win_prob_k,
                    base_total,
+                   margin_std,
+                   total_std,
+                   margin_mean,
+                   total_mean,
                    backtest_log_loss,
                    backtest_brier_score,
                    backtest_mae_margin,
@@ -352,6 +388,10 @@ def load_model_metrics(
                    model_error,
                    win_prob_k,
                    base_total,
+                   margin_std,
+                   total_std,
+                   margin_mean,
+                   total_mean,
                    backtest_log_loss,
                    backtest_brier_score,
                    backtest_mae_margin,
@@ -369,11 +409,19 @@ def load_model_metrics(
         "win_prob_k": float(row[2]),
         "base_total": float(row[3]),
     }
+    extra_values = {
+        "margin_std": row[4],
+        "total_std": row[5],
+        "margin_mean": row[6],
+        "total_mean": row[7],
+    }
+    if any(value is not None for value in extra_values.values()):
+        metrics.update(extra_values)
     backtest_values = {
-        "backtest_log_loss": row[4],
-        "backtest_brier_score": row[5],
-        "backtest_mae_margin": row[6],
-        "backtest_win_prob_k": row[7],
+        "backtest_log_loss": row[8],
+        "backtest_brier_score": row[9],
+        "backtest_mae_margin": row[10],
+        "backtest_win_prob_k": row[11],
     }
     if any(value is not None for value in backtest_values.values()):
         metrics.update(backtest_values)

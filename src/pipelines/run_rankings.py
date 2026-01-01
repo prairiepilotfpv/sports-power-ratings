@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import statistics
 import math
 from pathlib import Path
 from typing import Dict
@@ -13,7 +14,12 @@ from data.repository import load_games, save_model_metrics
 from models.registry import get_model, list_models, normalize_model_name
 from pipelines.common import normalize_games, resolve_output_path
 from config import DEFAULT_WIN_PROB_K
-from pipelines.projections import average_total_points, fit_win_prob_scale
+from pipelines.projections import (
+    average_total_points,
+    fit_total_model,
+    fit_win_prob_scale,
+    total_from_ratings,
+)
 
 
 def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
@@ -199,7 +205,15 @@ def _store_model_metrics(
     margins = sample["home_score"].astype(float) - sample["away_score"].astype(float)
     home_advantage = float(margins.mean()) if not margins.empty else 0.0
 
+    base_total = average_total_points(played.to_dict(orient="records"))
     errors = []
+    predicted_margins: list[float] = []
+    margin_residuals: list[float] = []
+    predicted_totals: list[float] = []
+    total_residuals: list[float] = []
+    total_intercept, total_slope = fit_total_model(
+        played.to_dict(orient="records"), ratings
+    )
     win_prob_samples: list[tuple[float, int]] = []
     for _, row in played.iterrows():
         home = str(row.get("home_team", "")).strip()
@@ -218,6 +232,21 @@ def _store_model_metrics(
             0.0 if neutral else home_advantage
         )
         errors.append(predicted_margin - margin)
+        predicted_margins.append(predicted_margin)
+        margin_residuals.append(predicted_margin - margin)
+        predicted_total = total_from_ratings(
+            home,
+            away,
+            ratings,
+            intercept=total_intercept,
+            slope=total_slope,
+        )
+        if predicted_total is None:
+            predicted_total = base_total if base_total > 0 else None
+        if predicted_total is not None:
+            actual_total = float(row.get("home_score")) + float(row.get("away_score"))
+            predicted_totals.append(predicted_total)
+            total_residuals.append(predicted_total - actual_total)
         if margin == 0:
             continue
         projected_spread = -predicted_margin
@@ -227,8 +256,13 @@ def _store_model_metrics(
     if model_error == 0.0:
         model_error = 1.0
 
-    base_total = average_total_points(played.to_dict(orient="records"))
     win_prob_k = fit_win_prob_scale(win_prob_samples, default_k=DEFAULT_WIN_PROB_K)
+    margin_std = (
+        statistics.pstdev(margin_residuals) if margin_residuals else None
+    )
+    total_std = statistics.pstdev(total_residuals) if total_residuals else None
+    margin_mean = statistics.fmean(predicted_margins) if predicted_margins else None
+    total_mean = statistics.fmean(predicted_totals) if predicted_totals else None
 
     save_model_metrics(
         db_path,
@@ -239,4 +273,8 @@ def _store_model_metrics(
         model_error=model_error,
         win_prob_k=win_prob_k,
         base_total=base_total,
+        margin_std=margin_std,
+        total_std=total_std,
+        margin_mean=margin_mean,
+        total_mean=total_mean,
     )

@@ -34,6 +34,10 @@ class MatchupPrediction:
     spread: float
     total_points: float
     win_prob: float | None
+    margin_mean: float
+    margin_std: float | None
+    total_mean: float
+    total_std: float | None
 
 
 def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
@@ -162,6 +166,10 @@ def predict_matchup(
         spread=projection.projected_spread,
         total_points=projection.projected_total or 0.0,
         win_prob=projection.projected_win_prob,
+        margin_mean=projection.margin,
+        margin_std=metrics.get("margin_std"),
+        total_mean=projection.projected_total or 0.0,
+        total_std=metrics.get("total_std"),
     )
 
 
@@ -171,14 +179,27 @@ def format_matchup(prediction: MatchupPrediction) -> Tuple[str, Dict[str, float]
     prob_suffix = ""
     if prediction.win_prob is not None:
         prob_suffix = f" Win prob: {prediction.win_prob:.1%}."
+    margin_std_suffix = ""
+    if prediction.margin_std is not None:
+        margin_std_suffix = f" (std {prediction.margin_std:.1f})"
+    total_std_suffix = ""
+    if prediction.total_std is not None:
+        total_std_suffix = f" (std {prediction.total_std:.1f})"
     line = (
         f"{prediction.winner} over {prediction.loser} by {spread_points:.1f} points. "
-        f"Projected total: {prediction.total_points:.1f}.{prob_suffix}"
+        f"Margin mean: {prediction.margin_mean:.1f}{margin_std_suffix}. "
+        f"Projected total: {prediction.total_points:.1f}{total_std_suffix}.{prob_suffix}"
     )
     metrics = {
         "spread": prediction.spread,
         "total_points": prediction.total_points,
+        "margin_mean": prediction.margin_mean,
+        "total_mean": prediction.total_mean,
     }
+    if prediction.margin_std is not None:
+        metrics["margin_std"] = prediction.margin_std
+    if prediction.total_std is not None:
+        metrics["total_std"] = prediction.total_std
     if prediction.win_prob is not None:
         metrics["win_prob"] = prediction.win_prob
     return line, metrics
