@@ -33,7 +33,20 @@ def load_games_df_from_db(
 ) -> pd.DataFrame:
     from data.repository import load_games
 
+    db_path = Path(db_path)
+    if not db_path.exists():
+        raise FileNotFoundError(
+            f"Database not found at {db_path}. Provide a valid DB path or ingest CSV."
+        )
+
     games = load_games(db_path, sport=sport, season=season)
+    if not games:
+        filter_label = f"sport={sport}, season={season}"
+        raise ValueError(
+            "No games found for backtest "
+            f"({filter_label}). Ingest historical CSV data into the database "
+            "or provide a database with historical games."
+        )
     rows = [game.model_dump() for game in games]
     return pd.DataFrame(rows)
 
