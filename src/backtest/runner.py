@@ -8,6 +8,7 @@ from typing import Callable, Iterable
 import numpy as np
 import pandas as pd
 
+from contracts import validate_model_input, validate_predictions
 from data.validation import validate_dataset
 from models.base import BaseModel, GamePrediction, resolve_model_identity
 from pipelines.metadata import prediction_hash
@@ -89,7 +90,9 @@ def run_backtest(
         predict_input = day_games.drop(
             columns=["home_score", "away_score"], errors="ignore"
         )
+        predict_input = validate_model_input(predict_input, context="Backtest model input")
         predictions = model.predict(predict_input)
+        predictions = validate_predictions(predictions, context="Backtest model output")
         _attach_prediction_metadata(predictions, model=model, train_data=train_data)
         pred_df = _predictions_to_frame(predictions)
         pred_df["date"] = pd.to_datetime(pred_df["date"]).dt.normalize()

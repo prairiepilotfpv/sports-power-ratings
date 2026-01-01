@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 
 import pandas as pd
 
+from contracts import SCHEDULE_EXPORT_COLUMNS, validate_schedule_export_frame
 from data.paths import processed_path_for
 from data.repository import load_games, load_model_metrics
 from pipelines.common import normalize_games, resolve_output_path
@@ -27,30 +28,6 @@ from pipelines.run_rankings import build_rankings
 from models.base import resolve_model_identity
 from pipelines.metadata import prediction_hash
 
-
-SCHEDULE_EXPORT_COLUMNS: List[str] = [
-    "date",
-    "game_id",
-    "status",
-    "home_team",
-    "away_team",
-    "neutral",
-    "overtime",
-    "home_score",
-    "away_score",
-    "result_margin",
-    "result_total",
-    "home_rating",
-    "away_rating",
-    "home_advantage",
-    "projected_winner",
-    "projected_spread",
-    "projected_home_spread",
-    "projected_win_prob",
-    "projected_home_score",
-    "projected_away_score",
-    "projected_total",
-]
 
 DASHBOARD_COLUMNS: List[str] = [
     "model",
@@ -211,15 +188,11 @@ def _project_row(
 
 def _order_schedule_export(schedule_df: pd.DataFrame) -> pd.DataFrame:
     """Ensure a consistent column order for downstream reporting."""
-    expected_set = set(SCHEDULE_EXPORT_COLUMNS)
-    missing = [col for col in SCHEDULE_EXPORT_COLUMNS if col not in schedule_df.columns]
-    extra = [col for col in schedule_df.columns if col not in expected_set]
-    if missing or extra:
-        raise ValueError(
-            f"Schedule export column mismatch. Missing: {missing or 'none'}, extra: {extra or 'none'}"
-        )
-    # report-only ordering; do not modify upstream calculations.
-    return schedule_df[SCHEDULE_EXPORT_COLUMNS]
+    return validate_schedule_export_frame(
+        schedule_df,
+        expected_columns=SCHEDULE_EXPORT_COLUMNS,
+        context="Schedule export",
+    )
 
 
 def _resolve_models(model: str | None) -> list[str]:
