@@ -7,6 +7,7 @@ import re
 from typing import Type
 
 from models.base import BaseModel, PowerRatingModel
+from models.bradley_terry_calibrated_hfa import BradleyTerryCalibratedHFA
 from models.bradley_terry_hfa import BradleyTerryHFA
 from models.toor import TOORModel
 
@@ -48,6 +49,7 @@ _DYNAMIC_ABBREVIATIONS: dict[str, str] = {}
 
 _BACKTEST_REGISTRY: dict[str, Type[BaseModel]] = {
     "bradley_terry_hfa": BradleyTerryHFA,
+    "bradley_terry_calibrated_hfa": BradleyTerryCalibratedHFA,
     "toor": TOORModel,
 }
 
