@@ -38,6 +38,10 @@ DASHBOARD_COLUMNS: List[str] = [
     "total",
     "projected_winner",
     "projected_spread",
+    "projected_margin_mean",
+    "projected_margin_std",
+    "projected_total_mean",
+    "projected_total_std",
 ]
 
 MODEL_METADATA_DATA_START_ROW = 10
@@ -104,6 +108,8 @@ def _project_row(
     status: str,
     home_advantage: float,
     win_prob_k: float,
+    margin_std: float | None = None,
+    total_std: float | None = None,
     total_intercept: float | None = None,
     total_slope: float | None = None,
 ) -> Dict[str, Any]:
@@ -122,6 +128,8 @@ def _project_row(
     projected_home_score = None
     projected_away_score = None
     projected_total = None
+    projected_margin_mean = None
+    projected_total_mean = None
 
     if home_rating is not None and away_rating is not None:
         # Build projected spreads/totals when both team ratings are available.
@@ -155,6 +163,8 @@ def _project_row(
         projected_home_score = projection.projected_home_score
         projected_away_score = projection.projected_away_score
         projected_total = projection.projected_total
+        projected_margin_mean = projection.margin
+        projected_total_mean = projection.projected_total
 
     result_margin = None
     result_total = None
@@ -179,6 +189,10 @@ def _project_row(
             "projected_home_score": projected_home_score,
             "projected_away_score": projected_away_score,
             "projected_total": projected_total,
+            "projected_margin_mean": projected_margin_mean,
+            "projected_margin_std": margin_std,
+            "projected_total_mean": projected_total_mean,
+            "projected_total_std": total_std,
             "result_margin": result_margin,
             "result_total": result_total,
         }
@@ -245,6 +259,8 @@ def _build_schedule_dataframe(
     if win_prob_k <= 0:
         win_prob_k = DEFAULT_WIN_PROB_K
     base_total = float(metrics.get("base_total", 0.0)) or fallback_total
+    margin_std = metrics.get("margin_std")
+    total_std = metrics.get("total_std")
     played_records = played.to_dict(orient="records")
     total_intercept, total_slope = fit_total_model(played_records, ratings)
     scoring_averages = team_scoring_averages(played_records)
@@ -262,6 +278,8 @@ def _build_schedule_dataframe(
                     status="final",
                     home_advantage=home_advantages.get(home, fallback_home_advantage),
                     win_prob_k=win_prob_k,
+                    margin_std=margin_std,
+                    total_std=total_std,
                     total_intercept=total_intercept,
                     total_slope=total_slope,
                 )
@@ -275,13 +293,15 @@ def _build_schedule_dataframe(
                 ratings=ratings,
                 base_total=base_total,
                 scoring_averages=scoring_averages,
-                status="scheduled",
-                home_advantage=home_advantages.get(home, fallback_home_advantage),
-                win_prob_k=win_prob_k,
-                total_intercept=total_intercept,
-                total_slope=total_slope,
-            )
+            status="scheduled",
+            home_advantage=home_advantages.get(home, fallback_home_advantage),
+            win_prob_k=win_prob_k,
+            margin_std=margin_std,
+            total_std=total_std,
+            total_intercept=total_intercept,
+            total_slope=total_slope,
         )
+    )
 
     schedule_df = pd.DataFrame(schedule_rows)
     if not schedule_df.empty and "date" in schedule_df.columns:
@@ -338,6 +358,10 @@ def _dashboard_rows_for_today(
                 "total": total,
                 "projected_winner": row.get("projected_winner"),
                 "projected_spread": row.get("projected_spread"),
+                "projected_margin_mean": row.get("projected_margin_mean"),
+                "projected_margin_std": row.get("projected_margin_std"),
+                "projected_total_mean": row.get("projected_total_mean") or total,
+                "projected_total_std": row.get("projected_total_std"),
             }
         )
     return rows
