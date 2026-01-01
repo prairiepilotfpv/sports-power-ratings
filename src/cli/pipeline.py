@@ -211,14 +211,9 @@ def _parse_args() -> argparse.Namespace:
         help="Optional output directory override (default: outputs/backtests/<model>).",
     )
     backtest_parser.add_argument(
-        "--sport", default="nba", help="Sport identifier (default: nba)."
-    )
-    backtest_parser.add_argument(
-        "--season", default="2025-26", help="Season identifier (default: 2025-26)."
-    )
-    backtest_parser.add_argument(
-        "--db",
-        help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db).",
+        "--csv",
+        required=True,
+        help="CSV path containing historical games for backtesting.",
     )
 
     return parser.parse_args()
@@ -412,15 +407,11 @@ def _run_report(args: argparse.Namespace) -> None:
 def _run_backtest(args: argparse.Namespace) -> None:
     """Run a backtest pipeline for a single model."""
     _ensure_src_on_path()
-    from data.paths import db_path_for
     from pipelines.backtest import run_backtest_pipeline
 
-    db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
     output_dir = Path(args.output_dir) if args.output_dir else None
     outputs = run_backtest_pipeline(
-        db_path=db_path,
-        sport=args.sport,
-        season=args.season,
+        csv_path=Path(args.csv),
         model=args.model,
         start_date=args.start,
         end_date=args.end,
