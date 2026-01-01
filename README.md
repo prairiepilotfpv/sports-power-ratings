@@ -90,7 +90,7 @@ python -m src.cli.pipeline matchup --sport nba --season 2025-26 --matchup "Laker
 python -m src.cli.pipeline report --sport nba --season 2025-26
 
 # 6) Run a backtest (Excel + CSV outputs)
-python -m src.cli.pipeline backtest --model bradley_terry_hfa --start 2024-11-01 --end 2024-12-01
+python -m src.cli.pipeline backtest --csv nba_results.csv --model bradley_terry_hfa --start 2024-11-01 --end 2024-12-01
 ```
 
 ## CLI reference
@@ -174,7 +174,7 @@ Options:
 ### `backtest` (model accuracy on historical games)
 
 ```bash
-python -m src.cli.pipeline backtest --model bradley_terry_hfa --start 2024-11-01 --end 2024-12-01
+python -m src.cli.pipeline backtest --csv nba_results.csv --model bradley_terry_hfa --start 2024-11-01 --end 2024-12-01
 ```
 
 Options:
@@ -186,6 +186,15 @@ Options:
 - `--output-dir`: output directory override (default: `outputs/backtests/<model>`)
 - `--sport` / `--season`: dataset selection
 - `--db`: custom SQLite path
+- `--csv`: required path to a CSV of completed games (relative paths are resolved from the repo root)
+
+Input CSV for backtests:
+
+- Place the file anywhere (e.g., repo root) and pass it via `--csv my_results.csv`
+- Required columns: `date`, `home_team`, `away_team`, `home_score`, `away_score` (aliases like `Date`, `Visitor/Neutral`, `Home/Neutral`, `PTS_away`, `PTS_home` are auto-detected)
+- Optional columns: `neutral` (or `neutral_site`), `overtime` (`ot`), `game_id` (`box score`) (auto-generated if missing)
+- Dates must parse as YYYY-MM-DD; scores must be numeric and non-negative
+- The backtest window (`--start` / `--end`) must overlap the CSV data or no evaluations will run
 
 ## Input formats
 

@@ -52,6 +52,62 @@ def load_games_df_from_db(
 
 
 def load_games_df_from_csv(csv_path: str | Path) -> pd.DataFrame:
+    """Load a backtest dataset from CSV, accepting common Sports-Reference headers."""
+    from ingest.sports_reference import parse_sr_csv
+
+    def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+        """Lowercase/strip headers and map common aliases to expected names."""
+        rename_map: dict[str, str] = {}
+        normalized = {c.strip().lower(): c for c in df.columns}
+
+        def _find(*names: str) -> str | None:
+            for name in names:
+                if name in normalized:
+                    return normalized[name]
+            return None
+
+        date_col = _find("date", "game date")
+        away_col = _find("away_team", "visitor/neutral", "visitor", "away", "away/neutral", "road", "road team")
+        home_col = _find("home_team", "home/neutral", "home", "home team")
+        away_score_col = _find(
+            "away_score",
+            "pts_away",
+            "visitor pts",
+            "visitor_pts",
+            "away pts",
+            "pts_visitor",
+            "ptsaway",
+            "pts away",
+        )
+        home_score_col = _find(
+            "home_score",
+            "pts_home",
+            "home pts",
+            "home_pts",
+            "ptshome",
+            "pts home",
+        )
+        neutral_col = _find("neutral", "neutral_site")
+        overtime_col = _find("overtime", "ot")
+        game_id_col = _find("game_id", "box score", "boxscore", "box")
+
+        for src, target in [
+            (date_col, "date"),
+            (away_col, "away_team"),
+            (home_col, "home_team"),
+            (away_score_col, "away_score"),
+            (home_score_col, "home_score"),
+            (neutral_col, "neutral"),
+            (overtime_col, "overtime"),
+            (game_id_col, "game_id"),
+        ]:
+            if src:
+                rename_map[src] = target
+
+        normalized_df = df.rename(columns=rename_map)
+        # Promote a numeric neutral/overtime if present; leave validation to downstream checks.
+        return normalized_df
+
     csv_path = Path(csv_path)
     if not csv_path.exists():
         raise FileNotFoundError(
@@ -60,7 +116,21 @@ def load_games_df_from_csv(csv_path: str | Path) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
     if df.empty:
         raise ValueError(f"No rows found in CSV at {csv_path}.")
-    return df
+
+    normalized = _normalize_columns(df)
+    required = {"date", "home_team", "away_team", "home_score", "away_score"}
+    if required.issubset(set(normalized.columns)):
+        return normalized
+
+    # Fallback: parse as a Sports-Reference export and convert to a DataFrame the backtester understands.
+    parsed = parse_sr_csv(csv_path)
+    if not parsed:
+        raise ValueError(
+            "CSV is missing required columns for backtesting "
+            "(date, home_team, away_team, home_score, away_score), "
+            "and parsing as a Sports-Reference export also failed."
+        )
+    return pd.DataFrame([game.model_dump() for game in parsed])
 
 
 def run_backtest(

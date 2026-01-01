@@ -377,22 +377,14 @@ def _write_metadata_section(
     sheet_name: str,
     metadata: dict[str, Any],
 ) -> int:
-    if sheet_name in writer.sheets:
-        ws = writer.sheets[sheet_name]
-    else:
-        ws = writer.book.create_sheet(sheet_name)
-        writer.sheets[sheet_name] = ws
+    """Write model metadata above the schedule sheet and return the data start row."""
+    metadata_df = pd.DataFrame(
+        [{"metadata_key": key, "metadata_value": value} for key, value in metadata.items()]
+    )
+    metadata_df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=0)
 
-    ws.cell(row=1, column=1, value="metadata_key")
-    ws.cell(row=1, column=2, value="metadata_value")
-
-    row = 2
-    for key, value in metadata.items():
-        ws.cell(row=row, column=1, value=key)
-        ws.cell(row=row, column=2, value=value)
-        row += 1
-
-    return MODEL_METADATA_DATA_START_ROW - 1
+    # Leave a buffer so schedule data does not overlap the metadata block.
+    return max(MODEL_METADATA_DATA_START_ROW - 1, len(metadata_df) + 2)
 
 
 def _build_schedule_for_model(
