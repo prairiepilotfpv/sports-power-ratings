@@ -13,7 +13,8 @@ from .base import (
 )
 from .bradley_terry import BradleyTerry
 from .bradley_terry_hfa import BradleyTerryHFA
-from .elo import EloPowerRating
+from .elo import EloModel, EloPowerRating
+from .gssd import GSSDModel, GSSDPowerRating
 from .toor import TOORModel, TOORPowerRating
 
 __all__ = [
@@ -23,7 +24,10 @@ __all__ = [
     "PowerRatingModel",
     "BradleyTerry",
     "BradleyTerryHFA",
+    "EloModel",
     "EloPowerRating",
+    "GSSDModel",
+    "GSSDPowerRating",
     "TOORModel",
     "TOORPowerRating",
     "normalize_optional_float",

@@ -3,7 +3,7 @@
 A lightweight, local-first pipeline for turning Sports-Reference schedules/results into:
 
 - SQLite game databases (one DB per sport + season)
-- Bradley-Terry power ratings and calibration metrics
+- Power ratings (Bradley-Terry, Elo, GSSD, TOOR) and calibration metrics
 - Matchup projections (spread, total, win probability)
 - Schedule exports with projections
 - Excel reports for daily review
@@ -27,7 +27,7 @@ src/
   cli/                 Command-line entry points
   data/                SQLite schema, read/write helpers, validation
   ingest/              Sports-Reference parsing + normalization helpers
-  models/              Bradley-Terry implementation + model interfaces
+  models/              Power rating implementations + model interfaces
   pipelines/           Ranking, projections, reports, matchup logic
   utils/               Small shared utilities
 
@@ -36,6 +36,12 @@ data/
   processed/           Output rankings/schedules/reports
   db/<sport>/<season>.db  SQLite database per sport+season
 ```
+
+## Models and capabilities
+
+- **Ranking models**: `bradley-terry` (default), `elo`, `gssd` (requires `ssat`), `toor`
+- **Backtest models**: `bradley_terry_hfa`, `bradley_terry_calibrated_hfa`, `toor`, `elo`, `gssd`
+- All backtest models output win probabilities and margins and emit calibration extras (`win_prob_k`, home-advantage/scale/error terms) for persistence.
 
 ## Setup
 
@@ -79,6 +85,7 @@ python -m src.cli.pipeline import --sport nba --season 2025-26 --input data/raw/
 
 # 2) Run rankings
 python -m src.cli.pipeline rank --sport nba --season 2025-26 --model bradley-terry
+#    (other ranking models: elo, gssd, toor; gssd requires the `ssat` dependency)
 
 # 3) Export schedule with projections
 python -m src.cli.pipeline schedule --sport nba --season 2025-26 --model bradley-terry
@@ -91,6 +98,9 @@ python -m src.cli.pipeline report --sport nba --season 2025-26
 
 # 6) Run a backtest (Excel + CSV outputs)
 python -m src.cli.pipeline backtest --csv nba_results.csv --model bradley_terry_hfa --start 2024-11-01 --end 2024-12-01
+#
+# Supported backtest models:
+#   bradley_terry_hfa, bradley_terry_calibrated_hfa, toor, elo, gssd
 ```
 
 ## CLI reference
@@ -187,6 +197,10 @@ Options:
 - `--sport` / `--season`: dataset selection
 - `--db`: custom SQLite path
 - `--csv`: required path to a CSV of completed games (relative paths are resolved from the repo root)
+
+Notes:
+
+- Re-running the same model/window overwrites CSV/Excel files in the same `--output-dir`. Point `--output-dir` to a new folder if you want to keep multiple runs side-by-side.
 
 Input CSV for backtests:
 
