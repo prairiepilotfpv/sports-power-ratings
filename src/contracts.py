@@ -13,6 +13,7 @@ from models.base import (
     REQUIRED_PREDICTION_METADATA_KEYS,
     require_columns,
     validate_probability,
+    validate_win_prob_dist,
 )
 
 
@@ -35,6 +36,7 @@ SCHEDULE_EXPORT_COLUMNS: list[str] = [
     "projected_spread",
     "projected_home_spread",
     "projected_win_prob",
+    "projected_win_prob_dist",
     "projected_home_score",
     "projected_away_score",
     "projected_total",
@@ -95,6 +97,7 @@ class ScheduleExportRow:
     projected_spread: float | None
     projected_home_spread: float | None
     projected_win_prob: float | None
+    projected_win_prob_dist: str | None
     projected_home_score: float | None
     projected_away_score: float | None
     projected_total: float | None
@@ -230,6 +233,7 @@ def validate_predictions(
         if not prediction.away_team:
             raise ValueError(f"{context} prediction missing away_team at index {idx}.")
         validate_probability(prediction.p_home_win, field_name="p_home_win")
+        validate_win_prob_dist(prediction.win_prob_dist)
         missing_meta = [
             key
             for key in REQUIRED_PREDICTION_METADATA_KEYS

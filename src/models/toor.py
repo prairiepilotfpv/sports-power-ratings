@@ -11,7 +11,11 @@ import numpy as np
 from config import DEFAULT_WIN_PROB_K
 from models.base import BaseModel, GamePrediction, ModelMetadata, require_columns
 from models.bradley_terry import BradleyTerry
-from pipelines.projections import fit_win_prob_scale, logistic_win_prob
+from pipelines.projections import (
+    fit_win_prob_scale,
+    logistic_win_prob,
+    win_prob_distribution,
+)
 
 
 @dataclass
@@ -239,6 +243,11 @@ class TOORModel(BaseModel):
             )
             projected_spread = -pred_margin
             p_home_win = logistic_win_prob(projected_spread, win_prob_k)
+            win_prob_dist = win_prob_distribution(
+                p_home_win,
+                win_prob_k=win_prob_k,
+                margin_std=coefficients.error_term,
+            )
 
             game_id = row.get("game_id") or f"{row['date']}_{home}_{away}"
             predictions.append(
@@ -248,6 +257,7 @@ class TOORModel(BaseModel):
                     home_team=home,
                     away_team=away,
                     p_home_win=p_home_win,
+                    win_prob_dist=win_prob_dist,
                     pred_margin=pred_margin,
                     metadata=dict(model_identity),
                     extra={

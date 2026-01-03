@@ -11,7 +11,11 @@ import numpy as np
 
 from config import DEFAULT_WIN_PROB_K
 from models.base import BaseModel, GamePrediction, ModelMetadata, require_columns
-from pipelines.projections import fit_win_prob_scale, logistic_win_prob
+from pipelines.projections import (
+    fit_win_prob_scale,
+    logistic_win_prob,
+    win_prob_distribution,
+)
 
 
 class EloPowerRating:
@@ -170,7 +174,11 @@ class EloModel(BaseModel):
                 continue
 
             neutral_raw = game.get("neutral", False)
-            neutral = False if isinstance(neutral_raw, float) and np.isnan(neutral_raw) else bool(neutral_raw)
+            neutral = (
+                False
+                if isinstance(neutral_raw, float) and np.isnan(neutral_raw)
+                else bool(neutral_raw)
+            )
             home_advantage_flag = 0.0 if neutral else 1.0
 
             home_rating = float(self._elo._ratings[home])
@@ -225,7 +233,11 @@ class EloModel(BaseModel):
                 continue
 
             neutral_raw = row.get("neutral", False)
-            neutral = False if isinstance(neutral_raw, float) and np.isnan(neutral_raw) else bool(neutral_raw)
+            neutral = (
+                False
+                if isinstance(neutral_raw, float) and np.isnan(neutral_raw)
+                else bool(neutral_raw)
+            )
             home_advantage_flag = 0.0 if neutral else 1.0
 
             home_rating = float(self._elo._ratings[home])
@@ -238,6 +250,11 @@ class EloModel(BaseModel):
             )
             projected_spread = -pred_margin
             p_home_win = logistic_win_prob(projected_spread, win_prob_k)
+            win_prob_dist = win_prob_distribution(
+                p_home_win,
+                win_prob_k=win_prob_k,
+                margin_std=coefficients.error_term,
+            )
 
             game_id = row.get("game_id") or f"{row['date']}_{home}_{away}"
             predictions.append(
@@ -247,6 +264,7 @@ class EloModel(BaseModel):
                     home_team=home,
                     away_team=away,
                     p_home_win=p_home_win,
+                    win_prob_dist=win_prob_dist,
                     pred_margin=pred_margin,
                     metadata=dict(model_identity),
                     extra={

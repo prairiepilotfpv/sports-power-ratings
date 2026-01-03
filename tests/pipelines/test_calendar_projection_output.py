@@ -44,6 +44,7 @@ def test_calendar_projection_output_schema_and_types() -> None:
         "home_team",
         "away_team",
         "projected_winner",
+        "projected_win_prob_dist",
     ]
     boolean_columns = ["neutral", "overtime"]
     numeric_columns = [

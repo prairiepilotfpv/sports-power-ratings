@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from math import isnan
+import math
 from typing import Any, Iterable, Mapping, Protocol
 
 
@@ -39,6 +39,7 @@ class GamePrediction:
     home_team: str
     away_team: str
     p_home_win: float
+    win_prob_dist: list[dict[str, float]] | None = None
     pred_margin: float | None = None
     pred_total: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -46,6 +47,7 @@ class GamePrediction:
 
     def __post_init__(self) -> None:
         self.p_home_win = validate_probability(self.p_home_win, field_name="p_home_win")
+        self.win_prob_dist = validate_win_prob_dist(self.win_prob_dist)
         self.pred_margin = normalize_optional_float(self.pred_margin)
         self.pred_total = normalize_optional_float(self.pred_total)
         if not isinstance(self.metadata, dict):
@@ -148,11 +150,54 @@ def validate_probability(
     return prob
 
 
+def validate_win_prob_dist(
+    dist: list[dict[str, float]] | None,
+    *,
+    field_name: str = "win_prob_dist",
+) -> list[dict[str, float]] | None:
+    """Validate and normalize a win-probability distribution."""
+    if dist is None:
+        return None
+    if not isinstance(dist, list) or not dist:
+        raise ValueError(f"{field_name} must be a non-empty list.")
+    normalized: list[dict[str, float]] = []
+    total = 0.0
+    for bucket in dist:
+        if not isinstance(bucket, Mapping):
+            raise ValueError(f"{field_name} entries must be mappings.")
+        if "p_home_win" not in bucket or "weight" not in bucket:
+            raise ValueError(
+                f"{field_name} entries must include 'p_home_win' and 'weight'."
+            )
+        p_home_win = validate_probability(
+            bucket.get("p_home_win"), field_name="p_home_win"
+        )
+        try:
+            weight = float(bucket.get("weight"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field_name} weight must be a float.") from exc
+        if weight < 0:
+            raise ValueError(f"{field_name} weight must be non-negative.")
+        if not math.isfinite(weight):
+            raise ValueError(f"{field_name} weight must be finite.")
+        normalized.append({"p_home_win": p_home_win, "weight": weight})
+        total += weight
+    if total <= 0:
+        raise ValueError(f"{field_name} weights must sum to a positive value.")
+    normalized = sorted(normalized, key=lambda item: item["p_home_win"])
+    if abs(total - 1.0) > 1e-6:
+        normalized = [
+            {"p_home_win": item["p_home_win"], "weight": item["weight"] / total}
+            for item in normalized
+        ]
+    return normalized
+
+
 def normalize_optional_float(value: float | None) -> float | None:
     """Normalize NaN floats to None for easier downstream checks."""
     if value is None:
         return None
-    if isinstance(value, float) and isnan(value):
+    if isinstance(value, float) and math.isnan(value):
         return None
     return float(value)
 

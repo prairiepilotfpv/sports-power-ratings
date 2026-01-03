@@ -4,6 +4,7 @@ from math import log
 from typing import Any
 
 from models.base import BaseModel, GamePrediction, ModelMetadata, require_columns
+from pipelines.projections import win_prob_distribution
 from models.bradley_terry import BradleyTerry
 
 
@@ -53,6 +54,11 @@ class BradleyTerryHFA(BaseModel):
                 str(row["away_team"]),
                 venue=venue,
             )
+            win_prob_dist = win_prob_distribution(
+                p_home_win,
+                win_prob_k=None,
+                margin_std=None,
+            )
             pred_margin = self._score_margin(
                 str(row["home_team"]),
                 str(row["away_team"]),
@@ -69,6 +75,7 @@ class BradleyTerryHFA(BaseModel):
                     home_team=str(row["home_team"]),
                     away_team=str(row["away_team"]),
                     p_home_win=p_home_win,
+                    win_prob_dist=win_prob_dist,
                     pred_margin=pred_margin,
                     metadata=dict(model_identity),
                 )

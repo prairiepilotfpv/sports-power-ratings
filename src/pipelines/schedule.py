@@ -23,6 +23,7 @@ from pipelines.projections import (
     project_game,
     total_from_ratings,
     team_scoring_averages,
+    win_prob_distribution,
 )
 from models.registry import get_model, list_models, normalize_model_name
 from pipelines.run_rankings import build_rankings
@@ -131,6 +132,7 @@ def _project_row(
     projected_total = None
     projected_margin_mean = None
     projected_total_mean = None
+    projected_win_prob_dist = None
 
     if home_rating is not None and away_rating is not None:
         # Build projected spreads/totals when both team ratings are available.
@@ -166,6 +168,12 @@ def _project_row(
         projected_total = projection.projected_total
         projected_margin_mean = projection.margin
         projected_total_mean = projection.projected_total
+        if projected_win_prob is not None:
+            projected_win_prob_dist = win_prob_distribution(
+                projected_win_prob,
+                win_prob_k=win_prob_k,
+                margin_std=margin_std,
+            )
 
     result_margin = None
     result_total = None
@@ -186,6 +194,11 @@ def _project_row(
             "projected_spread": projected_spread,
             "projected_home_spread": projected_home_spread,
             "projected_win_prob": projected_win_prob,
+            "projected_win_prob_dist": (
+                json.dumps(projected_win_prob_dist)
+                if projected_win_prob_dist is not None
+                else None
+            ),
             "home_advantage": applied_home_advantage,
             "projected_home_score": projected_home_score,
             "projected_away_score": projected_away_score,
