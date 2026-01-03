@@ -135,6 +135,8 @@ Options:
 
 - `--output`: output CSV path (defaults to `data/processed/<sport>/<season>/rankings.csv`)
 - `--overwrite`: overwrite the output if it already exists
+- `--model-params`: JSON string of model parameters to override defaults
+- `--model-params-file`: JSON file containing model parameters or per-model overrides
 - `--db`: custom SQLite path
 
 This step also stores calibration metrics (`home_advantage`, `win_prob_k`, `base_total`) in the
@@ -150,6 +152,8 @@ Options:
 
 - `--output`: output CSV path (defaults to `data/processed/<sport>/<season>/schedule_with_projections.csv`)
 - `--upcoming-only`: include only games without scores
+- `--model-params`: JSON string of model parameters to override defaults
+- `--model-params-file`: JSON file containing model parameters or per-model overrides
 
 Output includes:
 
@@ -170,6 +174,11 @@ python -m src.cli.pipeline matchup --sport nba --season 2025-26 --home Lakers --
 
 Output includes a projected winner, spread, total points, and win probability when calibrated.
 
+Options:
+
+- `--model-params`: JSON string of model parameters to override defaults
+- `--model-params-file`: JSON file containing model parameters or per-model overrides
+
 ### `report` (Excel output)
 
 ```bash
@@ -180,6 +189,8 @@ Options:
 
 - `--models`: comma-separated list of models (default: `bradley-terry`)
 - `--output`: output Excel path (defaults to `data/processed/<sport>/<season>/report.xlsx`)
+- `--model-params`: JSON string of model parameters to override defaults
+- `--model-params-file`: JSON file containing model parameters or per-model overrides
 
 ### `backtest` (model accuracy on historical games)
 
@@ -190,6 +201,8 @@ python -m src.cli.pipeline backtest --csv nba_results.csv --model bradley_terry_
 Options:
 
 - `--model`: backtest model to run (default: `bradley_terry_hfa`)
+- `--model-params`: JSON string of model parameters to override defaults
+- `--model-params-file`: JSON file containing model parameters or per-model overrides
 - `--start` / `--end`: evaluation window (YYYY-MM-DD)
 - `--window`: training window type (`expanding` or `rolling`)
 - `--rolling-days` / `--rolling-games`: rolling window size for `rolling` runs
@@ -209,6 +222,76 @@ Input CSV for backtests:
 - Optional columns: `neutral` (or `neutral_site`), `overtime` (`ot`), `game_id` (`box score`) (auto-generated if missing)
 - Dates must parse as YYYY-MM-DD; scores must be numeric and non-negative
 - The backtest window (`--start` / `--end`) must overlap the CSV data or no evaluations will run
+
+### `tune` (hyperparameter tuning via backtests)
+
+Run a grid search of model-specific hyperparameters and select the best
+configuration based on log loss, Brier score, or margin MAE.
+
+```bash
+python -m src.cli.pipeline tune \
+  --model elo \
+  --csv nba_results.csv \
+  --start 2024-11-01 \
+  --end 2024-12-01 \
+  --metric log_loss
+```
+
+Options:
+
+- `--model`: backtest model to tune (e.g., `elo`, `gssd`, `toor`, `bradley_terry_hfa`)
+- `--start` / `--end`: evaluation window (YYYY-MM-DD)
+- `--window`: training window type (`expanding` or `rolling`)
+- `--rolling-days` / `--rolling-games`: rolling window size for `rolling` runs
+- `--metric`: optimization target (`log_loss`, `brier_score`, `mae_margin`)
+- `--output-dir`: output directory override (default: `outputs/tuning/<model>`)
+- `--csv`: required path to a CSV of completed games (relative paths are resolved from the repo root)
+- `--grid-file`: JSON file defining custom parameter grids
+- `--apply-best`: run a final backtest with best params and persist metrics to the DB
+- `--allow-worse`: allow tuning results worse than the default parameters
+- `--sport` / `--season`: dataset selection for persisting best metrics
+- `--db`: custom SQLite path for persisting best metrics
+
+Output files (per run) include:
+
+- `tuning_results_<run_id>.csv`: every candidate’s metric results and output directory
+- `best_params_<run_id>.json`: the best-performing parameter set and score
+- Individual backtest artifacts for each candidate under the run directory
+
+Notes:
+
+- Tuning uses the same CSV schema and parsing rules as the backtest command.
+- When `--apply-best` is set, the tuning run compares the best candidate against
+  the default-parameter baseline and only persists calibration metrics if the
+  candidate improves on the chosen metric. Use `--allow-worse` to skip this guard.
+
+#### Custom grids (JSON)
+
+Provide a JSON file to override the default tuning grid. Two supported formats:
+
+**Per-model grid**
+
+```json
+{
+  "elo": {
+    "k_factor": [10, 20, 40],
+    "home_advantage": [0, 50, 100],
+    "initial_rating": [1500],
+    "min_rating": [1]
+  }
+}
+```
+
+**Single-grid override** (applies to the specified `--model`)
+
+```json
+{
+  "k_factor": [10, 20, 40],
+  "home_advantage": [0, 50, 100],
+  "initial_rating": [1500],
+  "min_rating": [1]
+}
+```
 
 ## Input formats
 
@@ -238,6 +321,7 @@ If the CSV contains an unlabeled start-time column, the parser will realign colu
 - **Schedule CSV**: `data/processed/<sport>/<season>/schedule_with_projections.csv`
 - **Excel report**: `data/processed/<sport>/<season>/report.xlsx`
 - **Backtest outputs**: `outputs/backtests/<model>/` (CSV + Excel workbook per run)
+- **Tuning outputs**: `outputs/tuning/<model>/` (grid search CSV, best params JSON, and per-candidate backtests)
 
 ## Configuration
 

@@ -13,6 +13,7 @@ from contracts import SCHEDULE_EXPORT_COLUMNS, validate_schedule_export_frame
 from data.paths import processed_path_for
 from data.repository import load_games, load_model_metrics
 from pipelines.common import normalize_games, resolve_output_path
+from pipelines.model_params import resolve_model_params
 from pipelines.matchups import team_home_advantages
 from config import DEFAULT_WIN_PROB_K
 from pipelines.projections import (
@@ -239,11 +240,14 @@ def _build_schedule_dataframe(
     season: str,
     model: str,
     upcoming_only: bool,
+    model_params: dict[str, float] | None,
 ) -> pd.DataFrame:
     played = _completed_games(df)
     upcoming = _upcoming_games(df)
 
-    rankings = build_rankings(played, model=model, require_scores=False)
+    rankings = build_rankings(
+        played, model=model, require_scores=False, model_params=model_params
+    )
     ratings = _rating_lookup(rankings)
     fallback_total = average_total_points(played.to_dict(orient="records"))
     metrics = load_model_metrics(db_path, sport=sport, season=season, model=model) or {}
@@ -428,7 +432,12 @@ def _build_schedule_for_model(
     output_path: str | Path | None,
     upcoming_only: bool,
     add_prefix: bool,
+    model_params: dict[str, float] | None,
+    model_params_file: str | Path | None,
 ) -> Path:
+    resolved_params = resolve_model_params(
+        model, params=model_params, params_file=model_params_file
+    )
     schedule_df = _build_schedule_dataframe(
         df,
         db_path=db_path,
@@ -436,6 +445,7 @@ def _build_schedule_for_model(
         season=season,
         model=model,
         upcoming_only=upcoming_only,
+        model_params=resolved_params,
     )
     default_path = processed_path_for(sport, season, "schedule_with_projections.csv")
     resolved_output = resolve_output_path(
@@ -457,6 +467,8 @@ def build_schedule_with_projections(
     model: str | None = None,
     output_path: str | Path | None = None,
     upcoming_only: bool = False,
+    model_params: dict[str, float] | None = None,
+    model_params_file: str | Path | None = None,
 ) -> Path | list[Path]:
     """Build a schedule export containing projections for upcoming games."""
     rows = load_games(db_path, sport=sport, season=season)
@@ -476,6 +488,8 @@ def build_schedule_with_projections(
             output_path=output_path,
             upcoming_only=upcoming_only,
             add_prefix=multiple,
+            model_params=model_params,
+            model_params_file=model_params_file,
         )
         for model_name in models
     ]
@@ -490,6 +504,8 @@ def build_schedule_excel_report(
     model: str | None = None,
     output_path: str | Path | None = None,
     upcoming_only: bool = False,
+    model_params: dict[str, float] | None = None,
+    model_params_file: str | Path | None = None,
 ) -> Path:
     """Build an Excel workbook with schedule projections (one sheet per model)."""
     rows = load_games(db_path, sport=sport, season=season)
@@ -508,6 +524,9 @@ def build_schedule_excel_report(
     with pd.ExcelWriter(report_path) as writer:
         for model_name in models:
             model_df = df.copy(deep=True)
+            resolved_params = resolve_model_params(
+                model_name, params=model_params, params_file=model_params_file
+            )
             schedule_df = _build_schedule_dataframe(
                 model_df,
                 db_path=db_path,
@@ -515,6 +534,7 @@ def build_schedule_excel_report(
                 season=season,
                 model=model_name,
                 upcoming_only=upcoming_only,
+                model_params=resolved_params,
             )
             metadata = _build_model_metadata(
                 model_name=model_name,

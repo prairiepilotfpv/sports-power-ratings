@@ -13,6 +13,7 @@ from data.paths import processed_path_for
 from data.repository import load_games, save_model_metrics
 from models.registry import get_model, list_models, normalize_model_name
 from pipelines.common import normalize_games, resolve_output_path
+from pipelines.model_params import resolve_model_params
 from config import DEFAULT_WIN_PROB_K
 from pipelines.projections import (
     average_total_points,
@@ -40,6 +41,7 @@ def build_rankings(
     model: str = "bradley-terry",
     *,
     require_scores: bool = True,
+    model_params: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     """Fit a ranking model and return a DataFrame of ratings and point values."""
     working_df = df.copy(deep=True)
@@ -50,7 +52,12 @@ def build_rankings(
         return _empty_rankings()
 
     model_cls = get_model(model)
-    model_instance = model_cls()
+    try:
+        model_instance = model_cls(**(model_params or {}))
+    except TypeError as exc:
+        raise ValueError(
+            f"Invalid parameters for model {model!r}: {model_params}"
+        ) from exc
     model_instance.fit(played.to_dict(orient="records"))
 
     games_played: Dict[str, int] = {}
@@ -141,6 +148,8 @@ def run_rankings(
     season: str,
     model: str | None = None,
     output_path: str | Path | None = None,
+    model_params: dict[str, float] | None = None,
+    model_params_file: str | Path | None = None,
 ) -> Path | list[Path]:
     """Load games from SQLite, generate rankings, and write them to CSV."""
     rows = load_games(db_path, sport=sport, season=season)
@@ -153,7 +162,12 @@ def run_rankings(
     for model_name in models:
         try:
             model_df = df.copy(deep=True)
-            rankings = build_rankings(model_df, model=model_name)
+            resolved_params = resolve_model_params(
+                model_name, params=model_params, params_file=model_params_file
+            )
+            rankings = build_rankings(
+                model_df, model=model_name, model_params=resolved_params
+            )
         except ValueError as exc:
             if "No completed games" in str(exc):
                 raise ValueError(
