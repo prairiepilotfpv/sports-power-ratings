@@ -28,11 +28,8 @@ def _today_spreads(schedule_df: pd.DataFrame) -> pd.DataFrame:
             "projected_spread",
             "projected_home_spread",
             "projected_total",
-            "projected_margin_mean",
-            "projected_margin_std",
-            "projected_total_mean",
-            "projected_total_std",
             "projected_winner",
+            "projected_win_prob",
             "home_rating",
             "away_rating",
         ]

@@ -202,6 +202,19 @@ def load_sr_csv_lenient(text: str) -> pd.DataFrame:
                 row = row[:1] + row[2:]
             else:
                 row = row[: len(header)]
+        elif (
+            len(row) == len(header)
+            and len(row) >= 3
+            and time_re.fullmatch((row[1] or "").strip())
+            # Ensure we are not stripping a real team name; the trailing cell should be a team.
+            and not time_re.search(row[2] or "")
+            and not time_re.search(row[-1] or "")
+        ):
+            # Some exports inline an unlabeled tip time as the Visitor value, shifting teams/scores right.
+            # Drop the time field and pad so Visitor/Home stay aligned.
+            row = row[:1] + row[2:]
+            if len(row) < len(header):
+                row = row + [""] * (len(header) - len(row))
         if len(row) < len(header):
             row = row + [""] * (len(header) - len(row))
 

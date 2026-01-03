@@ -40,10 +40,7 @@ DASHBOARD_COLUMNS: List[str] = [
     "total",
     "projected_winner",
     "projected_spread",
-    "projected_margin_mean",
-    "projected_margin_std",
-    "projected_total_mean",
-    "projected_total_std",
+    "projected_win_prob",
 ]
 
 MODEL_METADATA_DATA_START_ROW = 10
@@ -130,8 +127,6 @@ def _project_row(
     projected_home_score = None
     projected_away_score = None
     projected_total = None
-    projected_margin_mean = None
-    projected_total_mean = None
     projected_win_prob_dist = None
 
     if home_rating is not None and away_rating is not None:
@@ -166,8 +161,6 @@ def _project_row(
         projected_home_score = projection.projected_home_score
         projected_away_score = projection.projected_away_score
         projected_total = projection.projected_total
-        projected_margin_mean = projection.margin
-        projected_total_mean = projection.projected_total
         if projected_win_prob is not None:
             projected_win_prob_dist = win_prob_distribution(
                 projected_win_prob,
@@ -203,10 +196,6 @@ def _project_row(
             "projected_home_score": projected_home_score,
             "projected_away_score": projected_away_score,
             "projected_total": projected_total,
-            "projected_margin_mean": projected_margin_mean,
-            "projected_margin_std": margin_std,
-            "projected_total_mean": projected_total_mean,
-            "projected_total_std": total_std,
             "result_margin": result_margin,
             "result_total": result_total,
         }
@@ -375,10 +364,7 @@ def _dashboard_rows_for_today(
                 "total": total,
                 "projected_winner": row.get("projected_winner"),
                 "projected_spread": row.get("projected_spread"),
-                "projected_margin_mean": row.get("projected_margin_mean"),
-                "projected_margin_std": row.get("projected_margin_std"),
-                "projected_total_mean": row.get("projected_total_mean") or total,
-                "projected_total_std": row.get("projected_total_std"),
+                "projected_win_prob": row.get("projected_win_prob"),
             }
         )
     return rows

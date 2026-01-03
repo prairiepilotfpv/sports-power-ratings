@@ -209,10 +209,6 @@ def test_schedule_export_column_ordering() -> None:
         "projected_home_score": 102.5,
         "projected_away_score": 95.5,
         "projected_total": 198.0,
-        "projected_margin_mean": 7.0,
-        "projected_margin_std": 10.0,
-        "projected_total_mean": 198.0,
-        "projected_total_std": 15.0,
     }
     # Shuffle columns to simulate unordered input
     shuffled_columns = sorted(row.keys())

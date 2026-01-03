@@ -1,0 +1,13 @@
+{
+  "applied": true,
+  "baseline_score": 0.8569307477535327,
+  "best_params": {
+    "max_iter": 200,
+    "tol": 1e-06
+  },
+  "best_score": 0.8195438563205082,
+  "improved": true,
+  "metric": "log_loss",
+  "model": "toor",
+  "run_id": "2025-10-25_to_2026-01-02_expanding_20260103T224423Z"
+}
