@@ -54,7 +54,7 @@ def load_games_df_from_db(
 
 def load_games_df_from_csv(csv_path: str | Path) -> pd.DataFrame:
     """Load a backtest dataset from CSV, accepting common Sports-Reference headers."""
-    from ingest.sports_reference import parse_sr_csv
+    from ingest.sports_reference import load_sr_csv_lenient, parse_sr_csv
 
     def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         """Lowercase/strip headers and map common aliases to expected names."""
@@ -114,13 +114,15 @@ def load_games_df_from_csv(csv_path: str | Path) -> pd.DataFrame:
         raise FileNotFoundError(
             f"CSV not found at {csv_path}. Provide a valid CSV path."
         )
-    df = pd.read_csv(csv_path)
+    text = csv_path.read_text(encoding="utf-8", errors="ignore")
+    df = load_sr_csv_lenient(text)
     if df.empty:
         raise ValueError(f"No rows found in CSV at {csv_path}.")
 
     normalized = _normalize_columns(df)
+    normalized = _scrub_game_id_column(normalized)
     required = {"date", "home_team", "away_team", "home_score", "away_score"}
-    if required.issubset(set(normalized.columns)):
+    if required.issubset(set(normalized.columns)) and _has_required_data(normalized):
         return normalized
 
     # Fallback: parse as a Sports-Reference export and convert to a DataFrame the backtester understands.
@@ -132,6 +134,40 @@ def load_games_df_from_csv(csv_path: str | Path) -> pd.DataFrame:
             "and parsing as a Sports-Reference export also failed."
         )
     return pd.DataFrame([game.model_dump() for game in parsed])
+
+
+def _scrub_game_id_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop unusable game_id values (e.g., tip times) so we can rebuild IDs."""
+    from ingest.sports_reference import looks_like_tip_time
+
+    if "game_id" not in df.columns:
+        return df
+    cleaned = df.copy()
+    series = cleaned["game_id"].astype(str).str.strip()
+    lowered = series.str.lower()
+    invalid_mask = lowered.isin({"", "nan", "none"}) | series.map(looks_like_tip_time)
+    if invalid_mask.any():
+        cleaned.loc[invalid_mask, "game_id"] = pd.NA
+    duplicate_mask = cleaned["game_id"].notna() & cleaned["game_id"].duplicated(keep=False)
+    if duplicate_mask.any():
+        cleaned.loc[duplicate_mask, "game_id"] = pd.NA
+    return cleaned
+
+
+def _has_required_data(df: pd.DataFrame) -> bool:
+    """Ensure required columns contain usable values before trusting normalization."""
+    required_cols = ["date", "home_team", "away_team"]
+    if not all(col in df.columns for col in required_cols):
+        return False
+    total = len(df)
+    if total == 0:
+        return False
+    for col in required_cols:
+        series = df[col]
+        non_empty = series.notna() & (series.astype(str).str.strip() != "")
+        if non_empty.sum() / total < 0.5:
+            return False
+    return True
 
 
 def run_backtest(
