@@ -136,7 +136,9 @@ def _parse_sr_dataframe(
 
         game_id = None
         if box_col and pd.notna(row.get(box_col)):
-            game_id = str(row.get(box_col)).strip()
+            raw_game_id = str(row.get(box_col)).strip()
+            if not looks_like_tip_time(raw_game_id):
+                game_id = raw_game_id
         if not game_id:
             game_id = f"{parsed_date.date()}|{away_team}|{home_team}"
 
@@ -162,7 +164,14 @@ def _parse_sr_dataframe(
     return games
 
 
-def _load_csv_lenient(text: str) -> pd.DataFrame:
+def looks_like_tip_time(value: str) -> bool:
+    if not value:
+        return False
+    time_re = re.compile(r"^\s*\d{1,2}:\d{2}\s*[ap]m?\s*$", re.IGNORECASE)
+    return bool(time_re.match(value))
+
+
+def load_sr_csv_lenient(text: str) -> pd.DataFrame:
     """
     Read Sports-Reference CSV exports that may include an unlabeled start-time column.
     If a row has one more column than the header and the second field looks like a tip time (e.g., '7:00p'),
@@ -206,7 +215,7 @@ def parse_sr_csv(
 ) -> List[GameResult]:
     """Parse a Sports-Reference CSV file from disk."""
     text = Path(path).read_text(encoding="utf-8", errors="ignore")
-    df = _load_csv_lenient(text)
+    df = load_sr_csv_lenient(text)
     return _parse_sr_dataframe(df, sport=sport, season=season)
 
 
@@ -232,5 +241,5 @@ def parse_sr_csv_text(
     text: str, sport: str | None = None, season: str | None = None
 ) -> List[GameResult]:
     """Parse pasted Sports-Reference CSV text."""
-    df = _load_csv_lenient(text)
+    df = load_sr_csv_lenient(text)
     return _parse_sr_dataframe(df, sport=sport, season=season)
