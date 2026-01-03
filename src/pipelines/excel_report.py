@@ -11,6 +11,7 @@ from data.paths import processed_path_for
 from data.repository import load_games
 from pipelines.common import normalize_games, resolve_output_path
 from models.registry import list_models, normalize_model_name
+from pipelines.model_params import resolve_model_params
 from pipelines.run_rankings import build_rankings
 
 
@@ -21,6 +22,8 @@ def build_excel_report(
     season: str,
     models: Iterable[str] | None = None,
     output_path: str | Path | None = None,
+    model_params: dict[str, float] | None = None,
+    model_params_file: str | Path | None = None,
 ) -> Path | list[Path]:
     """Write rankings to an Excel workbook (one sheet per model)."""
     requested_models: List[str]
@@ -46,7 +49,12 @@ def build_excel_report(
         report_path.parent.mkdir(parents=True, exist_ok=True)
         with pd.ExcelWriter(report_path) as writer:
             try:
-                rankings = build_rankings(df.copy(deep=True), model=model)
+                resolved_params = resolve_model_params(
+                    model, params=model_params, params_file=model_params_file
+                )
+                rankings = build_rankings(
+                    df.copy(deep=True), model=model, model_params=resolved_params
+                )
             except ValueError as exc:
                 if "No completed games" in str(exc):
                     raise ValueError(
