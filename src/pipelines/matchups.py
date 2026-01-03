@@ -10,6 +10,7 @@ import pandas as pd
 
 from data.repository import load_games, load_model_metrics
 from pipelines.common import normalize_games
+from pipelines.model_params import resolve_model_params
 from config import DEFAULT_WIN_PROB_K
 from pipelines.projections import (
     average_total_points,
@@ -96,6 +97,8 @@ def predict_matchup(
     home_team: str,
     away_team: str,
     model: str = "bradley-terry",
+    model_params: dict[str, float] | None = None,
+    model_params_file: str | Path | None = None,
 ) -> MatchupPrediction:
     """Predict a single matchup using stored games and rankings."""
     model = normalize_model_name(model)
@@ -104,7 +107,10 @@ def predict_matchup(
     if df.empty:
         raise ValueError(f"No games found for sport={sport!r}, season={season!r}")
 
-    rankings = build_rankings(df, model=model)
+    resolved_params = resolve_model_params(
+        model, params=model_params, params_file=model_params_file
+    )
+    rankings = build_rankings(df, model=model, model_params=resolved_params)
     ratings = _rating_lookup(rankings)
     played = _completed_games(df)
     home_advantages = team_home_advantages(played, ratings)

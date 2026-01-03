@@ -18,6 +18,7 @@ def run_backtest_pipeline(
     rolling_days: int | None = None,
     rolling_games: int | None = None,
     output_dir: str | Path | None = None,
+    model_params: dict[str, float] | None = None,
     db_path: str | Path | None = None,
     sport: str | None = None,
     season: str | None = None,
@@ -25,8 +26,14 @@ def run_backtest_pipeline(
     """Run a backtest for a single model and export outputs."""
     model_cls = get_backtest_model(model)
     games_df = load_games_df_from_csv(csv_path)
+    try:
+        model_factory = lambda: model_cls(**(model_params or {}))
+    except TypeError as exc:
+        raise ValueError(
+            f"Invalid parameters for model {model!r}: {model_params}"
+        ) from exc
     return run_backtest(
-        model_factory=model_cls,
+        model_factory=model_factory,
         games_df=games_df,
         start_date=start_date,
         end_date=end_date,

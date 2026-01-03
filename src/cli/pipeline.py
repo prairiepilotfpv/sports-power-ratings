@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import sys
 
@@ -67,6 +68,14 @@ def _parse_args() -> argparse.Namespace:
         help="Ranking model to run (default: run all available models)",
     )
     rank_parser.add_argument(
+        "--model-params",
+        help="JSON string of model parameters to override defaults.",
+    )
+    rank_parser.add_argument(
+        "--model-params-file",
+        help="JSON file containing model parameters or per-model overrides.",
+    )
+    rank_parser.add_argument(
         "--output",
         help=(
             "Optional output CSV path. Defaults to "
@@ -106,6 +115,14 @@ def _parse_args() -> argparse.Namespace:
         help="Ranking model to run (default: run all available models)",
     )
     matchup_parser.add_argument(
+        "--model-params",
+        help="JSON string of model parameters to override defaults.",
+    )
+    matchup_parser.add_argument(
+        "--model-params-file",
+        help="JSON file containing model parameters or per-model overrides.",
+    )
+    matchup_parser.add_argument(
         "--db",
         help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db)",
     )
@@ -128,6 +145,14 @@ def _parse_args() -> argparse.Namespace:
         "--model",
         default=None,
         help="Ranking model to use for projections (default: run all available models)",
+    )
+    schedule_parser.add_argument(
+        "--model-params",
+        help="JSON string of model parameters to override defaults.",
+    )
+    schedule_parser.add_argument(
+        "--model-params-file",
+        help="JSON file containing model parameters or per-model overrides.",
     )
     schedule_parser.add_argument(
         "--output",
@@ -163,6 +188,14 @@ def _parse_args() -> argparse.Namespace:
         help="Comma-separated list of ranking models (default: all available models).",
     )
     report_parser.add_argument(
+        "--model-params",
+        help="JSON string of model parameters to override defaults.",
+    )
+    report_parser.add_argument(
+        "--model-params-file",
+        help="JSON file containing model parameters or per-model overrides.",
+    )
+    report_parser.add_argument(
         "--output",
         help=(
             "Optional output Excel path. Defaults to "
@@ -183,6 +216,14 @@ def _parse_args() -> argparse.Namespace:
         "--model",
         default="bradley_terry_hfa",
         help="Backtest model to run (default: bradley_terry_hfa).",
+    )
+    backtest_parser.add_argument(
+        "--model-params",
+        help="JSON string of model parameters to override defaults.",
+    )
+    backtest_parser.add_argument(
+        "--model-params-file",
+        help="JSON file containing model parameters or per-model overrides.",
     )
     backtest_parser.add_argument(
         "--start", required=True, help="Backtest start date (YYYY-MM-DD)."
@@ -228,6 +269,80 @@ def _parse_args() -> argparse.Namespace:
         help="Optional SQLite DB path to persist backtest calibration metrics.",
     )
 
+    tune_parser = subparsers.add_parser(
+        "tune",
+        aliases=["tuning", "backtest_tune"],
+        help="Tune model hyperparameters via repeated backtests.",
+    )
+    tune_parser.add_argument(
+        "--model",
+        required=True,
+        help="Backtest model to tune (e.g., elo, gssd, toor).",
+    )
+    tune_parser.add_argument(
+        "--start", required=True, help="Backtest start date (YYYY-MM-DD)."
+    )
+    tune_parser.add_argument(
+        "--end", required=True, help="Backtest end date (YYYY-MM-DD)."
+    )
+    tune_parser.add_argument(
+        "--window",
+        default="expanding",
+        choices=["expanding", "rolling"],
+        help="Training window type (default: expanding).",
+    )
+    tune_parser.add_argument(
+        "--rolling-days",
+        type=int,
+        help="Rolling window size in days (required for rolling).",
+    )
+    tune_parser.add_argument(
+        "--rolling-games",
+        type=int,
+        help="Rolling window size in games (optional alternative for rolling).",
+    )
+    tune_parser.add_argument(
+        "--metric",
+        default="log_loss",
+        choices=["log_loss", "brier_score", "mae_margin"],
+        help="Metric to optimize (default: log_loss).",
+    )
+    tune_parser.add_argument(
+        "--output-dir",
+        help="Optional output directory override (default: outputs/tuning/<model>).",
+    )
+    tune_parser.add_argument(
+        "--csv",
+        required=True,
+        help="CSV path containing historical games for tuning.",
+    )
+    tune_parser.add_argument(
+        "--grid-file",
+        help="Optional JSON file defining parameter grids.",
+    )
+    tune_parser.add_argument(
+        "--apply-best",
+        action="store_true",
+        help="Run a final backtest with best params and persist metrics to the DB.",
+    )
+    tune_parser.add_argument(
+        "--allow-worse",
+        action="store_true",
+        help="Allow worse results than the default parameters (disables improvement guard).",
+    )
+    tune_parser.add_argument(
+        "--sport",
+        help="Optional sport identifier for persisting best backtest metrics.",
+    )
+    tune_parser.add_argument(
+        "--season",
+        help="Optional season identifier for persisting best backtest metrics.",
+    )
+    tune_parser.add_argument(
+        "--db",
+        help="Optional SQLite DB path to persist best backtest metrics.",
+    )
+
     return parser.parse_args()
 
 
@@ -267,6 +382,7 @@ def _run_rankings(args: argparse.Namespace) -> None:
     from data.paths import db_path_for
     from pipelines.run_rankings import run_rankings
 
+    model_params = _parse_json_arg(args.model_params)
     output_path = Path(args.output) if args.output else None
     if output_path is not None and output_path.exists() and not args.overwrite:
         output_path = _next_available_path(output_path)
@@ -281,6 +397,8 @@ def _run_rankings(args: argparse.Namespace) -> None:
         season=args.season,
         model=args.model,
         output_path=output_path,
+        model_params=model_params,
+        model_params_file=args.model_params_file,
     )
     if isinstance(result_path, list):
         for path in result_path:
@@ -336,6 +454,7 @@ def _run_matchup(args: argparse.Namespace) -> None:
     if not home or not away:
         raise ValueError("Provide --matchup or both --home and --away.")
 
+    model_params = _parse_json_arg(args.model_params)
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
     models = list_models() if args.model is None else [args.model]
     for model in models:
@@ -346,6 +465,8 @@ def _run_matchup(args: argparse.Namespace) -> None:
             home_team=home,
             away_team=away,
             model=model,
+            model_params=model_params,
+            model_params_file=args.model_params_file,
         )
         line, metrics = format_matchup(prediction)
         print(f"[{model}] {line}")
@@ -362,6 +483,7 @@ def _run_schedule(args: argparse.Namespace) -> None:
         build_schedule_with_projections,
     )
 
+    model_params = _parse_json_arg(args.model_params)
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
     output_path = Path(args.output) if args.output else None
     if output_path is not None and output_path.suffix.lower() == ".csv":
@@ -372,6 +494,8 @@ def _run_schedule(args: argparse.Namespace) -> None:
             model=args.model,
             output_path=output_path,
             upcoming_only=args.upcoming_only,
+            model_params=model_params,
+            model_params_file=args.model_params_file,
         )
         if isinstance(result_path, list):
             for path in result_path:
@@ -387,6 +511,8 @@ def _run_schedule(args: argparse.Namespace) -> None:
         model=args.model,
         output_path=output_path,
         upcoming_only=args.upcoming_only,
+        model_params=model_params,
+        model_params_file=args.model_params_file,
     )
     print(f"Saved schedule workbook -> {result_path}")
 
@@ -397,6 +523,7 @@ def _run_report(args: argparse.Namespace) -> None:
     from data.paths import db_path_for
     from pipelines.excel_report import build_excel_report
 
+    model_params = _parse_json_arg(args.model_params)
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
     output_path = Path(args.output) if args.output else None
     models = None
@@ -408,6 +535,8 @@ def _run_report(args: argparse.Namespace) -> None:
         season=args.season,
         models=models,
         output_path=output_path,
+        model_params=model_params,
+        model_params_file=args.model_params_file,
     )
     if isinstance(result_path, list):
         for path in result_path:
@@ -422,6 +551,7 @@ def _run_backtest(args: argparse.Namespace) -> None:
     from data.paths import db_path_for
     from pipelines.backtest import run_backtest_pipeline
 
+    model_params = _parse_json_arg(args.model_params)
     output_dir = Path(args.output_dir) if args.output_dir else None
     db_path = None
     if args.db:
@@ -437,11 +567,59 @@ def _run_backtest(args: argparse.Namespace) -> None:
         rolling_days=args.rolling_days,
         rolling_games=args.rolling_games,
         output_dir=output_dir,
+        model_params=model_params,
         db_path=db_path,
         sport=args.sport,
         season=args.season,
     )
     print(f"Saved backtest outputs to {outputs.output_dir}")
+
+
+def _run_tuning(args: argparse.Namespace) -> None:
+    """Run hyperparameter tuning via backtest grid search."""
+    _ensure_src_on_path()
+    from pipelines.tuning import run_tuning_pipeline
+    from data.paths import db_path_for
+
+    output_dir = Path(args.output_dir) if args.output_dir else None
+    grid_override = None
+    if args.grid_file:
+        with Path(args.grid_file).open("r", encoding="utf-8") as handle:
+            grid_override = json.load(handle)
+    db_path = None
+    if args.db:
+        db_path = Path(args.db)
+    elif args.sport and args.season:
+        db_path = db_path_for(args.sport, args.season)
+    outputs = run_tuning_pipeline(
+        csv_path=Path(args.csv),
+        model=args.model,
+        start_date=args.start,
+        end_date=args.end,
+        window=args.window,
+        rolling_days=args.rolling_days,
+        rolling_games=args.rolling_games,
+        metric=args.metric,
+        output_dir=output_dir,
+        grid_override=grid_override,
+        apply_best=args.apply_best,
+        require_improvement=not args.allow_worse,
+        db_path=db_path,
+        sport=args.sport,
+        season=args.season,
+    )
+    if outputs.improved:
+        print(
+            "Best params -> "
+            f"{outputs.best_params} (score={outputs.best_score:.4f}) "
+            f"saved in {outputs.output_dir}"
+        )
+    else:
+        print(
+            "No improvement over baseline. "
+            f"Baseline score={outputs.baseline_score:.4f}; "
+            "best candidate was rejected."
+        )
 
 
 def main() -> None:
@@ -459,8 +637,22 @@ def main() -> None:
         _run_report(args)
     elif args.command == "backtest":
         _run_backtest(args)
+    elif args.command == "tune":
+        _run_tuning(args)
     else:
         raise ValueError(f"Unknown command: {args.command}")
+
+
+def _parse_json_arg(raw: str | None) -> dict | None:
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON for --model-params: {raw}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("--model-params must be a JSON object.")
+    return data
 
 
 if __name__ == "__main__":
