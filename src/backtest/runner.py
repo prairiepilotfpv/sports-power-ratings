@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -343,6 +344,9 @@ def _predictions_to_frame(predictions: Iterable[GamePrediction]) -> pd.DataFrame
             "home_team": pred.home_team,
             "away_team": pred.away_team,
             "p_home_win": pred.p_home_win,
+            "win_prob_dist": (
+                json.dumps(pred.win_prob_dist) if pred.win_prob_dist is not None else None
+            ),
             "pred_margin": pred.pred_margin,
             "pred_total": pred.pred_total,
             "model_id": pred.metadata.get("model_id"),
@@ -360,6 +364,7 @@ def _prediction_hash_columns(pred_df: pd.DataFrame) -> list[str]:
         "home_team",
         "away_team",
         "p_home_win",
+        "win_prob_dist",
         "pred_margin",
         "pred_total",
     ]

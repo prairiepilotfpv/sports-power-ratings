@@ -19,6 +19,7 @@ from pipelines.projections import (
     project_game,
     total_from_ratings,
     team_scoring_averages,
+    win_prob_distribution,
 )
 from pipelines.run_rankings import build_rankings
 from models.registry import normalize_model_name
@@ -35,6 +36,7 @@ class MatchupPrediction:
     spread: float
     total_points: float
     win_prob: float | None
+    win_prob_dist: list[dict[str, float]] | None
     margin_mean: float
     margin_std: float | None
     total_mean: float
@@ -163,6 +165,13 @@ def predict_matchup(
         winner, loser = home_key, away_key
     else:
         winner, loser = away_key, home_key
+    win_prob_dist = None
+    if projection.projected_win_prob is not None:
+        win_prob_dist = win_prob_distribution(
+            projection.projected_win_prob,
+            win_prob_k=win_prob_k,
+            margin_std=metrics.get("margin_std"),
+        )
 
     return MatchupPrediction(
         home_team=home_key,
@@ -172,6 +181,7 @@ def predict_matchup(
         spread=projection.projected_spread,
         total_points=projection.projected_total or 0.0,
         win_prob=projection.projected_win_prob,
+        win_prob_dist=win_prob_dist,
         margin_mean=projection.margin,
         margin_std=metrics.get("margin_std"),
         total_mean=projection.projected_total or 0.0,
@@ -208,4 +218,6 @@ def format_matchup(prediction: MatchupPrediction) -> Tuple[str, Dict[str, float]
         metrics["total_std"] = prediction.total_std
     if prediction.win_prob is not None:
         metrics["win_prob"] = prediction.win_prob
+    if prediction.win_prob_dist is not None:
+        metrics["win_prob_dist"] = prediction.win_prob_dist
     return line, metrics

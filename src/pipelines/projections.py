@@ -29,6 +29,42 @@ def logistic_win_prob(away_minus_home: float, k: float) -> float:
     return 1.0 / (1.0 + math.exp(away_minus_home / k))
 
 
+def win_prob_distribution(
+    p_home_win: float,
+    *,
+    win_prob_k: float | None,
+    margin_std: float | None,
+) -> list[dict[str, float]]:
+    """Return a discrete distribution over win probability outcomes.
+
+    Format: [{"p_home_win": <probability>, "weight": <mass>}].
+    """
+    if (
+        win_prob_k is None
+        or margin_std is None
+        or win_prob_k <= 0
+        or margin_std <= 0
+    ):
+        return [{"p_home_win": float(p_home_win), "weight": 1.0}]
+
+    p_home_win = min(max(float(p_home_win), 0.0), 1.0)
+    slope = (p_home_win * (1.0 - p_home_win)) / win_prob_k
+    prob_std = abs(slope) * margin_std
+    if prob_std <= 0:
+        return [{"p_home_win": p_home_win, "weight": 1.0}]
+
+    delta = prob_std * math.sqrt(2.0)
+    delta = min(delta, p_home_win, 1.0 - p_home_win)
+    if delta <= 0:
+        return [{"p_home_win": p_home_win, "weight": 1.0}]
+
+    return [
+        {"p_home_win": p_home_win - delta, "weight": 0.25},
+        {"p_home_win": p_home_win, "weight": 0.5},
+        {"p_home_win": p_home_win + delta, "weight": 0.25},
+    ]
+
+
 def project_game(
     home_rating: float,
     away_rating: float,

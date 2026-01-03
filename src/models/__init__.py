@@ -10,6 +10,7 @@ from .base import (
     normalize_optional_float,
     require_columns,
     validate_probability,
+    validate_win_prob_dist,
 )
 from .bradley_terry import BradleyTerry
 from .bradley_terry_hfa import BradleyTerryHFA
@@ -33,4 +34,5 @@ __all__ = [
     "normalize_optional_float",
     "require_columns",
     "validate_probability",
+    "validate_win_prob_dist",
 ]

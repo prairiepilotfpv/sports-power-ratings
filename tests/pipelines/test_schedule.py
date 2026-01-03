@@ -205,6 +205,7 @@ def test_schedule_export_column_ordering() -> None:
         "projected_spread": -4.5,
         "projected_home_spread": 4.5,
         "projected_win_prob": 0.65,
+        "projected_win_prob_dist": '[{"p_home_win": 0.65, "weight": 1.0}]',
         "projected_home_score": 102.5,
         "projected_away_score": 95.5,
         "projected_total": 198.0,
