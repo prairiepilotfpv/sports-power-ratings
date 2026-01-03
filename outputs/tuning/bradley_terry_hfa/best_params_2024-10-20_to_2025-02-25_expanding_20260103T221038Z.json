@@ -1,0 +1,13 @@
+{
+  "applied": true,
+  "baseline_score": 13.716430147176652,
+  "best_params": {
+    "max_iter": 200,
+    "tol": 1e-06
+  },
+  "best_score": 13.697558919636222,
+  "improved": true,
+  "metric": "mae_margin",
+  "model": "bradley_terry_hfa",
+  "run_id": "2024-10-20_to_2025-02-25_expanding_20260103T221038Z"
+}
