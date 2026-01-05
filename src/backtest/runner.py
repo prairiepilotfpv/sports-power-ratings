@@ -248,8 +248,12 @@ def run_backtest(
         merged["actual_margin"] = merged["home_score"] - merged["away_score"]
         prediction_frames.append(merged)
 
-    if prediction_frames:
-        predictions_df = pd.concat(prediction_frames, ignore_index=True)
+    valid_frames = [
+        frame for frame in prediction_frames if not frame.empty and not frame.isna().all().all()
+    ]
+    if valid_frames:
+        # Filter out empty/all-NA frames to avoid dtype inference changes in future pandas versions.
+        predictions_df = pd.concat(valid_frames, ignore_index=True)
     else:
         raise ValueError(
             "Backtest produced no predictions. "
