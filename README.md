@@ -160,14 +160,114 @@ python -m src.cli.pipeline report --sport nba --season 2025-26 --models bradley-
 
 ### `backtest` — evaluate models on historical games
 
+Backtesting evaluates model predictions against actual outcomes across a historical period. The backtest runner fits the model on all games before each evaluation date, then generates predictions for that day's games. This produces accuracy metrics (log loss, Brier score, margin MAE) and calibration tables showing how well predicted win probabilities match actual outcomes.
+
+**Basic usage:**
+
 ```bash
-python -m src.cli.pipeline backtest --model bradley_terry_hfa --csv nba_results.csv --start 2024-11-01 --end 2024-12-01 --window expanding
+python -m src.cli.pipeline backtest --model bradley_terry_hfa --csv nba_results.csv --start 2024-11-01 --end 2024-12-01
 ```
 
-- Supported models: bradley_terry_hfa, bradley_terry_calibrated_hfa, elo, gssd, toor.
-- CSV parsing is lenient: common Sports-Reference column aliases are detected; missing/duplicate game IDs are rebuilt when needed.
-- Output directory defaults to `outputs/backtests/<model>/`. Artifacts per run: `predictions_<run_id>.csv`, `metrics_by_date_<run_id>.csv`, `metrics_overall_<run_id>.csv`, `calibration_<run_id>.csv`, plus an Excel workbook.
-- If `--sport`, `--season`, and `--db` (or default DB) are provided, aggregate metrics and calibrated `win_prob_k` are persisted to the DB.
+**Options:**
+
+- `--model`: Model to evaluate (default: `bradley_terry_hfa`). Supported: `bradley_terry_hfa`, `bradley_terry_calibrated_hfa`, `elo`, `gssd`, `toor`.
+- `--csv`: Path to CSV containing historical games (required). Relative paths are resolved from the repo root.
+- `--start` / `--end`: Evaluation window dates (YYYY-MM-DD) (required).
+- `--window`: Training window type: `expanding` (default, all games before eval date) or `rolling` (fixed-size lookback).
+- `--rolling-days`: Rolling window size in days (required when `--window rolling` is used).
+- `--rolling-games`: Rolling window size in games (alternative to `--rolling-days` for rolling windows).
+- `--model-params`: JSON string of model parameters (e.g., `'{"k_factor": 20}'`).
+- `--model-params-file`: JSON file containing model parameters.
+- `--output-dir`: Output directory override (default: `outputs/backtests/<model>/`).
+- `--sport` / `--season` / `--db`: Optional; when provided, aggregate metrics and calibrated `win_prob_k` are persisted to the DB for use in projections.
+
+**Output metrics:**
+
+Each backtest produces four CSV files plus an Excel workbook:
+
+1. **`predictions_<run_id>.csv`**: Per-game predictions with actual outcomes
+   - Columns: `date`, `home_team`, `away_team`, `p_home_win`, `pred_margin`, `pred_total`, `home_score`, `away_score`, `home_win`, `actual_margin`, plus uncertainty bands and model metadata.
+
+2. **`metrics_by_date_<run_id>.csv`**: Daily aggregate metrics
+   - `date`, `games` (count), `log_loss`, `brier_score`, `mae_margin`, `margin_games`
+
+3. **`metrics_overall_<run_id>.csv`**: Summary across the entire evaluation period
+   - Single row with: `games`, `log_loss`, `brier_score`, `mae_margin`, `margin_games`, `model_id`
+   - **Log loss**: Cross-entropy loss for win probability predictions (lower is better; measures probability calibration).
+   - **Brier score**: Mean squared error of win probability predictions (0 = perfect, 0.25 = random guessing).
+   - **MAE margin**: Mean absolute error of predicted point margins (lower is better; measures spread accuracy).
+
+4. **`calibration_<run_id>.csv`**: Win probability calibration by bucket
+   - Groups predictions by deciles (0-10%, 10-20%, ..., 90-100%) and compares average predicted vs actual win rates.
+   - Columns: `bucket`, `count`, `avg_pred`, `avg_actual`. A well-calibrated model has `avg_pred ≈ avg_actual` in each bucket.
+
+**Examples:**
+
+```bash
+# Expanding window backtest (default)
+python -m src.cli.pipeline backtest \
+  --csv data/raw/nba_2024_25.csv \
+  --model bradley_terry_hfa \
+  --start 2024-11-01 \
+  --end 2024-12-01
+
+# Rolling window backtest (last 30 days only)
+python -m src.cli.pipeline backtest \
+  --csv data/raw/nba_2024_25.csv \
+  --model elo \
+  --start 2024-11-01 \
+  --end 2024-12-01 \
+  --window rolling \
+  --rolling-days 30
+
+# Rolling window by games (last 100 games only)
+python -m src.cli.pipeline backtest \
+  --csv data/raw/nba_2024_25.csv \
+  --model toor \
+  --start 2024-11-01 \
+  --end 2024-12-01 \
+  --window rolling \
+  --rolling-games 100
+
+# Backtest with custom model parameters
+python -m src.cli.pipeline backtest \
+  --csv nba_results.csv \
+  --model elo \
+  --start 2024-11-01 \
+  --end 2024-12-01 \
+  --model-params '{"k_factor": 20, "home_advantage": 60}'
+
+# Persist metrics to DB for projection use
+python -m src.cli.pipeline backtest \
+  --csv nba_results.csv \
+  --model bradley_terry_hfa \
+  --start 2024-11-01 \
+  --end 2024-12-01 \
+  --sport nba \
+  --season 2024-25 \
+  --db data/db/nba/2024-25.db
+
+# Custom output directory
+python -m src.cli.pipeline backtest \
+  --csv nba_results.csv \
+  --model bradley_terry_calibrated_hfa \
+  --start 2024-11-01 \
+  --end 2024-12-01 \
+  --output-dir outputs/custom_backtest_run
+```
+
+**Input CSV requirements:**
+
+- Required columns: `date`, `home_team`, `away_team`, `home_score`, `away_score`. Common Sports-Reference aliases are auto-detected.
+- Optional columns: `neutral`, `overtime`, `game_id`.
+- Dates must parse as YYYY-MM-DD; scores must be numeric and non-negative.
+- The evaluation window (`--start` / `--end`) must overlap the CSV data or no evaluations will run.
+
+**Notes:**
+
+- CSV parsing is lenient; missing/duplicate game IDs are rebuilt automatically when needed.
+- Re-running the same model/window overwrites files in the same `--output-dir`. Use `--output-dir` to keep multiple runs.
+- When `--sport`, `--season`, and `--db` are provided, the backtest persists `log_loss`, `brier_score`, `mae_margin`, and calibrated `win_prob_k` to the DB, which downstream projections (schedule, matchup) can use.
 
 ### `tune` — grid-search hyperparameters via backtests
 
