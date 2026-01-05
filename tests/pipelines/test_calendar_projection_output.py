@@ -61,6 +61,8 @@ def test_calendar_projection_output_schema_and_types() -> None:
         "projected_home_score",
         "projected_away_score",
         "projected_total",
+        "margin_std",
+        "total_std",
     ]
 
     for column in string_columns:
