@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import inspect
 
 import pandas as pd
 
@@ -32,21 +33,43 @@ def ingest_games(
     input_text: str | None,
     sport: str,
     season: str,
+    division: str | None = None,
+    conference: str | None = None,
     format_hint: str | None = None,
 ) -> list:
     """Load, normalize, and validate games from an ingest source."""
-    if input_text:
-        games = source.load_text(input_text, sport=sport, season=season)
-    elif input_path is not None:
-        games = source.load_path(
-            input_path,
-            sport=sport,
-            season=season,
-            format_hint=format_hint,
+    def _supports_param(func, name: str) -> bool:
+        try:
+            params = inspect.signature(func).parameters
+        except (TypeError, ValueError):
+            return False
+        return name in params or any(
+            param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
         )
+
+    if input_text:
+        load_kwargs = {"sport": sport, "season": season}
+        if _supports_param(source.load_text, "division"):
+            load_kwargs["division"] = division
+        if _supports_param(source.load_text, "conference"):
+            load_kwargs["conference"] = conference
+        games = source.load_text(input_text, **load_kwargs)
+    elif input_path is not None:
+        load_kwargs = {"sport": sport, "season": season, "format_hint": format_hint}
+        if _supports_param(source.load_path, "division"):
+            load_kwargs["division"] = division
+        if _supports_param(source.load_path, "conference"):
+            load_kwargs["conference"] = conference
+        games = source.load_path(input_path, **load_kwargs)
     else:
         raise ValueError("Provide input_path or input_text for ingestion.")
 
-    normalized = normalize_games(games, sport=sport, season=season)
+    normalized = normalize_games(
+        games,
+        sport=sport,
+        season=season,
+        division=division,
+        conference=conference,
+    )
     validate_dataset(pd.DataFrame([game.model_dump() for game in normalized]))
     return normalized

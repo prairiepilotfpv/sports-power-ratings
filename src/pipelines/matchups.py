@@ -102,6 +102,8 @@ def predict_matchup(
     *,
     sport: str,
     season: str,
+    division: str | None = None,
+    conference: str | None = None,
     home_team: str,
     away_team: str,
     model: str = "bradley-terry",
@@ -110,7 +112,13 @@ def predict_matchup(
 ) -> MatchupPrediction:
     """Predict a single matchup using stored games and rankings."""
     model = normalize_model_name(model)
-    rows = load_games(db_path, sport=sport, season=season)
+    rows = load_games(
+        db_path,
+        sport=sport,
+        season=season,
+        division=division,
+        conference=conference,
+    )
     df = normalize_games(rows)
     if df.empty:
         raise ValueError(f"No games found for sport={sport!r}, season={season!r}")

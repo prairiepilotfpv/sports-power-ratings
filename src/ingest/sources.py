@@ -19,12 +19,26 @@ class SportsReferenceSource:
         *,
         sport: str | None = None,
         season: str | None = None,
+        division: str | None = None,
+        conference: str | None = None,
         format_hint: str | None = None,
     ) -> list[GameResult]:
         resolved = Path(path)
         if format_hint == "html" or resolved.suffix.lower() in {".html", ".htm"}:
-            return parse_sr_html(resolved, sport=sport, season=season)
-        return parse_sr_csv(resolved, sport=sport, season=season)
+            return parse_sr_html(
+                resolved,
+                sport=sport,
+                season=season,
+                division=division,
+                conference=conference,
+            )
+        return parse_sr_csv(
+            resolved,
+            sport=sport,
+            season=season,
+            division=division,
+            conference=conference,
+        )
 
     def load_text(
         self,
@@ -32,5 +46,13 @@ class SportsReferenceSource:
         *,
         sport: str | None = None,
         season: str | None = None,
+        division: str | None = None,
+        conference: str | None = None,
     ) -> list[GameResult]:
-        return parse_sr_csv_text(text, sport=sport, season=season)
+        return parse_sr_csv_text(
+            text,
+            sport=sport,
+            season=season,
+            division=division,
+            conference=conference,
+        )

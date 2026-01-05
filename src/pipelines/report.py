@@ -65,11 +65,19 @@ def _build_single_report(
     *,
     sport: str,
     season: str,
+    division: str | None,
+    conference: str | None,
     model: str,
     output_path: str | Path | None,
     add_prefix: bool,
 ) -> Path:
-    rows = load_games(db_path, sport=sport, season=season)
+    rows = load_games(
+        db_path,
+        sport=sport,
+        season=season,
+        division=division,
+        conference=conference,
+    )
     df = normalize_games(rows)
     if df.empty:
         raise ValueError(f"No games found for sport={sport!r}, season={season!r}")
@@ -79,6 +87,8 @@ def _build_single_report(
         db_path,
         sport=sport,
         season=season,
+        division=division,
+        conference=conference,
         model=model,
     )
     schedule_df = pd.read_csv(schedule_path)
@@ -120,6 +130,8 @@ def build_excel_report(
     *,
     sport: str,
     season: str,
+    division: str | None = None,
+    conference: str | None = None,
     model: str | None = None,
     output_path: str | Path | None = None,
 ) -> Path | list[Path]:
@@ -130,6 +142,8 @@ def build_excel_report(
             db_path,
             sport=sport,
             season=season,
+            division=division,
+            conference=conference,
             model=model_name,
             output_path=output_path,
             add_prefix=multiple,

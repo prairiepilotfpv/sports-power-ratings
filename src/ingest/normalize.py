@@ -11,6 +11,8 @@ def normalize_games(
     games: Iterable[GameResult],
     sport: str | None = None,
     season: str | None = None,
+    division: str | None = None,
+    conference: str | None = None,
 ) -> List[GameResult]:
     """Normalize GameResult entries and backfill sport/season defaults."""
     normalized: List[GameResult] = []
@@ -30,6 +32,8 @@ def normalize_games(
                 game_id=game.game_id,
                 sport=game.sport or sport,
                 season=game.season or season,
+                division=game.division or division,
+                conference=game.conference or conference,
                 notes=game.notes,
             )
         )
