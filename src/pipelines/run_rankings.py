@@ -79,12 +79,18 @@ def build_rankings(
     if not rating_map:
         return _empty_rankings()
 
-    # Convert log rating differences into point-spread units.
-    point_scale = _estimate_point_scale(played, rating_map)
+    # Convert rating differences into point-spread units.
+    use_log_scale = all(rating > 0 for rating in rating_map.values())
+    point_scale = _estimate_point_scale(
+        played, rating_map, use_log_scale=use_log_scale
+    )
 
     points_ratings: Dict[str, float] = {}
     for team, rating in rating_map.items():
-        points_rating = math.log(rating) * point_scale if rating > 0 else 0.0
+        if use_log_scale:
+            points_rating = math.log(rating) * point_scale if rating > 0 else 0.0
+        else:
+            points_rating = rating * point_scale
         points_ratings[team] = points_rating
 
     centered_points = _center_ratings(points_ratings)
@@ -102,7 +108,9 @@ def build_rankings(
     return pd.DataFrame(items).sort_values("rating", ascending=False)
 
 
-def _estimate_point_scale(df: pd.DataFrame, ratings: Dict[str, float]) -> float:
+def _estimate_point_scale(
+    df: pd.DataFrame, ratings: Dict[str, float], *, use_log_scale: bool
+) -> float:
     """Estimate the point spread scale from rating differences vs actual margins."""
     if df.empty or not ratings:
         return 0.0
@@ -116,17 +124,22 @@ def _estimate_point_scale(df: pd.DataFrame, ratings: Dict[str, float]) -> float:
             continue
         rating_home = ratings.get(home)
         rating_away = ratings.get(away)
-        if not rating_home or not rating_away:
+        if rating_home is None or rating_away is None:
             continue
         try:
             margin = int(row.get("home_score")) - int(row.get("away_score"))
         except Exception:
             continue
-        log_diff = math.log(rating_home) - math.log(rating_away)
-        if log_diff == 0.0:
+        if use_log_scale:
+            if rating_home <= 0 or rating_away <= 0:
+                continue
+            rating_diff = math.log(rating_home) - math.log(rating_away)
+        else:
+            rating_diff = rating_home - rating_away
+        if rating_diff == 0.0:
             continue
-        numerator += log_diff * margin
-        denominator += log_diff * log_diff
+        numerator += rating_diff * margin
+        denominator += rating_diff * rating_diff
 
     if denominator == 0.0:
         return 0.0
