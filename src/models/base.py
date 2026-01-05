@@ -39,17 +39,35 @@ class GamePrediction:
     home_team: str
     away_team: str
     p_home_win: float
+    win_prob_samples: list[dict[str, float]] | None = None
     win_prob_dist: list[dict[str, float]] | None = None
     pred_margin: float | None = None
     pred_total: float | None = None
+    margin_mean: float | None = None
+    margin_sd: float | None = None
+    total_mean: float | None = None
+    total_sd: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.p_home_win = validate_probability(self.p_home_win, field_name="p_home_win")
-        self.win_prob_dist = validate_win_prob_dist(self.win_prob_dist)
+        self.win_prob_samples = validate_win_prob_dist(
+            self.win_prob_samples or self.win_prob_dist,
+            field_name="win_prob_samples",
+        )
+        # Maintain backward compatibility for callers still using win_prob_dist.
+        self.win_prob_dist = self.win_prob_samples
         self.pred_margin = normalize_optional_float(self.pred_margin)
         self.pred_total = normalize_optional_float(self.pred_total)
+        self.margin_mean = normalize_optional_float(
+            self.margin_mean if self.margin_mean is not None else self.pred_margin
+        )
+        self.total_mean = normalize_optional_float(
+            self.total_mean if self.total_mean is not None else self.pred_total
+        )
+        self.margin_sd = _normalize_sd(self.margin_sd)
+        self.total_sd = _normalize_sd(self.total_sd)
         if not isinstance(self.metadata, dict):
             raise ValueError("metadata must be a dict.")
         missing = [
@@ -57,6 +75,11 @@ class GamePrediction:
         ]
         if missing:
             raise ValueError(f"metadata missing required keys: {', '.join(missing)}")
+        _validate_probability_sign(
+            p_home_win=self.p_home_win,
+            margin_mean=self.margin_mean,
+            margin_sd=self.margin_sd,
+        )
 
 
 class BaseModel(ABC):
@@ -209,3 +232,62 @@ def require_columns(df: Any, required: Iterable[str]) -> None:
     ]
     if missing:
         raise ValueError(f"Missing required columns: {', '.join(missing)}")
+
+
+def _normalize_sd(value: float | None) -> float | None:
+    """Normalize standard deviation inputs to positive floats or None."""
+    if value is None:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    try:
+        sd = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Standard deviation values must be numeric.") from exc
+    if sd <= 0 or not math.isfinite(sd):
+        return None
+    return sd
+
+
+def _normal_cdf(x: float, *, mean: float = 0.0, sd: float = 1.0) -> float:
+    """Compute the normal CDF without requiring scipy."""
+    if sd <= 0 or not math.isfinite(sd):
+        raise ValueError("Standard deviation must be positive and finite.")
+    z = (x - mean) / (sd * math.sqrt(2.0))
+    return 0.5 * (1.0 + math.erf(z))
+
+
+def _home_win_prob_from_margin(mean: float, sd: float | None) -> float | None:
+    """Derive home win probability from a margin distribution (home minus away)."""
+    if sd is None or sd <= 0:
+        return None
+    return 1.0 - _normal_cdf(0.0, mean=mean, sd=sd)
+
+
+def _validate_probability_sign(
+    *,
+    p_home_win: float | None,
+    margin_mean: float | None,
+    margin_sd: float | None,
+    tolerance: float = 1e-3,
+) -> None:
+    """Assert that probabilities align with the sign of the predicted margin."""
+    if p_home_win is None or margin_mean is None:
+        return
+    if margin_mean > 0 and p_home_win <= 0.5 - tolerance:
+        raise ValueError(
+            "p_home_win must exceed 0.5 when margin_mean favors the home team."
+        )
+    if margin_mean < 0 and p_home_win >= 0.5 + tolerance:
+        raise ValueError(
+            "p_home_win must be below 0.5 when margin_mean favors the away team."
+        )
+    derived = _home_win_prob_from_margin(margin_mean, margin_sd)
+    if derived is None:
+        return
+    if (derived > 0.5 and p_home_win <= 0.5 - tolerance) or (
+        derived < 0.5 and p_home_win >= 0.5 + tolerance
+    ):
+        raise ValueError(
+            "p_home_win is inconsistent with the sign implied by the margin distribution."
+        )

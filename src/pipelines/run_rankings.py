@@ -14,7 +14,13 @@ from data.repository import load_games, save_model_metrics
 from models.registry import get_model, list_models, normalize_model_name
 from pipelines.common import normalize_games, resolve_output_path
 from pipelines.model_params import resolve_model_params
-from config import DEFAULT_WIN_PROB_K
+from config import (
+    CALIBRATION_RESIDUAL_GAMES,
+    DEFAULT_MARGIN_SD_FALLBACK,
+    DEFAULT_TOTAL_SD_FALLBACK,
+    DEFAULT_WIN_PROB_K,
+    MIN_CALIBRATION_SAMPLES,
+)
 from pipelines.projections import (
     average_total_points,
     fit_total_model,
@@ -205,6 +211,8 @@ def _store_model_metrics(
     played = _completed_games(df)
     if played.empty:
         return
+    played = played.sort_values("date")
+    calibration_games = played.tail(CALIBRATION_RESIDUAL_GAMES)
 
     ratings = {
         str(row["team"]).strip(): float(row["points"]) for _, row in rankings.iterrows()
@@ -229,7 +237,7 @@ def _store_model_metrics(
         played.to_dict(orient="records"), ratings
     )
     win_prob_samples: list[tuple[float, int]] = []
-    for _, row in played.iterrows():
+    for _, row in calibration_games.iterrows():
         home = str(row.get("home_team", "")).strip()
         away = str(row.get("away_team", "")).strip()
         if not home or not away:
@@ -247,7 +255,7 @@ def _store_model_metrics(
         )
         errors.append(predicted_margin - margin)
         predicted_margins.append(predicted_margin)
-        margin_residuals.append(predicted_margin - margin)
+        margin_residuals.append(margin - predicted_margin)
         predicted_total = total_from_ratings(
             home,
             away,
@@ -260,7 +268,7 @@ def _store_model_metrics(
         if predicted_total is not None:
             actual_total = float(row.get("home_score")) + float(row.get("away_score"))
             predicted_totals.append(predicted_total)
-            total_residuals.append(predicted_total - actual_total)
+            total_residuals.append(actual_total - predicted_total)
         if margin == 0:
             continue
         projected_spread = -predicted_margin
@@ -272,9 +280,15 @@ def _store_model_metrics(
 
     win_prob_k = fit_win_prob_scale(win_prob_samples, default_k=DEFAULT_WIN_PROB_K)
     margin_std = (
-        statistics.pstdev(margin_residuals) if margin_residuals else None
+        statistics.pstdev(margin_residuals) if len(margin_residuals) >= 2 else None
     )
-    total_std = statistics.pstdev(total_residuals) if total_residuals else None
+    total_std = (
+        statistics.pstdev(total_residuals) if len(total_residuals) >= 2 else None
+    )
+    if margin_std is None or len(margin_residuals) < MIN_CALIBRATION_SAMPLES:
+        margin_std = DEFAULT_MARGIN_SD_FALLBACK
+    if total_std is None or len(total_residuals) < MIN_CALIBRATION_SAMPLES:
+        total_std = DEFAULT_TOTAL_SD_FALLBACK
     margin_mean = statistics.fmean(predicted_margins) if predicted_margins else None
     total_mean = statistics.fmean(predicted_totals) if predicted_totals else None
 

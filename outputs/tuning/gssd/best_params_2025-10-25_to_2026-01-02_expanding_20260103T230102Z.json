@@ -1,0 +1,10 @@
+{
+  "applied": false,
+  "baseline_score": 0.6358086645077083,
+  "best_params": {},
+  "best_score": 0.6358086645077083,
+  "improved": false,
+  "metric": "log_loss",
+  "model": "gssd",
+  "run_id": "2025-10-25_to_2026-01-02_expanding_20260103T230102Z"
+}

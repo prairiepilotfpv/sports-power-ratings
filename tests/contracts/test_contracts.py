@@ -63,10 +63,18 @@ def test_contract_end_to_end_sample_game() -> None:
         "projected_spread": -4.5,
         "projected_home_spread": 4.5,
         "projected_win_prob": 0.62,
-        "projected_win_prob_dist": '[{"p_home_win": 0.62, "weight": 1.0}]',
+        "projected_win_prob_dist": None,
         "projected_home_score": 101.2,
         "projected_away_score": 96.7,
         "projected_total": 197.9,
+        "margin_mean": 4.5,
+        "margin_sd": 12.0,
+        "total_mean": 197.9,
+        "total_sd": 18.0,
+        "margin_dist_params": None,
+        "total_dist_params": None,
+        "model_win_prob_samples": None,
+        "model_win_prob": 0.62,
     }
     schedule_df = pd.DataFrame([schedule_row], columns=SCHEDULE_EXPORT_COLUMNS)
     assert list(validate_schedule_export_frame(schedule_df).columns) == SCHEDULE_EXPORT_COLUMNS

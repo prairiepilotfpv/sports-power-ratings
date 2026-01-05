@@ -266,6 +266,7 @@ class EloModel(BaseModel):
                     p_home_win=p_home_win,
                     win_prob_dist=win_prob_dist,
                     pred_margin=pred_margin,
+                    margin_sd=coefficients.error_term,
                     metadata=dict(model_identity),
                     extra={
                         "home_advantage": coefficients.home_advantage,

@@ -66,6 +66,8 @@ def test_build_schedule_with_projections(tmp_path: Path) -> None:
     assert set(df["status"]) == {"final", "scheduled"}
     assert "notes" not in df.columns
     assert "model_error" not in df.columns
+    assert "margin_mean" in df.columns
+    assert "total_mean" in df.columns
 
     upcoming = df[df["status"] == "scheduled"].iloc[0]
     assert upcoming["home_team"] == "Team B"
@@ -73,6 +75,11 @@ def test_build_schedule_with_projections(tmp_path: Path) -> None:
     assert pd.notna(upcoming["projected_winner"])
     assert pd.notna(upcoming["projected_spread"])
     assert upcoming["projected_total"] > 0
+    assert pd.notna(upcoming["margin_mean"])
+    assert upcoming["margin_sd"] > 0
+    assert pd.notna(upcoming["total_mean"])
+    assert upcoming["total_sd"] > 0
+    assert upcoming["model_win_prob"] == pytest.approx(upcoming["projected_win_prob"])
 
 
 def test_build_schedule_with_elo_projections(tmp_path: Path) -> None:
@@ -209,6 +216,14 @@ def test_schedule_export_column_ordering() -> None:
         "projected_home_score": 102.5,
         "projected_away_score": 95.5,
         "projected_total": 198.0,
+        "margin_mean": 7.0,
+        "margin_sd": 12.0,
+        "total_mean": 198.0,
+        "total_sd": 20.0,
+        "margin_dist_params": '{"mean": 7.0, "sd": 12.0}',
+        "total_dist_params": '{"mean": 198.0, "sd": 20.0}',
+        "model_win_prob_samples": '[{"p_home_win": 0.65, "weight": 1.0}]',
+        "model_win_prob": 0.65,
     }
     # Shuffle columns to simulate unordered input
     shuffled_columns = sorted(row.keys())
@@ -239,9 +254,18 @@ def test_schedule_export_column_ordering_missing_column() -> None:
                 "projected_spread": -4.5,
                 "projected_home_spread": 4.5,
                 "projected_win_prob": 0.65,
+                "projected_win_prob_dist": None,
                 "projected_home_score": 102.5,
                 "projected_away_score": 95.5,
                 "projected_total": 198.0,
+                "margin_mean": None,
+                "margin_sd": None,
+                "total_mean": None,
+                "total_sd": None,
+                "margin_dist_params": None,
+                "total_dist_params": None,
+                "model_win_prob_samples": None,
+                "model_win_prob": None,
             }
         ]
     )
@@ -442,6 +466,11 @@ def test_schedule_excel_dashboard_includes_today_games(tmp_path: Path) -> None:
     )
     assert (
         dashboard.loc[dashboard["game"] == "Team B @ Team A", "projected_spread"]
+        .notna()
+        .all()
+    )
+    assert (
+        dashboard.loc[dashboard["game"] == "Team B @ Team A", "model_win_prob"]
         .notna()
         .all()
     )

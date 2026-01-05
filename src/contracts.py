@@ -17,6 +17,9 @@ from models.base import (
 )
 
 
+# projected_win_prob_dist is retained as a legacy alias; model_win_prob_samples is the canonical
+# list of model probability samples (not an outcome distribution). Outcome distributions are
+# represented via margin/total means and standard deviations.
 SCHEDULE_EXPORT_COLUMNS: list[str] = [
     "date",
     "game_id",
@@ -40,6 +43,14 @@ SCHEDULE_EXPORT_COLUMNS: list[str] = [
     "projected_home_score",
     "projected_away_score",
     "projected_total",
+    "margin_mean",
+    "margin_sd",
+    "total_mean",
+    "total_sd",
+    "margin_dist_params",
+    "total_dist_params",
+    "model_win_prob_samples",
+    "model_win_prob",
 ]
 
 
@@ -97,6 +108,14 @@ class ScheduleExportRow:
     projected_home_score: float | None
     projected_away_score: float | None
     projected_total: float | None
+    margin_mean: float | None
+    margin_sd: float | None
+    total_mean: float | None
+    total_sd: float | None
+    margin_dist_params: str | None
+    total_dist_params: str | None
+    model_win_prob_samples: str | None
+    model_win_prob: float | None
 
 
 def build_game_id(date_value: Any, home_team: str, away_team: str) -> str:

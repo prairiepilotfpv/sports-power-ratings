@@ -11,9 +11,14 @@ import pandas as pd
 from data.repository import load_games, load_model_metrics
 from pipelines.common import normalize_games
 from pipelines.model_params import resolve_model_params
-from config import DEFAULT_WIN_PROB_K
+from config import (
+    DEFAULT_MARGIN_SD_FALLBACK,
+    DEFAULT_TOTAL_SD_FALLBACK,
+    DEFAULT_WIN_PROB_K,
+)
 from pipelines.projections import (
     average_total_points,
+    home_win_prob_from_margin,
     fit_total_model,
     matchup_total_from_averages,
     project_game,
@@ -36,7 +41,8 @@ class MatchupPrediction:
     spread: float
     total_points: float
     win_prob: float | None
-    win_prob_dist: list[dict[str, float]] | None
+    win_prob_samples: list[dict[str, float]] | None
+    model_win_prob: float | None
     margin_mean: float
     margin_std: float | None
     total_mean: float
@@ -127,6 +133,12 @@ def predict_matchup(
     if win_prob_k <= 0:
         win_prob_k = DEFAULT_WIN_PROB_K
     base_total = float(metrics.get("base_total", 0.0))
+    margin_std_value = metrics.get("margin_std")
+    if margin_std_value is None or margin_std_value <= 0:
+        margin_std_value = DEFAULT_MARGIN_SD_FALLBACK
+    total_std_value = metrics.get("total_std")
+    if total_std_value is None or total_std_value <= 0:
+        total_std_value = DEFAULT_TOTAL_SD_FALLBACK
     played_records = played.to_dict(orient="records")
     total_intercept, total_slope = fit_total_model(played_records, ratings)
     scoring_averages = team_scoring_averages(played_records)
@@ -165,12 +177,25 @@ def predict_matchup(
         winner, loser = home_key, away_key
     else:
         winner, loser = away_key, home_key
-    win_prob_dist = None
-    if projection.projected_win_prob is not None:
-        win_prob_dist = win_prob_distribution(
-            projection.projected_win_prob,
+    win_prob_samples = None
+    win_prob_value = projection.projected_win_prob
+    derived_home_win_prob = home_win_prob_from_margin(projection.margin, margin_std_value)
+    if win_prob_value is None:
+        win_prob_value = derived_home_win_prob
+    if win_prob_value is not None and derived_home_win_prob is not None:
+        if projection.margin > 0 and win_prob_value <= 0.5 - 1e-3:
+            raise ValueError(
+                "Inconsistent win probability: margin favors home but p_home_win <= 0.5"
+            )
+        if projection.margin < 0 and win_prob_value >= 0.5 + 1e-3:
+            raise ValueError(
+                "Inconsistent win probability: margin favors away but p_home_win >= 0.5"
+            )
+    if win_prob_value is not None:
+        win_prob_samples = win_prob_distribution(
+            win_prob_value,
             win_prob_k=win_prob_k,
-            margin_std=metrics.get("margin_std"),
+            margin_std=margin_std_value,
         )
 
     return MatchupPrediction(
@@ -180,12 +205,13 @@ def predict_matchup(
         loser=loser,
         spread=projection.projected_spread,
         total_points=projection.projected_total or 0.0,
-        win_prob=projection.projected_win_prob,
-        win_prob_dist=win_prob_dist,
+        win_prob=win_prob_value,
+        win_prob_samples=win_prob_samples,
+        model_win_prob=win_prob_value,
         margin_mean=projection.margin,
-        margin_std=metrics.get("margin_std"),
+        margin_std=margin_std_value if projection.margin is not None else None,
         total_mean=projection.projected_total or 0.0,
-        total_std=metrics.get("total_std"),
+        total_std=total_std_value if projection.projected_total is not None else None,
     )
 
 
@@ -218,6 +244,9 @@ def format_matchup(prediction: MatchupPrediction) -> Tuple[str, Dict[str, float]
         metrics["total_std"] = prediction.total_std
     if prediction.win_prob is not None:
         metrics["win_prob"] = prediction.win_prob
-    if prediction.win_prob_dist is not None:
-        metrics["win_prob_dist"] = prediction.win_prob_dist
+    if prediction.win_prob_samples is not None:
+        metrics["win_prob_samples"] = prediction.win_prob_samples
+        metrics["win_prob_dist"] = prediction.win_prob_samples
+    if prediction.model_win_prob is not None:
+        metrics["model_win_prob"] = prediction.model_win_prob
     return line, metrics

@@ -6,6 +6,11 @@ from dataclasses import dataclass
 import math
 from typing import Iterable, Sequence
 
+try:
+    from scipy.stats import norm
+except Exception:  # pragma: no cover - scipy optional
+    norm = None
+
 from config import DEFAULT_WIN_PROB_K
 
 
@@ -22,6 +27,74 @@ class GameProjection:
     projected_home_score: float | None
     projected_away_score: float | None
     projected_total: float | None
+
+
+def _normal_cdf(x: float, *, mean: float, sd: float) -> float:
+    """Normal CDF using scipy when available, else an erf fallback."""
+    if sd <= 0 or not math.isfinite(sd):
+        raise ValueError("Standard deviation must be positive and finite.")
+    if norm is not None:
+        return float(norm.cdf(x, loc=mean, scale=sd))
+    z = (x - mean) / (sd * math.sqrt(2.0))
+    return 0.5 * (1.0 + math.erf(z))
+
+
+def _safe_mean(value: float | None) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_sd(value: float | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        sd = float(value)
+    except (TypeError, ValueError):
+        return None
+    if sd <= 0 or not math.isfinite(sd):
+        return None
+    return sd
+
+
+def home_win_prob_from_margin(margin_mean: float | None, margin_sd: float | None) -> float | None:
+    """Probability the home team wins given a margin distribution (home - away)."""
+    mean = _safe_mean(margin_mean)
+    sd = _safe_sd(margin_sd)
+    if mean is None or sd is None:
+        return None
+    return 1.0 - _normal_cdf(0.0, mean=mean, sd=sd)
+
+
+def cover_prob(
+    spread: float | None,
+    margin_mean: float | None,
+    margin_sd: float | None,
+    sign_convention: str = "away_minus_home",
+) -> float | None:
+    """Price a spread using a normal margin outcome distribution."""
+    mean = _safe_mean(margin_mean)
+    sd = _safe_sd(margin_sd)
+    if mean is None or sd is None or spread is None:
+        return None
+    if sign_convention not in {"away_minus_home", "home_minus_away"}:
+        raise ValueError("sign_convention must be 'away_minus_home' or 'home_minus_away'.")
+    threshold = -float(spread) if sign_convention == "away_minus_home" else float(spread)
+    return 1.0 - _normal_cdf(threshold, mean=mean, sd=sd)
+
+
+def over_prob(
+    total_line: float | None,
+    total_mean: float | None,
+    total_sd: float | None,
+) -> float | None:
+    """Probability the combined score goes over a posted total (outcome distribution)."""
+    mean = _safe_mean(total_mean)
+    sd = _safe_sd(total_sd)
+    if mean is None or sd is None or total_line is None:
+        return None
+    return 1.0 - _normal_cdf(float(total_line), mean=mean, sd=sd)
 
 
 def logistic_win_prob(away_minus_home: float, k: float) -> float:

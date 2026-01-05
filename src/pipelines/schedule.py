@@ -15,10 +15,11 @@ from data.repository import load_games, load_model_metrics
 from pipelines.common import normalize_games, resolve_output_path
 from pipelines.model_params import resolve_model_params
 from pipelines.matchups import team_home_advantages
-from config import DEFAULT_WIN_PROB_K
+from config import DEFAULT_MARGIN_SD_FALLBACK, DEFAULT_TOTAL_SD_FALLBACK, DEFAULT_WIN_PROB_K
 from pipelines.projections import (
     average_total_points,
     fit_total_model,
+    home_win_prob_from_margin,
     matchup_total_from_averages,
     project_game,
     total_from_ratings,
@@ -41,6 +42,15 @@ DASHBOARD_COLUMNS: List[str] = [
     "projected_winner",
     "projected_spread",
     "projected_win_prob",
+    "projected_win_prob_dist",
+    "model_win_prob_samples",
+    "model_win_prob",
+    "margin_mean",
+    "margin_sd",
+    "total_mean",
+    "total_sd",
+    "margin_dist_params",
+    "total_dist_params",
 ]
 
 MODEL_METADATA_DATA_START_ROW = 10
@@ -128,6 +138,18 @@ def _project_row(
     projected_away_score = None
     projected_total = None
     projected_win_prob_dist = None
+    model_win_prob_samples = None
+    model_win_prob = None
+    margin_mean = None
+    margin_sd_value = (
+        margin_std if margin_std is not None and margin_std > 0 else DEFAULT_MARGIN_SD_FALLBACK
+    )
+    total_mean = None
+    total_sd_value = (
+        total_std if total_std is not None and total_std > 0 else DEFAULT_TOTAL_SD_FALLBACK
+    )
+    margin_dist_params = None
+    total_dist_params = None
 
     if home_rating is not None and away_rating is not None:
         # Build projected spreads/totals when both team ratings are available.
@@ -161,12 +183,30 @@ def _project_row(
         projected_home_score = projection.projected_home_score
         projected_away_score = projection.projected_away_score
         projected_total = projection.projected_total
+        margin_mean = projection.margin
+        total_mean = projected_total
         if projected_win_prob is not None:
-            projected_win_prob_dist = win_prob_distribution(
-                projected_win_prob,
-                win_prob_k=win_prob_k,
-                margin_std=margin_std,
-            )
+            projected_win_prob_dist = None
+            model_win_prob = projected_win_prob
+        if margin_mean is not None:
+            # Outcome distribution parameters for pricing spreads/totals (not model-opinion buckets).
+            margin_dist_params = None
+        if total_mean is not None:
+            total_dist_params = None
+        derived_win_prob = home_win_prob_from_margin(margin_mean, margin_sd_value)
+        if projected_win_prob is None and derived_win_prob is not None:
+            projected_win_prob = derived_win_prob
+        if projected_win_prob is not None and derived_win_prob is not None:
+            if margin_mean > 0 and projected_win_prob <= 0.5 - 1e-3:
+                raise ValueError(
+                    "Inconsistent win probability: margin favors home but p_home_win <= 0.5"
+                )
+            if margin_mean < 0 and projected_win_prob >= 0.5 + 1e-3:
+                raise ValueError(
+                    "Inconsistent win probability: margin favors away but p_home_win >= 0.5"
+                )
+        if projected_win_prob is not None:
+            model_win_prob_samples = None
 
     result_margin = None
     result_total = None
@@ -187,17 +227,21 @@ def _project_row(
             "projected_spread": projected_spread,
             "projected_home_spread": projected_home_spread,
             "projected_win_prob": projected_win_prob,
-            "projected_win_prob_dist": (
-                json.dumps(projected_win_prob_dist)
-                if projected_win_prob_dist is not None
-                else None
-            ),
+            "projected_win_prob_dist": None,
+            "model_win_prob_samples": model_win_prob_samples,
+            "model_win_prob": model_win_prob,
             "home_advantage": applied_home_advantage,
             "projected_home_score": projected_home_score,
             "projected_away_score": projected_away_score,
             "projected_total": projected_total,
             "result_margin": result_margin,
             "result_total": result_total,
+            "margin_mean": margin_mean,
+            "margin_sd": margin_sd_value if margin_mean is not None else None,
+            "total_mean": total_mean,
+            "total_sd": total_sd_value if total_mean is not None else None,
+            "margin_dist_params": margin_dist_params,
+            "total_dist_params": total_dist_params,
         }
     )
     return base
@@ -365,6 +409,17 @@ def _dashboard_rows_for_today(
                 "projected_winner": row.get("projected_winner"),
                 "projected_spread": row.get("projected_spread"),
                 "projected_win_prob": row.get("projected_win_prob"),
+                "projected_win_prob_dist": row.get("projected_win_prob_dist"),
+                "model_win_prob_samples": row.get("model_win_prob_samples"),
+                "model_win_prob": row.get("model_win_prob")
+                if row.get("model_win_prob") is not None
+                else row.get("projected_win_prob"),
+                "margin_mean": row.get("margin_mean"),
+                "margin_sd": row.get("margin_sd"),
+                "total_mean": row.get("total_mean"),
+                "total_sd": row.get("total_sd"),
+                "margin_dist_params": row.get("margin_dist_params"),
+                "total_dist_params": row.get("total_dist_params"),
             }
         )
     return rows

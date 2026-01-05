@@ -380,11 +380,23 @@ def _predictions_to_frame(predictions: Iterable[GamePrediction]) -> pd.DataFrame
             "home_team": pred.home_team,
             "away_team": pred.away_team,
             "p_home_win": pred.p_home_win,
+            "win_prob_samples": (
+                json.dumps(pred.win_prob_samples)
+                if pred.win_prob_samples is not None
+                else None
+            ),
             "win_prob_dist": (
-                json.dumps(pred.win_prob_dist) if pred.win_prob_dist is not None else None
+                json.dumps(pred.win_prob_samples)
+                if pred.win_prob_samples is not None
+                else None
             ),
             "pred_margin": pred.pred_margin,
             "pred_total": pred.pred_total,
+            "margin_mean": pred.margin_mean,
+            "margin_sd": pred.margin_sd,
+            "total_mean": pred.total_mean,
+            "total_sd": pred.total_sd,
+            "model_win_prob": getattr(pred, "model_win_prob", None),
             "model_id": pred.metadata.get("model_id"),
         }
         if pred.extra:
@@ -400,9 +412,15 @@ def _prediction_hash_columns(pred_df: pd.DataFrame) -> list[str]:
         "home_team",
         "away_team",
         "p_home_win",
+        "win_prob_samples",
         "win_prob_dist",
         "pred_margin",
         "pred_total",
+        "margin_mean",
+        "margin_sd",
+        "total_mean",
+        "total_sd",
+        "model_win_prob",
     ]
     if "extra" in pred_df.columns:
         columns.append("extra")

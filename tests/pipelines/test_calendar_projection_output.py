@@ -45,6 +45,8 @@ def test_calendar_projection_output_schema_and_types() -> None:
         "away_team",
         "projected_winner",
         "projected_win_prob_dist",
+        "margin_dist_params",
+        "total_dist_params",
     ]
     boolean_columns = ["neutral", "overtime"]
     numeric_columns = [
@@ -58,9 +60,15 @@ def test_calendar_projection_output_schema_and_types() -> None:
         "projected_spread",
         "projected_home_spread",
         "projected_win_prob",
+        "model_win_prob",
         "projected_home_score",
         "projected_away_score",
         "projected_total",
+        "margin_mean",
+        "margin_sd",
+        "total_mean",
+        "total_sd",
+        "model_win_prob_samples",
     ]
 
     for column in string_columns:
