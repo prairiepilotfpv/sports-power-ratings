@@ -51,6 +51,8 @@ SCHEDULE_EXPORT_COLUMNS: list[str] = [
     "total_dist_params",
     "model_win_prob_samples",
     "model_win_prob",
+    "margin_std",
+    "total_std",
 ]
 
 

@@ -69,6 +69,8 @@ def test_calendar_projection_output_schema_and_types() -> None:
         "total_mean",
         "total_sd",
         "model_win_prob_samples",
+        "margin_std",
+        "total_std",
     ]
 
     for column in string_columns:

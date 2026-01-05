@@ -224,6 +224,8 @@ def test_schedule_export_column_ordering() -> None:
         "total_dist_params": '{"mean": 198.0, "sd": 20.0}',
         "model_win_prob_samples": '[{"p_home_win": 0.65, "weight": 1.0}]',
         "model_win_prob": 0.65,
+        "margin_std": 12.1,
+        "total_std": 18.4,
     }
     # Shuffle columns to simulate unordered input
     shuffled_columns = sorted(row.keys())

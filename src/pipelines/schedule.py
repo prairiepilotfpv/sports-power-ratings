@@ -234,6 +234,8 @@ def _project_row(
             "projected_home_score": projected_home_score,
             "projected_away_score": projected_away_score,
             "projected_total": projected_total,
+            "margin_std": margin_std,
+            "total_std": total_std,
             "result_margin": result_margin,
             "result_total": result_total,
             "margin_mean": margin_mean,
