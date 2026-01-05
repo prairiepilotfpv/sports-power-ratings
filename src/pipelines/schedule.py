@@ -345,15 +345,15 @@ def _build_schedule_dataframe(
                 ratings=ratings,
                 base_total=base_total,
                 scoring_averages=scoring_averages,
-            status="scheduled",
-            home_advantage=home_advantages.get(home, fallback_home_advantage),
-            win_prob_k=win_prob_k,
-            margin_std=margin_std,
-            total_std=total_std,
-            total_intercept=total_intercept,
-            total_slope=total_slope,
+                status="scheduled",
+                home_advantage=home_advantages.get(home, fallback_home_advantage),
+                win_prob_k=win_prob_k,
+                margin_std=margin_std,
+                total_std=total_std,
+                total_intercept=total_intercept,
+                total_slope=total_slope,
+            )
         )
-    )
 
     schedule_df = pd.DataFrame(schedule_rows)
     if not schedule_df.empty and "date" in schedule_df.columns:
@@ -520,6 +520,8 @@ def build_schedule_with_projections(
     *,
     sport: str,
     season: str,
+    division: str | None = None,
+    conference: str | None = None,
     model: str | None = None,
     output_path: str | Path | None = None,
     upcoming_only: bool = False,
@@ -527,7 +529,13 @@ def build_schedule_with_projections(
     model_params_file: str | Path | None = None,
 ) -> Path | list[Path]:
     """Build a schedule export containing projections for upcoming games."""
-    rows = load_games(db_path, sport=sport, season=season)
+    rows = load_games(
+        db_path,
+        sport=sport,
+        season=season,
+        division=division,
+        conference=conference,
+    )
     df = normalize_games(rows)
     if df.empty:
         raise ValueError(f"No games found for sport={sport!r}, season={season!r}")
@@ -557,6 +565,8 @@ def build_schedule_excel_report(
     *,
     sport: str,
     season: str,
+    division: str | None = None,
+    conference: str | None = None,
     model: str | None = None,
     output_path: str | Path | None = None,
     upcoming_only: bool = False,
@@ -564,7 +574,13 @@ def build_schedule_excel_report(
     model_params_file: str | Path | None = None,
 ) -> Path:
     """Build an Excel workbook with schedule projections (one sheet per model)."""
-    rows = load_games(db_path, sport=sport, season=season)
+    rows = load_games(
+        db_path,
+        sport=sport,
+        season=season,
+        division=division,
+        conference=conference,
+    )
     df = normalize_games(rows)
     if df.empty:
         raise ValueError(f"No games found for sport={sport!r}, season={season!r}")

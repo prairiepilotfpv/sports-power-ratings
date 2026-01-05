@@ -21,4 +21,6 @@ class GameResult(BaseModel):
     game_id: Optional[str] = None
     sport: Optional[str] = None
     season: Optional[str] = None
+    division: Optional[str] = None
+    conference: Optional[str] = None
     notes: Optional[str] = None

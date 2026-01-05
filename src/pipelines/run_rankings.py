@@ -165,13 +165,21 @@ def run_rankings(
     *,
     sport: str,
     season: str,
+    division: str | None = None,
+    conference: str | None = None,
     model: str | None = None,
     output_path: str | Path | None = None,
     model_params: dict[str, float] | None = None,
     model_params_file: str | Path | None = None,
 ) -> Path | list[Path]:
     """Load games from SQLite, generate rankings, and write them to CSV."""
-    rows = load_games(db_path, sport=sport, season=season)
+    rows = load_games(
+        db_path,
+        sport=sport,
+        season=season,
+        division=division,
+        conference=conference,
+    )
     df = normalize_games(rows)
     if df.empty:
         raise ValueError(f"No games found for sport={sport!r}, season={season!r}")

@@ -70,6 +70,8 @@ class GameRecord:
     game_id: str | None = None
     sport: str | None = None
     season: str | None = None
+    division: str | None = None
+    conference: str | None = None
     notes: str | None = None
 
 

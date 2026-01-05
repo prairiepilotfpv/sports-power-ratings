@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS games (
     game_id TEXT,
     sport TEXT,
     season TEXT,
+    division TEXT,
+    conference TEXT,
     notes TEXT,
     UNIQUE(game_id, sport, season)
 );
@@ -61,8 +63,18 @@ def init_db(db_path: str | Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(path)) as conn:
         conn.executescript(SCHEMA)
+        _ensure_games_columns(conn)
         _ensure_model_metrics_columns(conn)
         conn.commit()
+
+
+def _ensure_games_columns(conn: sqlite3.Connection) -> None:
+    """Backfill columns for older databases that predate new game metadata."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(games)").fetchall()}
+    if "division" not in existing:
+        conn.execute("ALTER TABLE games ADD COLUMN division TEXT")
+    if "conference" not in existing:
+        conn.execute("ALTER TABLE games ADD COLUMN conference TEXT")
 
 
 def _ensure_model_metrics_columns(conn: sqlite3.Connection) -> None:
@@ -115,6 +127,8 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
             g.game_id,
             g.sport,
             g.season,
+            g.division,
+            g.conference,
             g.notes,
         )
         for g in games
@@ -134,8 +148,10 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
                 game_id,
                 sport,
                 season,
+                division,
+                conference,
                 notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -147,8 +163,10 @@ def load_games(
     db_path: str | Path,
     sport: str | None = None,
     season: str | None = None,
+    division: str | None = None,
+    conference: str | None = None,
 ) -> List[GameResult]:
-    """Load games from SQLite, filtered by optional sport/season."""
+    """Load games from SQLite, filtered by optional sport/season/division/conference."""
     filters = []
     params: list[str] = []
 
@@ -158,6 +176,12 @@ def load_games(
     if season is not None:
         filters.append("season = ?")
         params.append(season)
+    if division is not None:
+        filters.append("division = ?")
+        params.append(division)
+    if conference is not None:
+        filters.append("conference = ?")
+        params.append(conference)
 
     where_clause = ""
     if filters:
@@ -174,6 +198,8 @@ def load_games(
                game_id,
                sport,
                season,
+               division,
+               conference,
                notes
         FROM games
         {where_clause}
@@ -195,7 +221,9 @@ def load_games(
             game_id=row[7],
             sport=row[8],
             season=row[9],
-            notes=row[10],
+            division=row[10],
+            conference=row[11],
+            notes=row[12],
         )
         for row in rows
     ]

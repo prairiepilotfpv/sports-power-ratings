@@ -34,6 +34,14 @@ def _parse_args() -> argparse.Namespace:
         "--season", required=True, help="Season identifier (e.g., 2024-25)"
     )
     import_parser.add_argument(
+        "--division",
+        help="Optional division identifier (e.g., ncaa-d1) for grouping games.",
+    )
+    import_parser.add_argument(
+        "--conference",
+        help="Optional conference identifier (e.g., big-12) for grouping games.",
+    )
+    import_parser.add_argument(
         "--source",
         default="sports-reference",
         help="Input source type (default: sports-reference)",
@@ -43,8 +51,20 @@ def _parse_args() -> argparse.Namespace:
         help="Path to input file (CSV or HTML).",
     )
     import_parser.add_argument(
+        "--input-dir",
+        help=(
+            "Directory containing per-conference CSV/HTML files. "
+            "Use --conference-from-filename to tag each file by its name."
+        ),
+    )
+    import_parser.add_argument(
         "--input-text",
         help="Raw CSV text pasted from Sports-Reference.",
+    )
+    import_parser.add_argument(
+        "--conference-from-filename",
+        action="store_true",
+        help="Tag each imported file with a conference name derived from its filename.",
     )
     import_parser.add_argument(
         "--db",
@@ -61,6 +81,14 @@ def _parse_args() -> argparse.Namespace:
     )
     rank_parser.add_argument(
         "--season", required=True, help="Season identifier (e.g., 2024-25)"
+    )
+    rank_parser.add_argument(
+        "--division",
+        help="Optional division identifier to filter games (e.g., ncaa-d1).",
+    )
+    rank_parser.add_argument(
+        "--conference",
+        help="Optional conference identifier to filter games (e.g., big-12).",
     )
     rank_parser.add_argument(
         "--model",
@@ -104,6 +132,14 @@ def _parse_args() -> argparse.Namespace:
         "--season", required=True, help="Season identifier (e.g., 2024-25)"
     )
     matchup_parser.add_argument(
+        "--division",
+        help="Optional division identifier to filter games (e.g., ncaa-d1).",
+    )
+    matchup_parser.add_argument(
+        "--conference",
+        help="Optional conference identifier to filter games (e.g., big-12).",
+    )
+    matchup_parser.add_argument(
         "--matchup",
         help='Matchup string like "Eagles vs Cowboys".',
     )
@@ -140,6 +176,14 @@ def _parse_args() -> argparse.Namespace:
     )
     schedule_parser.add_argument(
         "--season", required=True, help="Season identifier (e.g., 2024-25)"
+    )
+    schedule_parser.add_argument(
+        "--division",
+        help="Optional division identifier to filter games (e.g., ncaa-d1).",
+    )
+    schedule_parser.add_argument(
+        "--conference",
+        help="Optional conference identifier to filter games (e.g., big-12).",
     )
     schedule_parser.add_argument(
         "--model",
@@ -182,6 +226,14 @@ def _parse_args() -> argparse.Namespace:
     )
     report_parser.add_argument(
         "--season", required=True, help="Season identifier (e.g., 2024-25)"
+    )
+    report_parser.add_argument(
+        "--division",
+        help="Optional division identifier to filter games (e.g., ncaa-d1).",
+    )
+    report_parser.add_argument(
+        "--conference",
+        help="Optional conference identifier to filter games (e.g., big-12).",
     )
     report_parser.add_argument(
         "--models",
@@ -357,20 +409,58 @@ def _import_games(args: argparse.Namespace) -> None:
     if args.source != "sports-reference":
         raise ValueError(f"Unsupported source: {args.source}")
 
-    if not args.input and not args.input_text:
-        raise ValueError("Provide --input or --input-text for import.")
-    if args.input and args.input_text:
-        raise ValueError("Provide only one of --input or --input-text.")
+    input_dir = getattr(args, "input_dir", None)
+    input_sources = [bool(args.input), bool(args.input_text), bool(input_dir)]
+    if sum(input_sources) == 0:
+        raise ValueError("Provide --input, --input-dir, or --input-text for import.")
+    if sum(input_sources) > 1:
+        raise ValueError(
+            "Provide only one of --input, --input-dir, or --input-text."
+        )
 
     ingest_source = get_ingest_source(args.source)()
-    input_path = resolve_input_path(args.input) if args.input else None
-    games = ingest_games(
-        ingest_source,
-        input_path=input_path,
-        input_text=args.input_text,
-        sport=args.sport,
-        season=args.season,
-    )
+    division = getattr(args, "division", None)
+    conference = getattr(args, "conference", None)
+    games = []
+
+    if input_dir:
+        input_dir = Path(input_dir)
+        if not input_dir.exists() or not input_dir.is_dir():
+            raise FileNotFoundError(f"Input directory not found: {input_dir}")
+        files = sorted(
+            path
+            for path in input_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in {".csv", ".html", ".htm"}
+        )
+        if not files:
+            raise ValueError(f"No CSV/HTML files found in {input_dir}")
+        conference_from_filename = getattr(args, "conference_from_filename", False)
+        for path in files:
+            file_conference = conference
+            if conference_from_filename and not file_conference:
+                file_conference = _normalize_conference_name(path.stem)
+            games.extend(
+                ingest_games(
+                    ingest_source,
+                    input_path=path,
+                    input_text=None,
+                    sport=args.sport,
+                    season=args.season,
+                    division=division,
+                    conference=file_conference,
+                )
+            )
+    else:
+        input_path = resolve_input_path(args.input) if args.input else None
+        games = ingest_games(
+            ingest_source,
+            input_path=input_path,
+            input_text=args.input_text,
+            sport=args.sport,
+            season=args.season,
+            division=division,
+            conference=conference,
+        )
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
     saved = save_games(db_path, games)
     print(f"Saved {saved} games to {db_path}")
@@ -395,6 +485,8 @@ def _run_rankings(args: argparse.Namespace) -> None:
         db_path,
         sport=args.sport,
         season=args.season,
+        division=args.division,
+        conference=args.conference,
         model=args.model,
         output_path=output_path,
         model_params=model_params,
@@ -421,6 +513,14 @@ def _next_available_path(output_path: Path) -> Path:
     raise FileExistsError(
         f"Output exists: {output_path}. Tried 999 alternate names. Use --overwrite to replace."
     )
+
+
+def _normalize_conference_name(value: str) -> str:
+    """Normalize a filename stem into a conference identifier."""
+    normalized = value.strip().lower()
+    normalized = normalized.replace(" ", "-").replace("_", "-")
+    normalized = "".join(ch for ch in normalized if ch.isalnum() or ch == "-")
+    return normalized
 
 
 def _parse_matchup_text(text: str) -> tuple[str, str]:
@@ -462,6 +562,8 @@ def _run_matchup(args: argparse.Namespace) -> None:
             db_path,
             sport=args.sport,
             season=args.season,
+            division=args.division,
+            conference=args.conference,
             home_team=home,
             away_team=away,
             model=model,
@@ -491,6 +593,8 @@ def _run_schedule(args: argparse.Namespace) -> None:
             db_path,
             sport=args.sport,
             season=args.season,
+            division=args.division,
+            conference=args.conference,
             model=args.model,
             output_path=output_path,
             upcoming_only=args.upcoming_only,
@@ -508,6 +612,8 @@ def _run_schedule(args: argparse.Namespace) -> None:
         db_path,
         sport=args.sport,
         season=args.season,
+        division=args.division,
+        conference=args.conference,
         model=args.model,
         output_path=output_path,
         upcoming_only=args.upcoming_only,
@@ -533,6 +639,8 @@ def _run_report(args: argparse.Namespace) -> None:
         db_path,
         sport=args.sport,
         season=args.season,
+        division=args.division,
+        conference=args.conference,
         models=models,
         output_path=output_path,
         model_params=model_params,

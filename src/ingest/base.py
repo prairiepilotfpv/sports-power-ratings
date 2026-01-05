@@ -19,6 +19,8 @@ class IngestSource(Protocol):
         *,
         sport: str | None = None,
         season: str | None = None,
+        division: str | None = None,
+        conference: str | None = None,
         format_hint: str | None = None,
     ) -> list[GameResult]:
         """Load games from a file path."""
@@ -29,5 +31,7 @@ class IngestSource(Protocol):
         *,
         sport: str | None = None,
         season: str | None = None,
+        division: str | None = None,
+        conference: str | None = None,
     ) -> list[GameResult]:
         """Load games from raw text."""
