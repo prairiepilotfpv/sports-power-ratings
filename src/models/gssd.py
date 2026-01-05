@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import exp, log
 from typing import Any, Iterable, Mapping
 
 import numpy as np
@@ -87,7 +86,7 @@ class GSSDPowerRating:
             except Exception:
                 continue
             net_rating = 0.5 * ((pfh - pah) + (pfa - paa))
-            ratings[str(team)] = exp(net_rating)
+            ratings[str(team)] = net_rating
         return ratings
 
 
@@ -151,11 +150,9 @@ class GSSDModel(BaseModel):
             )
             home_advantage_flag = 0.0 if neutral else 1.0
 
-            home_rating = float(self._gssd._ratings.get(home, 1.0))
-            away_rating = float(self._gssd._ratings.get(away, 1.0))
-            if home_rating <= 0 or away_rating <= 0:
-                continue
-            rating_diff = log(home_rating) - log(away_rating)
+            home_rating = float(self._gssd._ratings.get(home, 0.0))
+            away_rating = float(self._gssd._ratings.get(away, 0.0))
+            rating_diff = home_rating - away_rating
 
             design_matrix.append([home_advantage_flag, rating_diff])
             margins.append(margin)
@@ -212,12 +209,9 @@ class GSSDModel(BaseModel):
             )
             home_advantage_flag = 0.0 if neutral else 1.0
 
-            home_rating = float(self._gssd._ratings.get(home, 1.0))
-            away_rating = float(self._gssd._ratings.get(away, 1.0))
-            if home_rating <= 0 or away_rating <= 0:
-                continue
-
-            rating_diff = log(home_rating) - log(away_rating)
+            home_rating = float(self._gssd._ratings.get(home, 0.0))
+            away_rating = float(self._gssd._ratings.get(away, 0.0))
+            rating_diff = home_rating - away_rating
             pred_margin = (
                 coefficients.home_advantage_points * home_advantage_flag
                 + coefficients.scale * rating_diff
