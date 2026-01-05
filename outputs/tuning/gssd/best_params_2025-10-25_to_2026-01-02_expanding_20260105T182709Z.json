@@ -1,0 +1,10 @@
+{
+  "applied": false,
+  "baseline_score": 11.042005757133724,
+  "best_params": {},
+  "best_score": 11.042005757133724,
+  "improved": false,
+  "metric": "mae_margin",
+  "model": "gssd",
+  "run_id": "2025-10-25_to_2026-01-02_expanding_20260105T182709Z"
+}

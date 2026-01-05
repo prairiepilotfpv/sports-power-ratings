@@ -1,0 +1,2 @@
+run_id,params,params_json,log_loss,brier_score,mae_margin,metric,metric_value,output_dir
+2025-10-25_to_2026-01-02_expanding_20260103T230134Z,{},{},0.6358086645077083,0.2144671241631382,11.042005757133724,brier_score,0.2144671241631382,outputs\tuning\gssd\2025-10-25_to_2026-01-02_expanding_20260103T230134Z__default
