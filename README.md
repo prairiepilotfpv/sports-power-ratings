@@ -1,367 +1,246 @@
 # Sports Power Ratings
 
-A lightweight, local-first pipeline for turning Sports-Reference schedules/results into:
+Local-first tooling to turn Sports-Reference schedules/results into SQLite databases, power ratings, projections, and reports. Everything runs through a single CLI and works entirely offline once inputs are downloaded.
 
-- SQLite game databases (one DB per sport + season)
-- Power ratings (Bradley-Terry, Elo, GSSD, TOOR) and calibration metrics
-- Matchup projections (spread, total, win probability)
-- Schedule exports with projections
-- Excel reports for daily review
+## What it does
 
-The project is intentionally minimal: everything runs locally with CSV/HTML inputs and a
-single command-line interface.
-
-## What this project does
-
-1. **Ingest** Sports-Reference schedules/results (HTML, CSV, or pasted CSV text)
-2. **Normalize + validate** the dataset into a consistent schema
-3. **Store** games in a SQLite database keyed by `(game_id, sport, season)`
-4. **Run rankings** using the Bradley-Terry model
-5. **Generate projections** for matchups and schedules
-6. **Export** results to CSV or Excel
+1) Ingest Sports-Reference HTML/CSV (or pasted CSV text) and normalize it. 
+2) Persist games into per-sport/per-season SQLite DBs. 
+3) Fit power ratings (Bradley-Terry, Elo, GSSD, TOOR) and store calibration metrics. 
+4) Generate matchup projections and daily schedules with spreads/totals/win probabilities. 
+5) Export rankings and schedule/report workbooks. 
+6) Backtest and tune models on historical CSVs.
 
 ## Repository layout
 
 ```
 src/
-  cli/                 Command-line entry points
-  data/                SQLite schema, read/write helpers, validation
-  ingest/              Sports-Reference parsing + normalization helpers
-  models/              Power rating implementations + model interfaces
-  pipelines/           Ranking, projections, reports, matchup logic
-  utils/               Small shared utilities
+  cli/                 CLI entry points (pipeline is the preferred one)
+  data/                SQLite helpers, paths, validation
+  ingest/              Sports-Reference parsing + normalization
+  models/              Power rating implementations + registries
+  pipelines/           Orchestration for ingest, rankings, projections, reports
+  backtest/            Backtest runner + exports
 
 data/
-  raw/                 Drop raw HTML/CSV inputs here
-  processed/           Output rankings/schedules/reports
-  db/<sport>/<season>.db  SQLite database per sport+season
+  raw/                 Drop HTML/CSV inputs here (optional convenience)
+  processed/           Rankings, schedules, reports
+  db/<sport>/<season>.db  SQLite DB per sport/season
+outputs/               Backtest and tuning artifacts
 ```
 
-## Models and capabilities
+## Requirements
 
-- **Ranking models**: `bradley-terry` (default), `elo`, `gssd` (requires `ssat`), `toor`
-- **Backtest models**: `bradley_terry_hfa`, `bradley_terry_calibrated_hfa`, `toor`, `elo`, `gssd`
-- All backtest models output win probabilities and margins and emit calibration extras (`win_prob_k`, home-advantage/scale/error terms) for persistence.
+- Python 3.11+ (tested locally)
+- Tesseract OCR if you plan to ingest screenshots/images (optional)
+- `OPENAI_API_KEY` / `OPENAI_MODEL` only if you want OCR assistance; not required otherwise
 
-## Setup
+## Setup (explicit steps)
 
-### 1) Create a virtual environment
+1) Create a virtual environment
 
 ```bash
 python -m venv .pyenv
 ```
 
-Activate it:
+2) Activate it
 
-- **Windows (PowerShell)**: `./.pyenv/Scripts/Activate.ps1`
-- **macOS/Linux**: `source .pyenv/bin/activate`
+- Windows (PowerShell): `./.pyenv/Scripts/Activate.ps1`
+- macOS/Linux: `source .pyenv/bin/activate`
 
-### 2) Install dependencies
+3) Install runtime dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Optional dev dependencies (tests):
+4) (Optional) Install test/tooling extras
 
 ```bash
 pip install -r requirements-dev.txt
 ```
 
-## Documentation
+## Data locations and expectations
 
-The codebase uses module/class/function docstrings as the source of truth for internal
-documentation. You can generate a quick HTML reference locally with `pydoc` so the docs
-stay in sync with the code comments:
+- Default DB: `data/db/<sport>/<season>.db`
+- Default processed outputs: `data/processed/<sport>/<season>/`
+- Raw inputs: any path you provide; bare filenames are resolved under `data/raw/`.
+- Input CSV/HTML should be straight from Sports-Reference; future games (no scores) are allowed.
+- Backtest CSVs must contain `date`, `home_team`, `away_team`, `home_score`, `away_score` (common aliases are auto-detected). Optional: `neutral`, `overtime`, `game_id`.
 
-```bash
-# Example: generate HTML docs for the ingest schema module
-python -m pydoc -w src.ingest.schema
-```
+## Standard workflow (pipeline CLI)
 
-For an interactive view, you can also run `python -m pydoc` and browse the rendered pages
-locally.
+All commands run via `python -m src.cli.pipeline <command> ...`. The pipeline is the supported path; `src.cli.ingest` and `src.cli.run_rankings` remain for legacy use only.
 
-### 3) Optional OCR dependencies
-
-If you plan to ingest screenshots/images, install Tesseract and set:
-
-- `OPENAI_API_KEY` (optional, improves parsing)
-- `OPENAI_MODEL` (optional override)
-
-## Quickstart
-
-Assume you have a Sports-Reference CSV file at `data/raw/nba_2025_26.csv`.
+Example for NBA 2025-26 with a CSV at `data/raw/nba_2025_26.csv`:
 
 ```bash
-# 1) Import results into SQLite
+# 1) Ingest into SQLite (creates data/db/nba/2025-26.db by default)
 python -m src.cli.pipeline import --sport nba --season 2025-26 --input data/raw/nba_2025_26.csv
 
-# 2) Run rankings
-python -m src.cli.pipeline rank --sport nba --season 2025-26 --model bradley-terry
-#    (other ranking models: elo, gssd, toor; gssd requires the `ssat` dependency)
+# 2) Build rankings (runs all available models when --model is omitted)
+python -m src.cli.pipeline rank --sport nba --season 2025-26
 
-# 3) Export schedule with projections
-python -m src.cli.pipeline schedule --sport nba --season 2025-26 --model bradley-terry
+# 3) Export schedule projections (default: Excel workbook with one sheet per model + dashboard)
+python -m src.cli.pipeline schedule --sport nba --season 2025-26
 
 # 4) Predict a single matchup
 python -m src.cli.pipeline matchup --sport nba --season 2025-26 --matchup "Lakers vs Celtics"
 
-# 5) Generate an Excel report
+# 5) Generate a rankings-only Excel report
 python -m src.cli.pipeline report --sport nba --season 2025-26
 
-# 6) Run a backtest (Excel + CSV outputs)
+# 6) Backtest a model on historical games
 python -m src.cli.pipeline backtest --csv nba_results.csv --model bradley_terry_hfa --start 2024-11-01 --end 2024-12-01
-#
-# Supported backtest models:
-#   bradley_terry_hfa, bradley_terry_calibrated_hfa, toor, elo, gssd
+
+# 7) Tune model hyperparameters via repeated backtests
+python -m src.cli.pipeline tune --model elo --csv nba_results.csv --start 2024-11-01 --end 2024-12-01 --metric log_loss
 ```
 
-## CLI reference
+## CLI reference (detailed)
 
-All commands are available via `python -m src.cli.pipeline`.
+### Common flags
 
-### `import` (ingest into SQLite)
+- `--model-params` accepts a JSON object string; `--model-params-file` points to a JSON file. Provide only one. When multiple models run, the file may contain per-model keys.
+- If multiple models are run at once, outputs are prefixed with their abbreviations (bt, elo, gssd, toor).
+
+### `import` — ingest into SQLite
 
 ```bash
 python -m src.cli.pipeline import --sport nba --season 2025-26 --input data/raw/nba_schedule.html
 ```
 
-Options:
+- Required: `--sport`, `--season`, and one of `--input` (CSV/HTML path) or `--input-text` (pasted CSV text).
+- Input resolution: if the provided path does not exist, the CLI also checks `data/raw/<value>`.
+- Output: `data/db/<sport>/<season>.db` unless `--db` overrides it.
 
-- `--sport` / `--season`: required identifiers used to select the DB
-- `--input`: HTML or CSV file path
-- `--input-text`: pasted CSV text (for quick copy/paste ingestion)
-- `--db`: custom SQLite path (defaults to `data/db/<sport>/<season>.db`)
-
-Notes:
-
-- If `--input` is a bare filename, it is first resolved under `data/raw/`.
-- Ingestion accepts **future games with no scores** so the schedule can include upcoming matchups.
-
-### `rank` (run model + save rankings)
+### `rank` — build power ratings and store calibration
 
 ```bash
-python -m src.cli.pipeline rank --sport nba --season 2025-26 --model bradley-terry
+python -m src.cli.pipeline rank --sport nba --season 2025-26
+python -m src.cli.pipeline rank --sport nba --season 2025-26 --model elo --output data/processed/nba/2025-26/custom_rankings.csv
 ```
 
-Options:
+- Default runs **all** available models; use `--model` to limit to one.
+- Default output: `data/processed/<sport>/<season>/rankings.csv`. When multiple models run, each file is prefixed (e.g., `bt_rankings.csv`).
+- Stores calibration metrics (`home_advantage`, `win_prob_k`, `base_total`, residual spreads/totals) in the SQLite DB for downstream projections.
 
-- `--output`: output CSV path (defaults to `data/processed/<sport>/<season>/rankings.csv`)
-- `--overwrite`: overwrite the output if it already exists
-- `--model-params`: JSON string of model parameters to override defaults
-- `--model-params-file`: JSON file containing model parameters or per-model overrides
-- `--db`: custom SQLite path
-
-This step also stores calibration metrics (`home_advantage`, `win_prob_k`, `base_total`) in the
-SQLite database for downstream projection steps.
-
-### `schedule` (export schedule with projections)
+### `schedule` — export played + upcoming games with projections
 
 ```bash
-python -m src.cli.pipeline schedule --sport nba --season 2025-26 --model bradley-terry
+# Excel workbook (default)
+python -m src.cli.pipeline schedule --sport nba --season 2025-26
+
+# CSV (one file per model)
+python -m src.cli.pipeline schedule --sport nba --season 2025-26 --output data/processed/nba/2025-26/schedule_with_projections.csv
 ```
 
-Options:
+- Default output: Excel workbook at `data/processed/<sport>/<season>/schedule_with_projections.xlsx` with one sheet per model plus a `dashboard` sheet for today’s games.
+- If `--output` ends with `.csv`, a CSV is written for each model (prefixed when multiple models run).
+- `--upcoming-only` limits the export to games without scores.
+- Each row includes schedule fields (`date`, `home_team`, `away_team`, `neutral`, `overtime`, `game_id`), projections (ratings, spreads, totals, win probabilities), calibration info (home advantage, uncertainty), and results when scores exist.
 
-- `--output`: output CSV path (defaults to `data/processed/<sport>/<season>/schedule_with_projections.csv`)
-- `--upcoming-only`: include only games without scores
-- `--model-params`: JSON string of model parameters to override defaults
-- `--model-params-file`: JSON file containing model parameters or per-model overrides
-
-Output includes:
-
-- Base schedule: `date`, `home_team`, `away_team`, `home_score`, `away_score`, `neutral`, `overtime`, `game_id`
-- Status: `status` (`final` or `scheduled`)
-- Ratings/projections: `home_rating`, `away_rating`, `projected_winner`, `projected_spread`,
-  `projected_win_prob`, `projected_home_score`, `projected_away_score`, `projected_total`
-- Calibration: `home_advantage` (team-specific residual or fallback)
-- Results for completed games: `result_margin`, `result_total`
-
-### `matchup` (predict a single matchup)
+### `matchup` — predict one matchup
 
 ```bash
 python -m src.cli.pipeline matchup --sport nba --season 2025-26 --matchup "Lakers vs Celtics"
-# or
-python -m src.cli.pipeline matchup --sport nba --season 2025-26 --home Lakers --away Celtics
+python -m src.cli.pipeline matchup --sport nba --season 2025-26 --home Lakers --away Celtics --model toor
 ```
 
-Output includes a projected winner, spread, total points, and win probability when calibrated.
+- Uses stored games/rankings to produce winner, spread, total, win probability, and uncertainty bands.
+- Requires the teams to exist in the ingested dataset (run `rank` after new imports before predicting).
 
-Options:
-
-- `--model-params`: JSON string of model parameters to override defaults
-- `--model-params-file`: JSON file containing model parameters or per-model overrides
-
-### `report` (Excel output)
+### `report` — rankings-only Excel workbook
 
 ```bash
-python -m src.cli.pipeline report --sport nba --season 2025-26
+python -m src.cli.pipeline report --sport nba --season 2025-26 --models bradley-terry,elo
 ```
 
-Options:
+- Default output: `data/processed/<sport>/<season>/report.xlsx` (one sheet per model). Prefixed filenames when multiple models are written.
 
-- `--models`: comma-separated list of models (default: `bradley-terry`)
-- `--output`: output Excel path (defaults to `data/processed/<sport>/<season>/report.xlsx`)
-- `--model-params`: JSON string of model parameters to override defaults
-- `--model-params-file`: JSON file containing model parameters or per-model overrides
-
-### `backtest` (model accuracy on historical games)
+### `backtest` — evaluate models on historical games
 
 ```bash
-python -m src.cli.pipeline backtest --csv nba_results.csv --model bradley_terry_hfa --start 2024-11-01 --end 2024-12-01
+python -m src.cli.pipeline backtest --model bradley_terry_hfa --csv nba_results.csv --start 2024-11-01 --end 2024-12-01 --window expanding
 ```
 
-Options:
+- Supported models: bradley_terry_hfa, bradley_terry_calibrated_hfa, elo, gssd, toor.
+- CSV parsing is lenient: common Sports-Reference column aliases are detected; missing/duplicate game IDs are rebuilt when needed.
+- Output directory defaults to `outputs/backtests/<model>/`. Artifacts per run: `predictions_<run_id>.csv`, `metrics_by_date_<run_id>.csv`, `metrics_overall_<run_id>.csv`, `calibration_<run_id>.csv`, plus an Excel workbook.
+- If `--sport`, `--season`, and `--db` (or default DB) are provided, aggregate metrics and calibrated `win_prob_k` are persisted to the DB.
 
-- `--model`: backtest model to run (default: `bradley_terry_hfa`)
-- `--model-params`: JSON string of model parameters to override defaults
-- `--model-params-file`: JSON file containing model parameters or per-model overrides
-- `--start` / `--end`: evaluation window (YYYY-MM-DD)
-- `--window`: training window type (`expanding` or `rolling`)
-- `--rolling-days` / `--rolling-games`: rolling window size for `rolling` runs
-- `--output-dir`: output directory override (default: `outputs/backtests/<model>`)
-- `--sport` / `--season`: dataset selection
-- `--db`: custom SQLite path
-- `--csv`: required path to a CSV of completed games (relative paths are resolved from the repo root)
-
-Notes:
-
-- Re-running the same model/window overwrites CSV/Excel files in the same `--output-dir`. Point `--output-dir` to a new folder if you want to keep multiple runs side-by-side.
-
-Input CSV for backtests:
-
-- Place the file anywhere (e.g., repo root) and pass it via `--csv my_results.csv`
-- Required columns: `date`, `home_team`, `away_team`, `home_score`, `away_score` (aliases like `Date`, `Visitor/Neutral`, `Home/Neutral`, `PTS_away`, `PTS_home` are auto-detected)
-- Optional columns: `neutral` (or `neutral_site`), `overtime` (`ot`), `game_id` (`box score`) (auto-generated if missing)
-- Dates must parse as YYYY-MM-DD; scores must be numeric and non-negative
-- The backtest window (`--start` / `--end`) must overlap the CSV data or no evaluations will run
-
-### `tune` (hyperparameter tuning via backtests)
-
-Run a grid search of model-specific hyperparameters and select the best
-configuration based on log loss, Brier score, or margin MAE.
+### `tune` — grid-search hyperparameters via backtests
 
 ```bash
-python -m src.cli.pipeline tune \
-  --model elo \
-  --csv nba_results.csv \
-  --start 2024-11-01 \
-  --end 2024-12-01 \
-  --metric log_loss
+python -m src.cli.pipeline tune --model elo --csv nba_results.csv --start 2024-11-01 --end 2024-12-01 --metric brier_score --apply-best --sport nba --season 2025-26 --db data/db/nba/2025-26.db
 ```
 
-Options:
+- Grid source: built-in defaults per model; override with `--grid-file` (either a single grid or a per-model object).
+- Output directory defaults to `outputs/tuning/<model>/`. Artifacts per run: `tuning_results_<run_id>.csv`, `best_params_<run_id>.json`, and per-candidate backtest outputs.
+- `--apply-best` reruns the best candidate and persists calibration metrics when it beats the default-parameter baseline (disable the guard with `--allow-worse`).
 
-- `--model`: backtest model to tune (e.g., `elo`, `gssd`, `toor`, `bradley_terry_hfa`)
-- `--start` / `--end`: evaluation window (YYYY-MM-DD)
-- `--window`: training window type (`expanding` or `rolling`)
-- `--rolling-days` / `--rolling-games`: rolling window size for `rolling` runs
-- `--metric`: optimization target (`log_loss`, `brier_score`, `mae_margin`)
-- `--output-dir`: output directory override (default: `outputs/tuning/<model>`)
-- `--csv`: required path to a CSV of completed games (relative paths are resolved from the repo root)
-- `--grid-file`: JSON file defining custom parameter grids
-- `--apply-best`: run a final backtest with best params and persist metrics to the DB
-- `--allow-worse`: allow tuning results worse than the default parameters
-- `--sport` / `--season`: dataset selection for persisting best metrics
-- `--db`: custom SQLite path for persisting best metrics
+## Model parameter overrides (JSON examples)
 
-Output files (per run) include:
-
-- `tuning_results_<run_id>.csv`: every candidate’s metric results and output directory
-- `best_params_<run_id>.json`: the best-performing parameter set and score
-- Individual backtest artifacts for each candidate under the run directory
-
-Notes:
-
-- Tuning uses the same CSV schema and parsing rules as the backtest command.
-- When `--apply-best` is set, the tuning run compares the best candidate against
-  the default-parameter baseline and only persists calibration metrics if the
-  candidate improves on the chosen metric. Use `--allow-worse` to skip this guard.
-
-#### Custom grids (JSON)
-
-Provide a JSON file to override the default tuning grid. Two supported formats:
-
-**Per-model grid**
+- Inline: `--model-params '{"k_factor": 20, "home_advantage": 60}'`
+- File: create `params.json`:
 
 ```json
 {
-  "elo": {
-    "k_factor": [10, 20, 40],
-    "home_advantage": [0, 50, 100],
-    "initial_rating": [1500],
-    "min_rating": [1]
-  }
+  "elo": {"k_factor": 20, "home_advantage": 60},
+  "bradley-terry": {"max_iter": 500}
 }
 ```
 
-**Single-grid override** (applies to the specified `--model`)
+Then run: `python -m src.cli.pipeline rank --sport nba --season 2025-26 --model-params-file params.json`
 
-```json
-{
-  "k_factor": [10, 20, 40],
-  "home_advantage": [0, 50, 100],
-  "initial_rating": [1500],
-  "min_rating": [1]
-}
-```
+## Input format notes
 
-## Input formats
+- Recognized columns: `Date` / `Game Date`; `Visitor/Neutral` / `Away`; `Home/Neutral` / `Home`; `PTS` or `PTS_away` / `PTS_home`; `OT` / `Overtime`; `Box Score`.
+- If a CSV contains an unlabeled start-time column, the parser realigns columns automatically.
+- Future games are accepted; rankings and projections require at least one completed game per team to be meaningful.
 
-The ingest layer is designed for Sports-Reference exports. It supports:
+## Outputs at a glance
 
-- **HTML tables** from the schedule/results pages
-- **CSV exports** from Sports-Reference
-- **Pasted CSV text** via `--input-text`
-
-Important columns recognized:
-
-- `Date` / `Game Date`
-- `Visitor/Neutral` / `Away`
-- `Home/Neutral` / `Home`
-- `PTS` or `PTS_away` / `PTS_home`
-- `OT` / `Overtime`
-- `Box Score`
-
-If the CSV contains an unlabeled start-time column, the parser will realign columns automatically.
-
-## Output files
-
-- **SQLite DB**: `data/db/<sport>/<season>.db`
-  - `games` table
-  - `model_metrics` table
-- **Rankings CSV**: `data/processed/<sport>/<season>/rankings.csv`
-- **Schedule CSV**: `data/processed/<sport>/<season>/schedule_with_projections.csv`
-- **Excel report**: `data/processed/<sport>/<season>/report.xlsx`
-- **Backtest outputs**: `outputs/backtests/<model>/` (CSV + Excel workbook per run)
-- **Tuning outputs**: `outputs/tuning/<model>/` (grid search CSV, best params JSON, and per-candidate backtests)
+- SQLite DB: `data/db/<sport>/<season>.db` (`games`, `model_metrics`, optional `backtest_metrics`).
+- Rankings: `data/processed/<sport>/<season>/rankings.csv` (prefixed when multiple models run).
+- Schedule: `data/processed/<sport>/<season>/schedule_with_projections.xlsx` (default) or `.csv` (per model).
+- Rankings report: `data/processed/<sport>/<season>/report.xlsx` (per model when multiple).
+- Backtests: `outputs/backtests/<model>/` CSVs + Excel per run.
+- Tuning: `outputs/tuning/<model>/` grid CSV, best params JSON, and per-candidate backtests.
 
 ## Configuration
 
-Edit `src/config.py` to adjust defaults such as:
+- `src/config.py` holds global defaults such as `DEFAULT_WIN_PROB_K`, calibration sample sizes, and fallback spread/total uncertainty.
 
-- `DEFAULT_WIN_PROB_K`: logistic scale for converting spreads to win probabilities
+## Testing
 
-## Tests
+Run everything:
 
 ```bash
 python -m pytest
 ```
 
-Focused checks:
+Run only fast tests:
 
 ```bash
-python -m pytest tests/cli/test_pipeline_import.py -q
-python -m pytest tests/pipelines/test_run_rankings.py -q
-python -m pytest tests/pipelines/test_schedule.py -q
+python -m pytest -q -m "not slow"
 ```
+
+Coverage:
+
+```bash
+coverage run -m pytest -q
+coverage report --fail-under=70
+```
+
+`make test` is also available as a shortcut.
 
 ## Troubleshooting
 
-- **Missing columns**: the ingest parser expects date + home/away columns. Check CSV headers.
-- **Unknown teams in matchup**: run `rank` after new imports to update ratings.
-- **No completed games**: rankings/projections require at least one finished game.
+- Missing or misnamed columns: ensure the CSV has date + home/away + scores; common aliases are auto-mapped.
+- Unknown teams during `matchup`: rerun `rank` after new ingests so ratings exist for those teams.
+- No completed games: rankings/projections require finished games; ingest more results or allow future games only for schedule exports.
+- Overwriting outputs: pass `--overwrite` for rankings; for schedule/report/backtest/tune, specify a new `--output`/`--output-dir` or allow the CLI to append numeric suffixes when available.
 
 ## License
 
