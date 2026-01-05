@@ -131,3 +131,33 @@ def test_projected_spread_sign_convention() -> None:
             row["projected_home_spread"], margin, rel_tol=1e-6, abs_tol=0.5
         )
         assert math.isclose(row["projected_spread"], -margin, rel_tol=1e-6, abs_tol=0.5)
+
+
+def test_projection_fixture_regression_values() -> None:
+    df = pd.read_csv(FIXTURE_PATH)
+
+    expected = {
+        "2024-01-10|Lions|Tigers": {
+            "projected_spread": -8.0,
+            "projected_home_spread": 8.0,
+            "projected_total": 208.0,
+            "projected_win_prob": 0.7,
+            "projected_home_score": 108.0,
+            "projected_away_score": 100.0,
+        },
+        "2024-01-11|Bears|Wolves": {
+            "projected_spread": -4.0,
+            "projected_home_spread": 4.0,
+            "projected_total": 198.0,
+            "projected_win_prob": 0.6,
+            "projected_home_score": 101.0,
+            "projected_away_score": 97.0,
+        },
+    }
+
+    for game_id, values in expected.items():
+        row = df.loc[df["game_id"] == game_id].iloc[0]
+        for column, expected_value in values.items():
+            assert math.isclose(
+                row[column], expected_value, rel_tol=1e-9
+            ), f"{game_id} {column} changed"
