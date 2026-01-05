@@ -501,6 +501,9 @@ def _aggregate_metrics_by_date(predictions_df: pd.DataFrame) -> pd.DataFrame:
                 "brier_score",
                 "mae_margin",
                 "margin_games",
+                "calibration_intercept",
+                "calibration_slope",
+                "ece",
             ]
         )
     metrics = (
@@ -523,6 +526,9 @@ def _compute_metrics(df: pd.DataFrame) -> dict[str, float | int | None]:
         "brier_score": None,
         "mae_margin": None,
         "margin_games": 0,
+        "calibration_intercept": None,
+        "calibration_slope": None,
+        "ece": None,
     }
 
     prob_df = df.dropna(subset=["p_home_win", "home_win"])
@@ -533,6 +539,11 @@ def _compute_metrics(df: pd.DataFrame) -> dict[str, float | int | None]:
             -np.mean(actuals * np.log(probs) + (1 - actuals) * np.log(1 - probs))
         )
         metrics["brier_score"] = float(np.mean((probs - actuals) ** 2))
+        design = np.column_stack([np.ones(len(probs)), probs])
+        coeffs, *_ = np.linalg.lstsq(design, actuals, rcond=None)
+        metrics["calibration_intercept"] = float(coeffs[0])
+        metrics["calibration_slope"] = float(coeffs[1])
+        metrics["ece"] = float(_expected_calibration_error(probs, actuals))
 
     margin_df = df.dropna(subset=["pred_margin", "actual_margin"])
     if not margin_df.empty:
@@ -542,6 +553,32 @@ def _compute_metrics(df: pd.DataFrame) -> dict[str, float | int | None]:
         metrics["margin_games"] = int(len(margin_df))
 
     return metrics
+
+
+def _expected_calibration_error(
+    probs: pd.Series | np.ndarray,
+    actuals: pd.Series | np.ndarray,
+    *,
+    bins: int = 10,
+) -> float:
+    if bins <= 0:
+        raise ValueError("bins must be positive.")
+    probs_arr = np.asarray(probs, dtype=float)
+    actuals_arr = np.asarray(actuals, dtype=float)
+    if probs_arr.size == 0:
+        return 0.0
+    edges = np.linspace(0.0, 1.0, bins + 1)
+    bin_ids = np.digitize(probs_arr, edges, right=True) - 1
+    total = probs_arr.size
+    ece = 0.0
+    for idx in range(bins):
+        mask = bin_ids == idx
+        if not np.any(mask):
+            continue
+        avg_pred = float(np.mean(probs_arr[mask]))
+        avg_actual = float(np.mean(actuals_arr[mask]))
+        ece += (np.sum(mask) / total) * abs(avg_pred - avg_actual)
+    return float(ece)
 
 
 def _calibration_table(predictions_df: pd.DataFrame) -> pd.DataFrame:

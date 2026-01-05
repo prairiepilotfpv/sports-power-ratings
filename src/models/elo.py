@@ -11,6 +11,16 @@ import numpy as np
 
 from config import DEFAULT_WIN_PROB_K
 from models.base import BaseModel, GamePrediction, ModelMetadata, require_columns
+from models.calibration import (
+    ConditionalSDModel,
+    align_spread_with_margin,
+    fit_conditional_sd,
+    fit_win_prob_bias,
+    recency_weight,
+    resolve_fit_end_date,
+    weighted_least_squares,
+    weighted_rmse,
+)
 from pipelines.projections import (
     fit_win_prob_scale,
     logistic_win_prob,
@@ -132,7 +142,18 @@ class EloModel(BaseModel):
         home_advantage: float = 65.0,
         initial_rating: float = 1500.0,
         min_rating: float = 1.0,
+        recency_lambda: float | None = None,
+        learn_home_advantage: bool = False,
+        conditional_sd: bool = False,
+        winprob_bias: float = 0.0,
+        learn_winprob_bias: bool = False,
     ) -> None:
+        """Initialize the backtest model.
+
+        recency_lambda: None disables recency weighting (default = current behavior).
+        conditional_sd: when False, uses the constant error_term for margin SDs.
+        learn_winprob_bias: when False, uses the provided winprob_bias as-is.
+        """
         self._elo = EloPowerRating(
             k_factor=k_factor,
             home_advantage=home_advantage,
@@ -141,12 +162,25 @@ class EloModel(BaseModel):
         )
         self._coefficients = DEFAULT_CALIBRATION
         self._win_prob_k = DEFAULT_WIN_PROB_K
+        self._recency_lambda = recency_lambda
+        self._learn_home_advantage = learn_home_advantage
+        self._conditional_sd = conditional_sd
+        self._conditional_sd_model: ConditionalSDModel | None = None
+        self._win_prob_bias = float(winprob_bias)
+        self._learn_winprob_bias = learn_winprob_bias
 
     def metadata(self) -> ModelMetadata:
         return ModelMetadata(
             model_id=self._elo.model_id,
             model_version=self._elo.model_version,
-            params=self._elo.params,
+            params={
+                **self._elo.params,
+                "recency_lambda": self._recency_lambda,
+                "learn_home_advantage": self._learn_home_advantage,
+                "conditional_sd": self._conditional_sd,
+                "winprob_bias": self._win_prob_bias,
+                "learn_winprob_bias": self._learn_winprob_bias,
+            },
             supports_margin=True,
             supports_total=False,
             supports_win_prob=True,
@@ -161,8 +195,12 @@ class EloModel(BaseModel):
 
         design_matrix: list[list[float]] = []
         margins: list[float] = []
+        weights: list[float] = []
         win_prob_samples: list[tuple[float, int]] = []
+        win_prob_spreads: list[float] = []
+        win_prob_outcomes: list[int] = []
 
+        fit_end_date = resolve_fit_end_date(games_df)
         for game in games:
             home = str(game.get("home_team", "")).strip()
             away = str(game.get("away_team", "")).strip()
@@ -187,21 +225,30 @@ class EloModel(BaseModel):
 
             design_matrix.append([home_advantage_flag, rating_diff])
             margins.append(margin)
+            weights.append(
+                recency_weight(game.get("date"), fit_end_date, self._recency_lambda)
+            )
 
         if design_matrix:
             matrix = np.asarray(design_matrix, dtype=float)
             target = np.asarray(margins, dtype=float)
-            coeffs, *_ = np.linalg.lstsq(matrix, target, rcond=None)
+            weight_arr = np.asarray(weights, dtype=float)
+            coeffs = weighted_least_squares(matrix, target, weights=weight_arr)
             predictions = matrix @ coeffs
             residuals = predictions - target
-            error_term = (
-                float(np.sqrt(np.mean(residuals**2))) if residuals.size else 0.0
-            )
+            error_term = weighted_rmse(residuals, weight_arr)
             self._coefficients = EloCalibration(
                 home_advantage=float(coeffs[0]),
                 scale=float(coeffs[1]),
                 error_term=error_term,
             )
+
+            if self._conditional_sd:
+                self._conditional_sd_model = fit_conditional_sd(
+                    predictions, residuals, weights=weight_arr
+                )
+            else:
+                self._conditional_sd_model = None
 
             for predicted_margin, actual_margin in zip(
                 predictions, target, strict=False
@@ -212,12 +259,21 @@ class EloModel(BaseModel):
                 win_prob_samples.append(
                     (projected_spread, 1 if actual_margin > 0 else 0)
                 )
+                win_prob_spreads.append(projected_spread)
+                win_prob_outcomes.append(1 if actual_margin > 0 else 0)
         else:
             self._coefficients = DEFAULT_CALIBRATION
+            self._conditional_sd_model = None
 
         self._win_prob_k = fit_win_prob_scale(
             win_prob_samples, default_k=DEFAULT_WIN_PROB_K
         )
+        if self._learn_winprob_bias and win_prob_spreads:
+            self._win_prob_bias = fit_win_prob_bias(
+                win_prob_spreads,
+                win_prob_outcomes,
+                win_prob_k=self._win_prob_k if self._win_prob_k > 0 else DEFAULT_WIN_PROB_K,
+            )
 
     def predict(self, upcoming_games_df: Any) -> list[GamePrediction]:
         require_columns(upcoming_games_df, ["date", "home_team", "away_team"])
@@ -249,11 +305,19 @@ class EloModel(BaseModel):
                 + coefficients.scale * rating_diff
             )
             projected_spread = -pred_margin
-            p_home_win = logistic_win_prob(projected_spread, win_prob_k)
+            adjusted_spread = align_spread_with_margin(
+                pred_margin, projected_spread - self._win_prob_bias
+            )
+            p_home_win = logistic_win_prob(adjusted_spread, win_prob_k)
+            margin_sd = (
+                self._conditional_sd_model.predict(pred_margin)
+                if self._conditional_sd_model is not None
+                else coefficients.error_term
+            )
             win_prob_dist = win_prob_distribution(
                 p_home_win,
                 win_prob_k=win_prob_k,
-                margin_std=coefficients.error_term,
+                margin_std=margin_sd,
             )
 
             game_id = row.get("game_id") or f"{row['date']}_{home}_{away}"
@@ -266,13 +330,25 @@ class EloModel(BaseModel):
                     p_home_win=p_home_win,
                     win_prob_dist=win_prob_dist,
                     pred_margin=pred_margin,
-                    margin_sd=coefficients.error_term,
+                    margin_sd=margin_sd,
                     metadata=dict(model_identity),
                     extra={
                         "home_advantage": coefficients.home_advantage,
                         "scale": coefficients.scale,
                         "error_term": coefficients.error_term,
                         "win_prob_k": win_prob_k,
+                        "winprob_bias": self._win_prob_bias,
+                        "conditional_sd": self._conditional_sd,
+                        "conditional_sd_intercept": (
+                            self._conditional_sd_model.intercept
+                            if self._conditional_sd_model is not None
+                            else None
+                        ),
+                        "conditional_sd_slope": (
+                            self._conditional_sd_model.slope
+                            if self._conditional_sd_model is not None
+                            else None
+                        ),
                     },
                 )
             )
