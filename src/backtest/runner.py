@@ -248,9 +248,23 @@ def run_backtest(
         merged["actual_margin"] = merged["home_score"] - merged["away_score"]
         prediction_frames.append(merged)
 
-    valid_frames = [
-        frame for frame in prediction_frames if not frame.empty and not frame.isna().all().all()
-    ]
+    def _has_data(frame: pd.DataFrame) -> bool:
+        """Return True when the frame has rows, columns, and at least one non-NA value."""
+        return (
+            isinstance(frame, pd.DataFrame)
+            and frame.shape[0] > 0
+            and frame.shape[1] > 0
+            and frame.notna().any().any()
+        )
+
+    valid_frames = []
+    for _frame in prediction_frames:
+        if not _has_data(_frame):
+            continue
+        # Drop columns that are entirely NA to avoid dtype inference warnings during concat.
+        cleaned = _frame.loc[:, _frame.notna().any(axis=0)]
+        if _has_data(cleaned):
+            valid_frames.append(cleaned)
     if valid_frames:
         # Filter out empty/all-NA frames to avoid dtype inference changes in future pandas versions.
         predictions_df = pd.concat(valid_frames, ignore_index=True)
