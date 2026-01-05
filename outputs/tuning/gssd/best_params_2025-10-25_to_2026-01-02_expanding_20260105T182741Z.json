@@ -1,0 +1,10 @@
+{
+  "applied": false,
+  "baseline_score": 0.2144671241631382,
+  "best_params": {},
+  "best_score": 0.2144671241631382,
+  "improved": false,
+  "metric": "brier_score",
+  "model": "gssd",
+  "run_id": "2025-10-25_to_2026-01-02_expanding_20260105T182741Z"
+}

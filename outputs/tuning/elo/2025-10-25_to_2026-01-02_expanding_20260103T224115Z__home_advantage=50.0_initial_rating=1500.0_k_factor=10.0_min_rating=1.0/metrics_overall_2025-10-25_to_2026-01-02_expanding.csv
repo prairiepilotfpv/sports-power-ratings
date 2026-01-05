@@ -1,0 +1,2 @@
+games,log_loss,brier_score,mae_margin,margin_games,model_id
+484,0.6934046019154034,0.23475476905325934,11.270149615432212,474,elo

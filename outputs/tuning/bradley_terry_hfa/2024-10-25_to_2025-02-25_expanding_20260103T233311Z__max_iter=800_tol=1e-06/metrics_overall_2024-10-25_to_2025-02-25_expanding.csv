@@ -1,0 +1,2 @@
+games,log_loss,brier_score,mae_margin,margin_games,model_id
+848,2.6359684696336156,0.36870773558087966,13.729997018105644,848,bradley_terry_hfa

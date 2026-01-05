@@ -1,0 +1,13 @@
+{
+  "applied": true,
+  "baseline_score": 0.36802911922662057,
+  "best_params": {
+    "max_iter": 200,
+    "tol": 1e-06
+  },
+  "best_score": 0.36672562703937484,
+  "improved": true,
+  "metric": "brier_score",
+  "model": "bradley_terry_hfa",
+  "run_id": "2024-10-25_to_2025-02-25_expanding_20260103T233311Z"
+}
