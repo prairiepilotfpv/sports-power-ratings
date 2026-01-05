@@ -67,6 +67,8 @@ def test_contract_end_to_end_sample_game() -> None:
         "projected_home_score": 101.2,
         "projected_away_score": 96.7,
         "projected_total": 197.9,
+        "margin_std": 11.3,
+        "total_std": 20.2,
     }
     schedule_df = pd.DataFrame([schedule_row], columns=SCHEDULE_EXPORT_COLUMNS)
     assert list(validate_schedule_export_frame(schedule_df).columns) == SCHEDULE_EXPORT_COLUMNS

@@ -40,6 +40,8 @@ SCHEDULE_EXPORT_COLUMNS: list[str] = [
     "projected_home_score",
     "projected_away_score",
     "projected_total",
+    "margin_std",
+    "total_std",
 ]
 
 
@@ -97,6 +99,8 @@ class ScheduleExportRow:
     projected_home_score: float | None
     projected_away_score: float | None
     projected_total: float | None
+    margin_std: float | None
+    total_std: float | None
 
 
 def build_game_id(date_value: Any, home_team: str, away_team: str) -> str:
