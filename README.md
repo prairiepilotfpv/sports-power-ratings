@@ -68,6 +68,20 @@ Optional dev dependencies (tests):
 pip install -r requirements-dev.txt
 ```
 
+## Documentation
+
+The codebase uses module/class/function docstrings as the source of truth for internal
+documentation. You can generate a quick HTML reference locally with `pydoc` so the docs
+stay in sync with the code comments:
+
+```bash
+# Example: generate HTML docs for the ingest schema module
+python -m pydoc -w src.ingest.schema
+```
+
+For an interactive view, you can also run `python -m pydoc` and browse the rendered pages
+locally.
+
 ### 3) Optional OCR dependencies
 
 If you plan to ingest screenshots/images, install Tesseract and set:

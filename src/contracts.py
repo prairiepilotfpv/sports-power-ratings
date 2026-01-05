@@ -287,14 +287,18 @@ def ensure_game_id(df: pd.DataFrame) -> pd.DataFrame:
 
     missing_mask = df["game_id"].isna() | (df["game_id"].astype(str).str.strip() == "")
     if missing_mask.any():
-        df.loc[missing_mask, "game_id"] = df.loc[missing_mask].apply(
-            lambda row: build_game_id(
-                row.get("date"),
-                row.get("home_team"),
-                row.get("away_team"),
-            ),
-            axis=1,
+        missing_rows = df.loc[missing_mask, ["date", "home_team", "away_team"]]
+        parsed_dates = pd.to_datetime(missing_rows["date"], errors="coerce")
+        date_strs = parsed_dates.dt.date.astype("string")
+        date_strs = date_strs.where(parsed_dates.notna(), missing_rows["date"].astype(str))
+        game_ids = (
+            date_strs
+            + "_"
+            + missing_rows["home_team"].astype(str)
+            + "_"
+            + missing_rows["away_team"].astype(str)
         )
+        df.loc[missing_mask, "game_id"] = game_ids
     return df
 
 
@@ -305,10 +309,11 @@ def _ensure_boolean_column(
     alias: str | None,
     default: bool,
 ) -> pd.DataFrame:
+    """Populate a boolean column with an optional alias as a fallback."""
     series = (
         df[target]
         if target in df.columns
-        else pd.Series([pd.NA] * len(df), index=df.index)
+        else pd.Series(pd.NA, index=df.index)
     )
     if alias and alias in df.columns:
         alias_series = df[alias]
@@ -318,6 +323,7 @@ def _ensure_boolean_column(
 
 
 def _coerce_bool(value: Any, *, default: bool) -> bool:
+    """Convert truthy/falsy values to bool, falling back to default on nulls."""
     if value is None:
         return default
     try:
