@@ -412,7 +412,9 @@ def _import_games(args: argparse.Namespace) -> None:
     input_dir = getattr(args, "input_dir", None)
     input_sources = [bool(args.input), bool(args.input_text), bool(input_dir)]
     if sum(input_sources) == 0:
-        raise ValueError("Provide --input, --input-dir, or --input-text for import.")
+        raise ValueError(
+            "Provide --input or --input-text (or --input-dir) for import."
+        )
     if sum(input_sources) > 1:
         raise ValueError(
             "Provide only one of --input, --input-dir, or --input-text."
