@@ -387,7 +387,25 @@ def _dashboard_rows_for_today(
     df = schedule_df.assign(
         _date=pd.to_datetime(schedule_df["date"], errors="coerce").dt.date
     )
-    df = df[(df["status"] == "scheduled") & (df["_date"] == today)]
+    df = df[df["status"] == "scheduled"]
+    if df.empty:
+        return []
+
+    if as_of_date is not None:
+        df = df[df["_date"] == today]
+    else:
+        day_df = df[df["_date"] == today]
+        if day_df.empty:
+            scheduled_dates = sorted(d for d in df["_date"].dropna().unique())
+            if not scheduled_dates:
+                return []
+            target_date = next(
+                (d for d in scheduled_dates if d >= today), scheduled_dates[0]
+            )
+            df = df[df["_date"] == target_date]
+        else:
+            df = day_df
+
     if df.empty:
         return []
 
