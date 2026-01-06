@@ -7,7 +7,6 @@ from typing import Any, Iterable, Mapping
 
 import numpy as np
 import pandas as pd
-from ssat.frequentist import GSSD
 
 from config import DEFAULT_WIN_PROB_K
 from models.base import BaseModel, GamePrediction, ModelMetadata, require_columns
@@ -18,6 +17,7 @@ from models.calibration import (
     fit_win_prob_bias,
     recency_weight,
     resolve_fit_end_date,
+    resolve_fit_end_date_from_games,
     weighted_least_squares,
     weighted_rmse,
 )
@@ -28,15 +28,30 @@ from pipelines.projections import (
 )
 
 
+@dataclass
+class _StatAccumulator:
+    sum_weight: float = 0.0
+    sum_value: float = 0.0
+
+    def add(self, value: float, weight: float) -> None:
+        self.sum_weight += weight
+        self.sum_value += value * weight
+
+    def mean(self) -> float | None:
+        if self.sum_weight <= 0:
+            return None
+        return self.sum_value / self.sum_weight
+
+
 class GSSDPowerRating:
-    """Power rating wrapper around ssat's GSSD implementation."""
+    """Compute per-team scoring stats for GSSD."""
 
     def __init__(self) -> None:
         self.model_id = "gssd"
         self.model_version = "1.0"
         self.params: dict[str, Any] = {}
-        self._model = GSSD()
-        self._ratings: dict[str, float] = {}
+        self._team_stats: dict[str, dict[str, float]] = {}
+        self._league_stats: dict[str, float] = {}
 
     def metadata(self) -> ModelMetadata:
         return ModelMetadata(
@@ -48,8 +63,29 @@ class GSSDPowerRating:
             supports_win_prob=True,
         )
 
-    def fit(self, games: Iterable[Mapping[str, Any]]) -> None:
-        rows: list[dict[str, object]] = []
+    def fit(
+        self,
+        games: Iterable[Mapping[str, Any]],
+        *,
+        recency_lambda: float | None = None,
+        fit_end_date: pd.Timestamp | None = None,
+    ) -> None:
+        team_accums: dict[str, dict[str, _StatAccumulator]] = {}
+        league_accums: dict[str, _StatAccumulator] = {}
+        fit_end_date = (
+            fit_end_date
+            if fit_end_date is not None
+            else resolve_fit_end_date_from_games(games)
+        )
+
+        def add_stat(team: str, key: str, value: float, weight: float) -> None:
+            team_stats = team_accums.setdefault(team, {})
+            team_acc = team_stats.setdefault(key, _StatAccumulator())
+            team_acc.add(value, weight)
+
+            league_acc = league_accums.setdefault(key, _StatAccumulator())
+            league_acc.add(value, weight)
+
         for game in games:
             home = str(game.get("home_team", "")).strip()
             away = str(game.get("away_team", "")).strip()
@@ -60,55 +96,74 @@ class GSSDPowerRating:
                 away_score = float(game.get("away_score"))
             except Exception:
                 continue
-            rows.append(
-                {
-                    "home_team": home,
-                    "away_team": away,
-                    "home_points": home_score,
-                    "away_points": away_score,
-                }
+
+            weight = recency_weight(
+                game.get("date"), fit_end_date, recency_lambda
             )
+            add_stat(home, "pfh", home_score, weight)
+            add_stat(home, "pah", away_score, weight)
+            add_stat(away, "pfa", away_score, weight)
+            add_stat(away, "paa", home_score, weight)
 
-        if not rows:
-            self._ratings = {}
-            return
-
-        df = pd.DataFrame(rows)
-        X = df[["home_team", "away_team"]]
-        y = df["home_points"] - df["away_points"]
-        Z = df[["home_points", "away_points"]]
-        self._model.fit(X, y=y, Z=Z)
-        self._ratings = self._build_ratings()
+        self._league_stats = {
+            key: (acc.mean() if acc.mean() is not None else 0.0)
+            for key, acc in league_accums.items()
+        }
+        self._team_stats = {}
+        for team, stats in team_accums.items():
+            self._team_stats[team] = {
+                key: (acc.mean() if acc.mean() is not None else 0.0)
+                for key, acc in stats.items()
+            }
 
     def rankings(self) -> list[tuple[str, float]]:
         """Return ratings ordered from strongest to weakest."""
-        return sorted(self._ratings.items(), key=lambda item: item[1], reverse=True)
-
-    def _build_ratings(self) -> dict[str, float]:
         ratings: dict[str, float] = {}
-        team_ratings = getattr(self._model, "team_ratings_", None)
-        if not team_ratings:
-            return ratings
+        for team in self._team_stats:
+            stats = self.team_stats(team)
+            net_rating = 0.5 * (
+                (stats["pfh"] - stats["pah"]) + (stats["pfa"] - stats["paa"])
+            )
+            ratings[team] = net_rating
+        return sorted(ratings.items(), key=lambda item: item[1], reverse=True)
 
-        for team, values in team_ratings.items():
-            try:
-                pfh, pah, pfa, paa = (float(value) for value in values)
-            except Exception:
-                continue
-            net_rating = 0.5 * ((pfh - pah) + (pfa - paa))
-            ratings[str(team)] = net_rating
-        return ratings
+    def team_stats(self, team: str) -> dict[str, float]:
+        defaults = {
+            "pfh": self._league_stats.get("pfh", 0.0),
+            "pah": self._league_stats.get("pah", 0.0),
+            "pfa": self._league_stats.get("pfa", 0.0),
+            "paa": self._league_stats.get("paa", 0.0),
+        }
+        stats = self._team_stats.get(team)
+        if stats is None:
+            return dict(defaults)
+        return {
+            "pfh": stats.get("pfh", defaults["pfh"]),
+            "pah": stats.get("pah", defaults["pah"]),
+            "pfa": stats.get("pfa", defaults["pfa"]),
+            "paa": stats.get("paa", defaults["paa"]),
+        }
 
 
 @dataclass
 class GSSDCalibration:
+    intercept: float
+    beta_pfh: float
+    beta_pah: float
+    beta_pfa: float
+    beta_paa: float
     home_advantage_points: float
-    scale: float
     error_term: float
 
 
 DEFAULT_CALIBRATION = GSSDCalibration(
-    home_advantage_points=0.0, scale=0.0, error_term=0.0
+    intercept=0.0,
+    beta_pfh=0.0,
+    beta_pah=0.0,
+    beta_pfa=0.0,
+    beta_paa=0.0,
+    home_advantage_points=0.0,
+    error_term=0.0,
 )
 
 
@@ -163,7 +218,12 @@ class GSSDModel(BaseModel):
             games_df, ["home_team", "away_team", "home_score", "away_score"]
         )
         games = games_df.to_dict(orient="records")
-        self._gssd.fit(games)
+        fit_end_date = resolve_fit_end_date(games_df)
+        self._gssd.fit(
+            games,
+            recency_lambda=self._recency_lambda,
+            fit_end_date=fit_end_date,
+        )
 
         design_matrix: list[list[float]] = []
         margins: list[float] = []
@@ -172,7 +232,6 @@ class GSSDModel(BaseModel):
         win_prob_spreads: list[float] = []
         win_prob_outcomes: list[int] = []
 
-        fit_end_date = resolve_fit_end_date(games_df)
         for game in games:
             home = str(game.get("home_team", "")).strip()
             away = str(game.get("away_team", "")).strip()
@@ -191,11 +250,18 @@ class GSSDModel(BaseModel):
             )
             home_advantage_flag = 0.0 if neutral else 1.0
 
-            home_rating = float(self._gssd._ratings.get(home, 0.0))
-            away_rating = float(self._gssd._ratings.get(away, 0.0))
-            rating_diff = home_rating - away_rating
-
-            design_matrix.append([home_advantage_flag, rating_diff])
+            home_stats = self._gssd.team_stats(home)
+            away_stats = self._gssd.team_stats(away)
+            row = [
+                1.0,
+                home_stats["pfh"],
+                home_stats["pah"],
+                away_stats["pfa"],
+                away_stats["paa"],
+            ]
+            if self._learn_home_advantage:
+                row.append(home_advantage_flag)
+            design_matrix.append(row)
             margins.append(margin)
             weights.append(
                 recency_weight(game.get("date"), fit_end_date, self._recency_lambda)
@@ -209,9 +275,16 @@ class GSSDModel(BaseModel):
             predictions = matrix @ coeffs
             residuals = predictions - target
             error_term = weighted_rmse(residuals, weight_arr)
+            home_advantage_points = (
+                float(coeffs[5]) if self._learn_home_advantage else 0.0
+            )
             self._coefficients = GSSDCalibration(
-                home_advantage_points=float(coeffs[0]),
-                scale=float(coeffs[1]),
+                intercept=float(coeffs[0]),
+                beta_pfh=float(coeffs[1]),
+                beta_pah=float(coeffs[2]),
+                beta_pfa=float(coeffs[3]),
+                beta_paa=float(coeffs[4]),
+                home_advantage_points=home_advantage_points,
                 error_term=error_term,
             )
 
@@ -268,12 +341,15 @@ class GSSDModel(BaseModel):
             )
             home_advantage_flag = 0.0 if neutral else 1.0
 
-            home_rating = float(self._gssd._ratings.get(home, 0.0))
-            away_rating = float(self._gssd._ratings.get(away, 0.0))
-            rating_diff = home_rating - away_rating
+            home_stats = self._gssd.team_stats(home)
+            away_stats = self._gssd.team_stats(away)
             pred_margin = (
-                coefficients.home_advantage_points * home_advantage_flag
-                + coefficients.scale * rating_diff
+                coefficients.intercept
+                + coefficients.beta_pfh * home_stats["pfh"]
+                + coefficients.beta_pah * home_stats["pah"]
+                + coefficients.beta_pfa * away_stats["pfa"]
+                + coefficients.beta_paa * away_stats["paa"]
+                + coefficients.home_advantage_points * home_advantage_flag
             )
             projected_spread = -pred_margin
             adjusted_spread = align_spread_with_margin(
@@ -304,8 +380,12 @@ class GSSDModel(BaseModel):
                     margin_sd=margin_sd,
                     metadata=dict(model_identity),
                     extra={
+                        "intercept": coefficients.intercept,
+                        "beta_pfh": coefficients.beta_pfh,
+                        "beta_pah": coefficients.beta_pah,
+                        "beta_pfa": coefficients.beta_pfa,
+                        "beta_paa": coefficients.beta_paa,
                         "home_advantage_points": coefficients.home_advantage_points,
-                        "scale": coefficients.scale,
                         "error_term": coefficients.error_term,
                         "win_prob_k": win_prob_k,
                         "winprob_bias": self._win_prob_bias,
