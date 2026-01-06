@@ -166,7 +166,14 @@ def _project_row(
     margin_dist_params = None
     total_dist_params = None
 
-    if home_rating is not None and away_rating is not None:
+    can_project = (
+        home_rating is not None and away_rating is not None
+    ) or (
+        model_instance is not None
+        and hasattr(model_instance, "simulate_matchup")
+        and callable(getattr(model_instance, "simulate_matchup"))
+    )
+    if can_project:
         projection = projection_engine(
             home,
             away,

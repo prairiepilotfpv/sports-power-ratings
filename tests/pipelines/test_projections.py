@@ -4,6 +4,7 @@ import math
 
 import pandas as pd
 
+from models.poisson import PoissonPowerRating
 from pipelines.projections import (
     average_total_points,
     fit_win_prob_scale,
@@ -105,6 +106,44 @@ def test_integration_project_row_sign_conventions() -> None:
     assert output["projected_home_score"] == 105.0
     assert output["projected_away_score"] == 95.0
     assert output["projected_total"] == 200.0
+
+
+def test_project_row_allows_poisson_without_ratings() -> None:
+    model = PoissonPowerRating(n_simulations=500, random_seed=7)
+    model.fit(
+        [
+            {
+                "home_team": "Home",
+                "away_team": "Away",
+                "home_score": 100,
+                "away_score": 90,
+                "neutral": False,
+            }
+        ]
+    )
+    row = pd.Series(
+        {
+            "date": "2024-01-01",
+            "home_team": "Home",
+            "away_team": "Away",
+            "home_score": None,
+            "away_score": None,
+            "neutral": False,
+            "overtime": False,
+            "game_id": "game-2",
+        }
+    )
+    output = _project_row(
+        row,
+        ratings={},
+        status="scheduled",
+        home_advantage=0.0,
+        params_source="default",
+        tuned_metric_used=None,
+        model_instance=model,
+    )
+    assert output["projected_home_score"] is not None
+    assert output["projected_away_score"] is not None
 
 
 def test_average_total_points_handles_empty() -> None:
