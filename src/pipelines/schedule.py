@@ -107,11 +107,35 @@ def _project_row(
     ratings: Dict[str, float],
     status: str,
     home_advantage: float,
-    model_instance: Any,
-    projection_engine: Any,
-    projection_context: Dict[str, Any],
+    model_instance: Any | None = None,
+    projection_engine: Any | None = None,
+    projection_context: Dict[str, Any] | None = None,
+    base_total: float | None = None,
+    scoring_averages: Dict[str, Any] | None = None,
+    win_prob_k: float | None = None,
+    total_intercept: float | None = None,
+    total_slope: float | None = None,
+    margin_std: float | None = None,
+    total_std: float | None = None,
+    conditional_sd_intercept: float | None = None,
+    conditional_sd_slope: float | None = None,
 ) -> Dict[str, Any]:
     """Create a schedule export row with projections when ratings are available."""
+    if projection_context is None:
+        projection_context = {
+            "ratings": ratings,
+            "base_total": base_total,
+            "scoring_averages": scoring_averages or {},
+            "total_intercept": total_intercept,
+            "total_slope": total_slope,
+            "margin_std": margin_std,
+            "total_std": total_std,
+            "conditional_sd_intercept": conditional_sd_intercept,
+            "conditional_sd_slope": conditional_sd_slope,
+            "win_prob_k": win_prob_k,
+        }
+    if projection_engine is None:
+        projection_engine = get_projection_engine(model_instance)
     base = _base_schedule_row(row)
     home = base["home_team"]
     away = base["away_team"]
