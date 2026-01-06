@@ -20,13 +20,15 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _rename_duplicate_pts(df: pd.DataFrame) -> pd.DataFrame:
-    """Disambiguate duplicate PTS columns (Visitor/Home)."""
+def _rename_duplicate_stat(
+    df: pd.DataFrame, label: str, away_name: str, home_name: str
+) -> pd.DataFrame:
+    """Disambiguate duplicate stat columns (Visitor/Home)."""
     cols = list(df.columns)
-    pts_indices = [i for i, c in enumerate(cols) if c == "pts"]
-    if len(pts_indices) >= 2:
-        cols[pts_indices[0]] = "pts_away"
-        cols[pts_indices[1]] = "pts_home"
+    stat_indices = [i for i, c in enumerate(cols) if c == label]
+    if len(stat_indices) >= 2:
+        cols[stat_indices[0]] = away_name
+        cols[stat_indices[1]] = home_name
         df = df.copy()
         df.columns = cols
     return df
@@ -38,6 +40,32 @@ def _find_column(df: pd.DataFrame, *names: str) -> str | None:
         if name in df.columns:
             return name
     return None
+
+
+def _normalize_decision_type(value: object) -> str | None:
+    """Normalize overtime/shootout markers like OT, 2OT, or SO."""
+    if value is None or pd.isna(value):
+        return None
+    raw = str(value).strip().upper()
+    if not raw:
+        return None
+    if raw == "SO":
+        return "SO"
+    if raw == "OT":
+        return "OT"
+    if raw.endswith("OT") and raw[:-2].isdigit():
+        return raw
+    return None
+
+
+def _find_unlabeled_columns(df: pd.DataFrame) -> list[str]:
+    """Return columns that look unlabeled in CSV exports."""
+    unlabeled = []
+    for col in df.columns:
+        label = str(col).strip().lower()
+        if not label or label.startswith("unnamed"):
+            unlabeled.append(col)
+    return unlabeled
 
 
 def _as_int(value) -> int | None:
@@ -54,12 +82,17 @@ def _as_int(value) -> int | None:
 
 
 def _resolve_pts_columns(df: pd.DataFrame) -> tuple[str | None, str | None]:
-    """Detect the away/home points columns regardless of naming conventions."""
+    """Detect the away/home points/goals columns regardless of naming conventions."""
     if "pts_away" in df.columns and "pts_home" in df.columns:
         return "pts_away", "pts_home"
+    if "g_away" in df.columns and "g_home" in df.columns:
+        return "g_away", "g_home"
     pts_cols = [c for c in df.columns if c == "pts" or c.startswith("pts.")]
     if len(pts_cols) >= 2:
         return pts_cols[0], pts_cols[1]
+    g_cols = [c for c in df.columns if c == "g" or c.startswith("g.")]
+    if len(g_cols) >= 2:
+        return g_cols[0], g_cols[1]
 
     away_pts = _find_column(
         df,
@@ -74,6 +107,9 @@ def _resolve_pts_columns(df: pd.DataFrame) -> tuple[str | None, str | None]:
     home_pts = _find_column(
         df, "home pts", "home_pts", "pts_home", "ptshome", "pts home"
     )
+    if away_pts is None and home_pts is None:
+        away_pts = _find_column(df, "visitor g", "visitor_g", "away g", "away_g", "g_away")
+        home_pts = _find_column(df, "home g", "home_g", "g_home", "g home")
     return away_pts, home_pts
 
 
@@ -86,7 +122,8 @@ def _parse_sr_dataframe(
 ) -> List[GameResult]:
     """Convert a Sports-Reference dataframe into structured GameResult rows."""
     df = _normalize_columns(df)
-    df = _rename_duplicate_pts(df)
+    df = _rename_duplicate_stat(df, "pts", "pts_away", "pts_home")
+    df = _rename_duplicate_stat(df, "g", "g_away", "g_home")
 
     date_col = _find_column(df, "date", "game date")
     away_col = _find_column(
@@ -97,6 +134,7 @@ def _parse_sr_dataframe(
     box_col = _find_column(df, "box score", "boxscore", "box")
     notes_col = _find_column(df, "notes")
     away_pts_col, home_pts_col = _resolve_pts_columns(df)
+    unlabeled_cols = _find_unlabeled_columns(df)
 
     if not date_col or not away_col or not home_col:
         missing = [
@@ -134,7 +172,14 @@ def _parse_sr_dataframe(
         ot_raw = ""
         if ot_col and pd.notna(row.get(ot_col)):
             ot_raw = str(row.get(ot_col)).strip()
-        overtime = bool(ot_raw)
+        decision_type = _normalize_decision_type(ot_raw)
+        if decision_type is None and (sport or "").lower() == "nhl":
+            for col in unlabeled_cols:
+                candidate = _normalize_decision_type(row.get(col))
+                if candidate:
+                    decision_type = candidate
+                    break
+        overtime = decision_type is not None or bool(ot_raw)
 
         game_id = None
         if box_col and pd.notna(row.get(box_col)):
@@ -156,6 +201,7 @@ def _parse_sr_dataframe(
                 home_score=home_score,
                 away_score=away_score,
                 overtime=overtime,
+                decision_type=decision_type,
                 game_id=game_id,
                 sport=sport,
                 season=season,

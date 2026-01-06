@@ -71,6 +71,7 @@ class GameRecord:
     away_score: int | None
     neutral: bool = False
     overtime: bool = False
+    decision_type: str | None = None
     game_id: str | None = None
     sport: str | None = None
     season: str | None = None

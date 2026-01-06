@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS games (
     away_score INTEGER,
     neutral INTEGER NOT NULL DEFAULT 0,
     overtime INTEGER NOT NULL DEFAULT 0,
+    decision_type TEXT,
     game_id TEXT,
     sport TEXT,
     season TEXT,
@@ -77,6 +78,8 @@ def _ensure_games_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE games ADD COLUMN division TEXT")
     if "conference" not in existing:
         conn.execute("ALTER TABLE games ADD COLUMN conference TEXT")
+    if "decision_type" not in existing:
+        conn.execute("ALTER TABLE games ADD COLUMN decision_type TEXT")
 
 
 def _ensure_model_metrics_columns(conn: sqlite3.Connection) -> None:
@@ -132,6 +135,7 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
             g.away_score,
             1 if g.neutral else 0,
             1 if g.overtime else 0,
+            g.decision_type,
             g.game_id,
             g.sport,
             g.season,
@@ -153,13 +157,14 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
                 away_score,
                 neutral,
                 overtime,
+                decision_type,
                 game_id,
                 sport,
                 season,
                 division,
                 conference,
                 notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -203,6 +208,7 @@ def load_games(
                away_score,
                neutral,
                overtime,
+               decision_type,
                game_id,
                sport,
                season,
@@ -226,12 +232,13 @@ def load_games(
             away_score=row[4],
             neutral=bool(row[5]),
             overtime=bool(row[6]),
-            game_id=row[7],
-            sport=row[8],
-            season=row[9],
-            division=row[10],
-            conference=row[11],
-            notes=row[12],
+            decision_type=row[7],
+            game_id=row[8],
+            sport=row[9],
+            season=row[10],
+            division=row[11],
+            conference=row[12],
+            notes=row[13],
         )
         for row in rows
     ]
