@@ -276,8 +276,10 @@ python -m src.cli.pipeline tune --model elo --csv nba_results.csv --start 2024-1
 ```
 
 - Grid source: built-in defaults per model; override with `--grid-file` (either a single grid or a per-model object).
-- Output directory defaults to `outputs/tuning/<model>/`. Artifacts per run: `tuning_results_<run_id>.csv`, `best_params_<run_id>.json`, and per-candidate backtest outputs.
-- `--apply-best` reruns the best candidate and persists calibration metrics when it beats the default-parameter baseline (disable the guard with `--allow-worse`).
+- Output directory defaults to `outputs/tuning/<sport>/<season>/<model>/<metric>/` (or `outputs/tuning/<model>/<metric>/` when sport/season are omitted). Artifacts per run: `tuning_results_<run_id>.csv`, `best_params_<run_id>.json`, and per-candidate backtest outputs.
+- `--model all` tunes all backtest models; `--metric all` tunes all metrics; use `--fail-fast` to stop on the first failure.
+- `--apply-best` reruns the best candidate and persists calibrated metrics when it beats the default-parameter baseline (disable the guard with `--allow-worse`). When tuning multiple metrics, `--apply-metric` chooses which metric becomes the active tuned parameters in the DB.
+- Tuned parameters are persisted per metric and loaded automatically by rank/schedule/matchup runs; override with `--model-params` or `--model-params-file`, or select a specific tuned metric with `--tuned-metric`.
 
 ## Model parameter overrides (JSON examples)
 
@@ -306,7 +308,7 @@ Then run: `python -m src.cli.pipeline rank --sport nba --season 2025-26 --model-
 - Schedule: `data/processed/<sport>/<season>/schedule_with_projections.xlsx` (default) or `.csv` (per model).
 - Rankings report: `data/processed/<sport>/<season>/report.xlsx` (per model when multiple).
 - Backtests: `outputs/backtests/<model>/` CSVs + Excel per run.
-- Tuning: `outputs/tuning/<model>/` grid CSV, best params JSON, and per-candidate backtests.
+- Tuning: `outputs/tuning/<sport>/<season>/<model>/<metric>/` (or `outputs/tuning/<model>/<metric>/`) grid CSV, best params JSON, and per-candidate backtests.
 
 ## Configuration
 

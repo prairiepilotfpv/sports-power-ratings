@@ -105,6 +105,7 @@ def predict_matchup(
     model: str = "bradley-terry",
     model_params: dict[str, float] | None = None,
     model_params_file: str | Path | None = None,
+    tuned_metric: str | None = None,
 ) -> MatchupPrediction:
     """Predict a single matchup using stored games and rankings."""
     model = normalize_model_name(model)
@@ -120,7 +121,13 @@ def predict_matchup(
         raise ValueError(f"No games found for sport={sport!r}, season={season!r}")
 
     resolved_params = resolve_model_params(
-        model, params=model_params, params_file=model_params_file
+        model,
+        params=model_params,
+        params_file=model_params_file,
+        db_path=db_path,
+        sport=sport,
+        season=season,
+        tuned_metric=tuned_metric,
     )
     rankings, model_instance = build_rankings(
         df, model=model, model_params=resolved_params, return_model=True

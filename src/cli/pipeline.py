@@ -104,6 +104,10 @@ def _parse_args() -> argparse.Namespace:
         help="JSON file containing model parameters or per-model overrides.",
     )
     rank_parser.add_argument(
+        "--tuned-metric",
+        help="Use tuned params for a specific metric instead of the active tuned params.",
+    )
+    rank_parser.add_argument(
         "--output",
         help=(
             "Optional output CSV path. Defaults to "
@@ -159,6 +163,10 @@ def _parse_args() -> argparse.Namespace:
         help="JSON file containing model parameters or per-model overrides.",
     )
     matchup_parser.add_argument(
+        "--tuned-metric",
+        help="Use tuned params for a specific metric instead of the active tuned params.",
+    )
+    matchup_parser.add_argument(
         "--db",
         help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db)",
     )
@@ -197,6 +205,10 @@ def _parse_args() -> argparse.Namespace:
     schedule_parser.add_argument(
         "--model-params-file",
         help="JSON file containing model parameters or per-model overrides.",
+    )
+    schedule_parser.add_argument(
+        "--tuned-metric",
+        help="Use tuned params for a specific metric instead of the active tuned params.",
     )
     schedule_parser.add_argument(
         "--output",
@@ -356,7 +368,7 @@ def _parse_args() -> argparse.Namespace:
     tune_parser.add_argument(
         "--metric",
         default="log_loss",
-        choices=["log_loss", "brier_score", "mae_margin"],
+        choices=["log_loss", "brier_score", "mae_margin", "all"],
         help="Metric to optimize (default: log_loss).",
     )
     tune_parser.add_argument(
@@ -378,9 +390,20 @@ def _parse_args() -> argparse.Namespace:
         help="Run a final backtest with best params and persist metrics to the DB.",
     )
     tune_parser.add_argument(
+        "--apply-metric",
+        default="log_loss",
+        choices=["log_loss", "brier_score", "mae_margin"],
+        help="Metric to activate when applying tuned params (default: log_loss).",
+    )
+    tune_parser.add_argument(
         "--allow-worse",
         action="store_true",
         help="Allow worse results than the default parameters (disables improvement guard).",
+    )
+    tune_parser.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="Stop on the first tuning failure instead of continuing.",
     )
     tune_parser.add_argument(
         "--sport",
@@ -493,6 +516,7 @@ def _run_rankings(args: argparse.Namespace) -> None:
         output_path=output_path,
         model_params=model_params,
         model_params_file=args.model_params_file,
+        tuned_metric=args.tuned_metric,
     )
     if isinstance(result_path, list):
         for path in result_path:
@@ -571,6 +595,7 @@ def _run_matchup(args: argparse.Namespace) -> None:
             model=model,
             model_params=model_params,
             model_params_file=args.model_params_file,
+            tuned_metric=args.tuned_metric,
         )
         line, metrics = format_matchup(prediction)
         print(f"[{model}] {line}")
@@ -602,6 +627,7 @@ def _run_schedule(args: argparse.Namespace) -> None:
             upcoming_only=args.upcoming_only,
             model_params=model_params,
             model_params_file=args.model_params_file,
+            tuned_metric=args.tuned_metric,
         )
         if isinstance(result_path, list):
             for path in result_path:
@@ -621,6 +647,7 @@ def _run_schedule(args: argparse.Namespace) -> None:
         upcoming_only=args.upcoming_only,
         model_params=model_params,
         model_params_file=args.model_params_file,
+        tuned_metric=args.tuned_metric,
     )
     print(f"Saved schedule workbook -> {result_path}")
 
@@ -688,8 +715,9 @@ def _run_backtest(args: argparse.Namespace) -> None:
 def _run_tuning(args: argparse.Namespace) -> None:
     """Run hyperparameter tuning via backtest grid search."""
     _ensure_src_on_path()
-    from pipelines.tuning import run_tuning_pipeline
     from data.paths import db_path_for
+    from models.registry import list_backtest_models, normalize_model_name
+    from pipelines.tuning import list_metrics, run_tuning_pipeline
 
     output_dir = Path(args.output_dir) if args.output_dir else None
     grid_override = None
@@ -701,35 +729,122 @@ def _run_tuning(args: argparse.Namespace) -> None:
         db_path = Path(args.db)
     elif args.sport and args.season:
         db_path = db_path_for(args.sport, args.season)
-    outputs = run_tuning_pipeline(
-        csv_path=Path(args.csv),
-        model=args.model,
-        start_date=args.start,
-        end_date=args.end,
-        window=args.window,
-        rolling_days=args.rolling_days,
-        rolling_games=args.rolling_games,
-        metric=args.metric,
-        output_dir=output_dir,
-        grid_override=grid_override,
-        apply_best=args.apply_best,
-        require_improvement=not args.allow_worse,
-        db_path=db_path,
-        sport=args.sport,
-        season=args.season,
+    models_to_run = (
+        list_backtest_models() if args.model == "all" else [args.model]
     )
-    if outputs.improved:
-        print(
-            "Best params -> "
-            f"{outputs.best_params} (score={outputs.best_score:.4f}) "
-            f"saved in {outputs.output_dir}"
-        )
-    else:
-        print(
-            "No improvement over baseline. "
-            f"Baseline score={outputs.baseline_score:.4f}; "
-            "best candidate was rejected."
-        )
+    metrics_to_run = list_metrics() if args.metric == "all" else [args.metric]
+    apply_metric = args.apply_metric.strip().lower()
+
+    summary_rows: list[dict[str, object]] = []
+    errors: list[str] = []
+
+    def _resolve_output_dir(model_name: str, metric: str) -> Path:
+        if output_dir is not None:
+            return output_dir / model_name / metric
+        if args.sport and args.season:
+            return Path("outputs/tuning") / args.sport / args.season / model_name / metric
+        return Path("outputs/tuning") / model_name / metric
+
+    for model in models_to_run:
+        model_name = normalize_model_name(model)
+        for metric in metrics_to_run:
+            run_output_dir = _resolve_output_dir(model_name, metric)
+            apply_best = args.apply_best
+            if args.metric == "all" and args.apply_best:
+                apply_best = metric == apply_metric
+            try:
+                outputs = run_tuning_pipeline(
+                    csv_path=Path(args.csv),
+                    model=model_name,
+                    start_date=args.start,
+                    end_date=args.end,
+                    window=args.window,
+                    rolling_days=args.rolling_days,
+                    rolling_games=args.rolling_games,
+                    metric=metric,
+                    output_dir=run_output_dir,
+                    grid_override=grid_override,
+                    apply_best=apply_best,
+                    require_improvement=not args.allow_worse,
+                    db_path=db_path,
+                    sport=args.sport,
+                    season=args.season,
+                )
+                run_id = (
+                    str(outputs.results.iloc[0]["run_id"])
+                    if not outputs.results.empty
+                    else ""
+                )
+                summary_rows.append(
+                    {
+                        "model": model_name,
+                        "metric": metric,
+                        "run_id": run_id,
+                        "baseline_score": outputs.baseline_score,
+                        "best_score": outputs.best_score,
+                        "improved": outputs.improved,
+                        "applied": outputs.applied,
+                        "output_dir": str(outputs.output_dir),
+                        "error": None,
+                    }
+                )
+                if outputs.improved:
+                    print(
+                        "Best params -> "
+                        f"{outputs.best_params} (score={outputs.best_score:.4f}) "
+                        f"saved in {outputs.output_dir}"
+                    )
+                else:
+                    print(
+                        "No improvement over baseline. "
+                        f"Baseline score={outputs.baseline_score:.4f}; "
+                        "best candidate was rejected."
+                    )
+            except Exception as exc:
+                summary_rows.append(
+                    {
+                        "model": model_name,
+                        "metric": metric,
+                        "run_id": None,
+                        "baseline_score": None,
+                        "best_score": None,
+                        "improved": False,
+                        "applied": False,
+                        "output_dir": str(run_output_dir),
+                        "error": str(exc),
+                    }
+                )
+                errors.append(f"{model_name}/{metric}: {exc}")
+                if args.fail_fast:
+                    raise
+
+    if args.model == "all" or args.metric == "all":
+        if summary_rows:
+            from datetime import datetime, timezone
+            import pandas as pd
+
+            summary_dir = Path("outputs/tuning")
+            if args.sport and args.season:
+                summary_dir = summary_dir / args.sport / args.season / "_all"
+            else:
+                summary_dir = summary_dir / "_all"
+            summary_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            summary_df = pd.DataFrame(summary_rows)
+            csv_path = summary_dir / f"tune_summary_{timestamp}.csv"
+            json_path = summary_dir / f"tune_summary_{timestamp}.json"
+            summary_df.to_csv(csv_path, index=False)
+            json_path.write_text(
+                summary_df.to_json(orient="records", indent=2),
+                encoding="utf-8",
+            )
+            print(f"Saved tuning summary -> {csv_path}")
+            print(f"Saved tuning summary -> {json_path}")
+
+    if errors:
+        print("Tuning completed with errors:")
+        for error in errors:
+            print(f"- {error}")
 
 
 def main() -> None:

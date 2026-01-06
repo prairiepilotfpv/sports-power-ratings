@@ -107,11 +107,35 @@ def _project_row(
     ratings: Dict[str, float],
     status: str,
     home_advantage: float,
-    model_instance: Any,
-    projection_engine: Any,
-    projection_context: Dict[str, Any],
+    model_instance: Any | None = None,
+    projection_engine: Any | None = None,
+    projection_context: Dict[str, Any] | None = None,
+    base_total: float | None = None,
+    scoring_averages: Dict[str, Any] | None = None,
+    win_prob_k: float | None = None,
+    total_intercept: float | None = None,
+    total_slope: float | None = None,
+    margin_std: float | None = None,
+    total_std: float | None = None,
+    conditional_sd_intercept: float | None = None,
+    conditional_sd_slope: float | None = None,
 ) -> Dict[str, Any]:
     """Create a schedule export row with projections when ratings are available."""
+    if projection_context is None:
+        projection_context = {
+            "ratings": ratings,
+            "base_total": base_total,
+            "scoring_averages": scoring_averages or {},
+            "total_intercept": total_intercept,
+            "total_slope": total_slope,
+            "margin_std": margin_std,
+            "total_std": total_std,
+            "conditional_sd_intercept": conditional_sd_intercept,
+            "conditional_sd_slope": conditional_sd_slope,
+            "win_prob_k": win_prob_k,
+        }
+    if projection_engine is None:
+        projection_engine = get_projection_engine(model_instance)
     base = _base_schedule_row(row)
     home = base["home_team"]
     away = base["away_team"]
@@ -476,9 +500,16 @@ def _build_schedule_for_model(
     add_prefix: bool,
     model_params: dict[str, float] | None,
     model_params_file: str | Path | None,
+    tuned_metric: str | None,
 ) -> Path:
     resolved_params = resolve_model_params(
-        model, params=model_params, params_file=model_params_file
+        model,
+        params=model_params,
+        params_file=model_params_file,
+        db_path=db_path,
+        sport=sport,
+        season=season,
+        tuned_metric=tuned_metric,
     )
     schedule_df = _build_schedule_dataframe(
         df,
@@ -513,6 +544,7 @@ def build_schedule_with_projections(
     upcoming_only: bool = False,
     model_params: dict[str, float] | None = None,
     model_params_file: str | Path | None = None,
+    tuned_metric: str | None = None,
 ) -> Path | list[Path]:
     """Build a schedule export containing projections for upcoming games."""
     rows = load_games(
@@ -540,6 +572,7 @@ def build_schedule_with_projections(
             add_prefix=multiple,
             model_params=model_params,
             model_params_file=model_params_file,
+            tuned_metric=tuned_metric,
         )
         for model_name in models
     ]
@@ -558,6 +591,7 @@ def build_schedule_excel_report(
     upcoming_only: bool = False,
     model_params: dict[str, float] | None = None,
     model_params_file: str | Path | None = None,
+    tuned_metric: str | None = None,
 ) -> Path:
     """Build an Excel workbook with schedule projections (one sheet per model)."""
     rows = load_games(
@@ -583,7 +617,13 @@ def build_schedule_excel_report(
         for model_name in models:
             model_df = df.copy(deep=True)
             resolved_params = resolve_model_params(
-                model_name, params=model_params, params_file=model_params_file
+                model_name,
+                params=model_params,
+                params_file=model_params_file,
+                db_path=db_path,
+                sport=sport,
+                season=season,
+                tuned_metric=tuned_metric,
             )
             schedule_df = _build_schedule_dataframe(
                 model_df,
