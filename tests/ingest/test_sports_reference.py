@@ -97,3 +97,23 @@ def test_parse_sr_html_nfl() -> None:
     assert games[1].away_team == "Chicago Bears"
     assert games[1].home_team == "Green Bay Packers"
     assert games[1].overtime is True
+
+
+def test_parse_sr_csv_text_nhl_decision_types() -> None:
+    text = (
+        "Date,Time,Visitor,G,Home,G,\n"
+        "2025-10-07,5:00 PM,Chicago Blackhawks,2,Florida Panthers,3,\n"
+        "2025-10-07,10:30 PM,Colorado Avalanche,4,Los Angeles Kings,1,\n"
+        "2025-10-07,8:00 PM,Pittsburgh Penguins,3,New York Rangers,0,\n"
+        "2025-10-08,10:00 PM,Calgary Flames,4,Edmonton Oilers,3,SO\n"
+        "2025-10-08,7:00 PM,Montreal Canadiens,2,Toronto Maple Leafs,5,\n"
+    )
+    games = parse_sr_csv_text(text, sport="nhl", season="2025-26")
+    assert len(games) == 5
+    assert games[3].away_team == "Calgary Flames"
+    assert games[3].home_team == "Edmonton Oilers"
+    assert games[0].away_score == 2
+    assert games[0].home_score == 3
+    assert games[3].overtime is True
+    assert games[3].decision_type == "SO"
+    assert games[0].decision_type is None

@@ -29,6 +29,7 @@ def normalize_games(
                 away_score=game.away_score,
                 neutral=game.neutral,
                 overtime=game.overtime,
+                decision_type=game.decision_type,
                 game_id=game.game_id,
                 sport=game.sport or sport,
                 season=game.season or season,
