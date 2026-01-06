@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import closing
 from datetime import date
@@ -54,8 +55,24 @@ CREATE TABLE IF NOT EXISTS model_metrics (
     backtest_win_prob_k REAL,
     backtest_run_id TEXT,
     backtest_updated_at TEXT,
+    tuned_params_json TEXT,
+    tuned_params_metric TEXT,
+    tuned_params_updated_at TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(sport, season, model)
+);
+
+CREATE TABLE IF NOT EXISTS model_tuned_params (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    model TEXT NOT NULL,
+    metric TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    params_json TEXT NOT NULL,
+    best_score REAL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(sport, season, model, metric)
 );
 """
 
@@ -121,6 +138,12 @@ def _ensure_model_metrics_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_run_id TEXT")
     if "backtest_updated_at" not in existing:
         conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_updated_at TEXT")
+    if "tuned_params_json" not in existing:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN tuned_params_json TEXT")
+    if "tuned_params_metric" not in existing:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN tuned_params_metric TEXT")
+    if "tuned_params_updated_at" not in existing:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN tuned_params_updated_at TEXT")
 
 
 def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
@@ -290,7 +313,7 @@ def save_model_metrics(
     with closing(sqlite3.connect(Path(db_path))) as conn:
         conn.execute(
             """
-            INSERT OR REPLACE INTO model_metrics (
+            INSERT INTO model_metrics (
                 sport,
                 season,
                 model,
@@ -306,6 +329,18 @@ def save_model_metrics(
                 total_mean,
                 updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(sport, season, model) DO UPDATE SET
+                home_advantage = excluded.home_advantage,
+                model_error = excluded.model_error,
+                win_prob_k = excluded.win_prob_k,
+                base_total = excluded.base_total,
+                margin_std = excluded.margin_std,
+                total_std = excluded.total_std,
+                conditional_sd_intercept = excluded.conditional_sd_intercept,
+                conditional_sd_slope = excluded.conditional_sd_slope,
+                margin_mean = excluded.margin_mean,
+                total_mean = excluded.total_mean,
+                updated_at = datetime('now')
             """,
             (
                 sport,
@@ -481,3 +516,190 @@ def load_model_metrics(
     if any(value is not None for value in backtest_values.values()):
         metrics.update(backtest_values)
     return metrics
+
+
+def save_tuned_params(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+    metric: str,
+    run_id: str,
+    params_json: str,
+    best_score: float | None,
+) -> None:
+    """Persist the best tuned parameters for a model/metric combination."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        conn.execute(
+            """
+            INSERT INTO model_tuned_params (
+                sport,
+                season,
+                model,
+                metric,
+                run_id,
+                params_json,
+                best_score,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(sport, season, model, metric) DO UPDATE SET
+                run_id = excluded.run_id,
+                params_json = excluded.params_json,
+                best_score = excluded.best_score,
+                updated_at = datetime('now')
+            """,
+            (sport, season, model, metric, run_id, params_json, best_score),
+        )
+        conn.commit()
+
+
+def set_active_tuned_params(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+    metric: str,
+) -> None:
+    """Promote tuned params for a metric into the active model_metrics row."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT params_json
+            FROM model_tuned_params
+            WHERE sport = ? AND season = ? AND model = ? AND metric = ?
+            """,
+            (sport, season, model, metric),
+        ).fetchone()
+        if row is None or row[0] is None:
+            raise ValueError(
+                "No tuned params found for "
+                f"sport={sport}, season={season}, model={model}, metric={metric}"
+            )
+        params_json = row[0]
+        existing = conn.execute(
+            """
+            SELECT 1
+            FROM model_metrics
+            WHERE sport = ? AND season = ? AND model = ?
+            """,
+            (sport, season, model),
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                """
+                INSERT INTO model_metrics (
+                    sport,
+                    season,
+                    model,
+                    home_advantage,
+                    model_error,
+                    win_prob_k,
+                    base_total,
+                    tuned_params_json,
+                    tuned_params_metric,
+                    tuned_params_updated_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                """,
+                (
+                    sport,
+                    season,
+                    model,
+                    0.0,
+                    0.0,
+                    DEFAULT_WIN_PROB_K,
+                    0.0,
+                    params_json,
+                    metric,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE model_metrics
+                SET tuned_params_json = ?,
+                    tuned_params_metric = ?,
+                    tuned_params_updated_at = datetime('now')
+                WHERE sport = ? AND season = ? AND model = ?
+                """,
+                (params_json, metric, sport, season, model),
+            )
+        conn.commit()
+
+
+def load_active_tuned_params(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+) -> dict | None:
+    """Load the currently active tuned params for a model."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT tuned_params_json
+            FROM model_metrics
+            WHERE sport = ? AND season = ? AND model = ?
+            """,
+            (sport, season, model),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    data = json.loads(row[0])
+    if not isinstance(data, dict):
+        raise ValueError("Stored tuned params must be a JSON object.")
+    return data
+
+
+def load_tuned_params_for_metric(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+    metric: str,
+) -> dict | None:
+    """Load tuned params for a specific metric."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT params_json
+            FROM model_tuned_params
+            WHERE sport = ? AND season = ? AND model = ? AND metric = ?
+            """,
+            (sport, season, model, metric),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    data = json.loads(row[0])
+    if not isinstance(data, dict):
+        raise ValueError("Stored tuned params must be a JSON object.")
+    return data
+
+
+def load_active_tuned_metric(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+) -> str | None:
+    """Return the metric name for the active tuned params."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT tuned_params_metric
+            FROM model_metrics
+            WHERE sport = ? AND season = ? AND model = ?
+            """,
+            (sport, season, model),
+        ).fetchone()
+    return row[0] if row and row[0] is not None else None
