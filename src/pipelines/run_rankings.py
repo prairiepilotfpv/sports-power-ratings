@@ -5,7 +5,7 @@ from __future__ import annotations
 import statistics
 import math
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
 
 import pandas as pd
 import numpy as np
@@ -50,14 +50,11 @@ def build_rankings(
     *,
     require_scores: bool = True,
     model_params: dict[str, float] | None = None,
-) -> pd.DataFrame:
+    return_model: bool = False,
+) -> pd.DataFrame | tuple[pd.DataFrame, Any]:
     """Fit a ranking model and return a DataFrame of ratings and point values."""
     working_df = df.copy(deep=True)
     played = _completed_games(working_df)
-    if played.empty:
-        if require_scores:
-            raise ValueError("No completed games available to build rankings.")
-        return _empty_rankings()
 
     model_cls = get_model(model)
     try:
@@ -66,7 +63,14 @@ def build_rankings(
         raise ValueError(
             f"Invalid parameters for model {model!r}: {model_params}"
         ) from exc
+    if played.empty and require_scores:
+        raise ValueError("No completed games available to build rankings.")
+
     model_instance.fit(played.to_dict(orient="records"))
+
+    if played.empty:
+        empty = _empty_rankings()
+        return (empty, model_instance) if return_model else empty
 
     games_played: Dict[str, int] = {}
     for _, row in played.iterrows():
@@ -79,7 +83,8 @@ def build_rankings(
 
     rating_map = dict(model_instance.rankings())
     if not rating_map:
-        return _empty_rankings()
+        empty = _empty_rankings()
+        return (empty, model_instance) if return_model else empty
 
     # Convert rating differences into point-spread units.
     use_log_scale = all(rating > 0 for rating in rating_map.values())
@@ -107,7 +112,8 @@ def build_rankings(
                 "games": games_played.get(team, 0),
             }
         )
-    return pd.DataFrame(items).sort_values("rating", ascending=False)
+    rankings_df = pd.DataFrame(items).sort_values("rating", ascending=False)
+    return (rankings_df, model_instance) if return_model else rankings_df
 
 
 def _estimate_point_scale(

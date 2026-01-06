@@ -12,23 +12,17 @@ from data.repository import load_games, load_model_metrics
 from pipelines.common import normalize_games
 from pipelines.model_params import resolve_model_params
 from config import (
-    DEFAULT_MARGIN_SD_FALLBACK,
-    DEFAULT_TOTAL_SD_FALLBACK,
     DEFAULT_WIN_PROB_K,
 )
 from pipelines.projections import (
     average_total_points,
-    home_win_prob_from_margin,
     fit_total_model,
-    matchup_total_from_averages,
-    project_game,
-    total_from_ratings,
     team_scoring_averages,
     win_prob_distribution,
 )
+from pipelines.projection_engines import get_projection_engine
 from pipelines.run_rankings import build_rankings
 from models.registry import normalize_model_name
-from models.calibration import ConditionalSDModel
 
 
 @dataclass(frozen=True)
@@ -128,8 +122,11 @@ def predict_matchup(
     resolved_params = resolve_model_params(
         model, params=model_params, params_file=model_params_file
     )
-    rankings = build_rankings(df, model=model, model_params=resolved_params)
+    rankings, model_instance = build_rankings(
+        df, model=model, model_params=resolved_params, return_model=True
+    )
     ratings = _rating_lookup(rankings)
+    projection_engine = get_projection_engine(model_instance)
     played = _completed_games(df)
     home_advantages = team_home_advantages(played, ratings)
     metrics = load_model_metrics(db_path, sport=sport, season=season, model=model) or {}
@@ -143,12 +140,6 @@ def predict_matchup(
     if win_prob_k <= 0:
         win_prob_k = DEFAULT_WIN_PROB_K
     base_total = float(metrics.get("base_total", 0.0))
-    margin_std_value = metrics.get("margin_std")
-    if margin_std_value is None or margin_std_value <= 0:
-        margin_std_value = DEFAULT_MARGIN_SD_FALLBACK
-    total_std_value = metrics.get("total_std")
-    if total_std_value is None or total_std_value <= 0:
-        total_std_value = DEFAULT_TOTAL_SD_FALLBACK
     conditional_sd_intercept = metrics.get("conditional_sd_intercept")
     conditional_sd_slope = metrics.get("conditional_sd_slope")
     played_records = played.to_dict(orient="records")
@@ -165,46 +156,48 @@ def predict_matchup(
     home_advantage = home_advantages.get(home_key, fallback_home_advantage)
     fallback_total = average_total_points(played.to_dict(orient="records"))
     applied_total = base_total if base_total > 0 else fallback_total
-    matchup_total = matchup_total_from_averages(home_key, away_key, scoring_averages)
-    model_total = total_from_ratings(
+    projection = projection_engine(
         home_key,
         away_key,
-        ratings,
-        intercept=total_intercept,
-        slope=total_slope,
+        model_instance,
+        {
+            "ratings": ratings,
+            "base_total": applied_total,
+            "scoring_averages": scoring_averages,
+            "total_intercept": total_intercept,
+            "total_slope": total_slope,
+            "margin_std": metrics.get("margin_std"),
+            "total_std": metrics.get("total_std"),
+            "conditional_sd_intercept": conditional_sd_intercept,
+            "conditional_sd_slope": conditional_sd_slope,
+            "win_prob_k": win_prob_k,
+            "home_advantage": home_advantage,
+            "neutral": False,
+        },
     )
-    projection = project_game(
-        ratings[home_key],
-        ratings[away_key],
-        home_advantage=home_advantage,
-        neutral=False,
-        k=win_prob_k,
-        base_total=model_total
-        or matchup_total
-        or (applied_total if applied_total > 0 else None),
-        home_team=home_key,
-        away_team=away_key,
-    )
-    if projection.margin >= 0:
+
+    margin_mean = projection.get("margin_mean")
+    margin_sd_value = projection.get("margin_sd")
+    total_mean = projection.get("total_mean") or 0.0
+    total_sd_value = projection.get("total_sd")
+    win_prob_value = projection.get("projected_win_prob")
+    logistic_home_win_prob = projection.get("logistic_home_win_prob")
+
+    if margin_mean is None:
+        raise ValueError("Projection engine did not return margin_mean.")
+
+    if margin_mean >= 0:
         winner, loser = home_key, away_key
     else:
         winner, loser = away_key, home_key
+
     win_prob_samples = None
-    logistic_home_win_prob = projection.projected_win_prob
-    margin_sd_value = margin_std_value
-    if projection.margin is not None and conditional_sd_intercept is not None:
-        if conditional_sd_slope is not None:
-            margin_sd_value = ConditionalSDModel(
-                intercept=conditional_sd_intercept,
-                slope=conditional_sd_slope,
-            ).predict(projection.margin)
-    win_prob_value = home_win_prob_from_margin(projection.margin, margin_sd_value)
-    if win_prob_value is not None:
-        if projection.margin > 0 and win_prob_value <= 0.5 - 1e-3:
+    if win_prob_value is not None and margin_sd_value is not None:
+        if margin_mean > 0 and win_prob_value <= 0.5 - 1e-3:
             raise ValueError(
                 "Inconsistent win probability: margin favors home but p_home_win <= 0.5"
             )
-        if projection.margin < 0 and win_prob_value >= 0.5 + 1e-3:
+        if margin_mean < 0 and win_prob_value >= 0.5 + 1e-3:
             raise ValueError(
                 "Inconsistent win probability: margin favors away but p_home_win >= 0.5"
             )
@@ -219,16 +212,16 @@ def predict_matchup(
         away_team=away_key,
         winner=winner,
         loser=loser,
-        spread=projection.projected_spread,
-        total_points=projection.projected_total or 0.0,
+        spread=-margin_mean,
+        total_points=projection.get("projected_total") or 0.0,
         win_prob=win_prob_value,
         win_prob_samples=win_prob_samples,
         model_win_prob=win_prob_value,
         logistic_home_win_prob=logistic_home_win_prob,
-        margin_mean=projection.margin,
-        margin_std=margin_sd_value if projection.margin is not None else None,
-        total_mean=projection.projected_total or 0.0,
-        total_std=total_std_value if projection.projected_total is not None else None,
+        margin_mean=margin_mean,
+        margin_std=margin_sd_value if margin_mean is not None else None,
+        total_mean=total_mean,
+        total_std=total_sd_value if total_mean is not None else None,
     )
 
 

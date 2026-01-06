@@ -9,7 +9,9 @@ import pytest
 
 from data.repository import load_games, save_games
 from ingest.schema import GameResult
+from models.bradley_terry import BradleyTerry
 from pipelines.metadata import prediction_hash
+from pipelines.projection_engines import get_projection_engine
 from pipelines.schedule import (
     DASHBOARD_COLUMNS,
     MODEL_METADATA_DATA_START_ROW,
@@ -146,16 +148,28 @@ def test_schedule_win_probs_follow_margin_sign() -> None:
         }
     )
     ratings = {"Home": 5.0, "Away": 0.0}
+    model_instance = BradleyTerry()
+    projection_engine = get_projection_engine(model_instance)
+    projection_context = {
+        "ratings": ratings,
+        "base_total": 0.0,
+        "scoring_averages": {},
+        "total_intercept": None,
+        "total_slope": None,
+        "margin_std": 8.0,
+        "total_std": 15.0,
+        "conditional_sd_intercept": None,
+        "conditional_sd_slope": None,
+        "win_prob_k": 10.0,
+    }
     positive = _project_row(
         base_row,
         ratings=ratings,
-        base_total=0.0,
-        scoring_averages={},
         status="scheduled",
         home_advantage=0.0,
-        win_prob_k=10.0,
-        margin_std=8.0,
-        total_std=15.0,
+        model_instance=model_instance,
+        projection_engine=projection_engine,
+        projection_context=projection_context,
     )
     assert positive["margin_mean"] > 0
     assert positive["home_win_prob"] > 0.5
@@ -165,13 +179,14 @@ def test_schedule_win_probs_follow_margin_sign() -> None:
     negative = _project_row(
         base_row,
         ratings={"Home": 0.0, "Away": 5.0},
-        base_total=0.0,
-        scoring_averages={},
         status="scheduled",
         home_advantage=0.0,
-        win_prob_k=10.0,
-        margin_std=8.0,
-        total_std=15.0,
+        model_instance=model_instance,
+        projection_engine=projection_engine,
+        projection_context={
+            **projection_context,
+            "ratings": {"Home": 0.0, "Away": 5.0},
+        },
     )
     assert negative["margin_mean"] < 0
     assert negative["home_win_prob"] < 0.5
