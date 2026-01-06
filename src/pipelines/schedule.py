@@ -476,9 +476,16 @@ def _build_schedule_for_model(
     add_prefix: bool,
     model_params: dict[str, float] | None,
     model_params_file: str | Path | None,
+    tuned_metric: str | None,
 ) -> Path:
     resolved_params = resolve_model_params(
-        model, params=model_params, params_file=model_params_file
+        model,
+        params=model_params,
+        params_file=model_params_file,
+        db_path=db_path,
+        sport=sport,
+        season=season,
+        tuned_metric=tuned_metric,
     )
     schedule_df = _build_schedule_dataframe(
         df,
@@ -513,6 +520,7 @@ def build_schedule_with_projections(
     upcoming_only: bool = False,
     model_params: dict[str, float] | None = None,
     model_params_file: str | Path | None = None,
+    tuned_metric: str | None = None,
 ) -> Path | list[Path]:
     """Build a schedule export containing projections for upcoming games."""
     rows = load_games(
@@ -540,6 +548,7 @@ def build_schedule_with_projections(
             add_prefix=multiple,
             model_params=model_params,
             model_params_file=model_params_file,
+            tuned_metric=tuned_metric,
         )
         for model_name in models
     ]
@@ -558,6 +567,7 @@ def build_schedule_excel_report(
     upcoming_only: bool = False,
     model_params: dict[str, float] | None = None,
     model_params_file: str | Path | None = None,
+    tuned_metric: str | None = None,
 ) -> Path:
     """Build an Excel workbook with schedule projections (one sheet per model)."""
     rows = load_games(
@@ -583,7 +593,13 @@ def build_schedule_excel_report(
         for model_name in models:
             model_df = df.copy(deep=True)
             resolved_params = resolve_model_params(
-                model_name, params=model_params, params_file=model_params_file
+                model_name,
+                params=model_params,
+                params_file=model_params_file,
+                db_path=db_path,
+                sport=sport,
+                season=season,
+                tuned_metric=tuned_metric,
             )
             schedule_df = _build_schedule_dataframe(
                 model_df,

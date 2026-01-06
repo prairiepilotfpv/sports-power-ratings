@@ -12,6 +12,7 @@ from typing import Any, Iterable
 import pandas as pd
 
 from backtest.runner import load_games_df_from_csv, run_backtest
+from data.repository import save_tuned_params, set_active_tuned_params
 from models.registry import get_backtest_model, normalize_model_name
 
 _METRICS = {"log_loss", "brier_score", "mae_margin"}
@@ -62,15 +63,32 @@ def run_tuning_pipeline(
     model_name = normalize_model_name(model)
     model_cls = get_backtest_model(model_name)
     games_df = load_games_df_from_csv(csv_path, sport=sport, season=season)
+    rows_count = _validate_tuning_games(games_df, start_date, end_date)
+    print(
+        "TUNING "
+        f"model={model_name} metric={metric} rows={rows_count} "
+        f"sport={sport} season={season}"
+    )
 
     grid = _resolve_param_grid(model_name, grid_override)
     candidates = list(_iter_param_grid(grid))
     if not candidates:
         candidates = [{}]
 
-    base_dir = Path(output_dir) if output_dir else Path("outputs/tuning") / model_name
+    base_dir = _resolve_tuning_output_dir(
+        output_dir=output_dir,
+        model=model_name,
+        metric=metric,
+        sport=sport,
+        season=season,
+    )
     base_dir.mkdir(parents=True, exist_ok=True)
     run_id = _build_run_id(start_date, end_date, window, rolling_days, rolling_games)
+    print(
+        "TUNING "
+        f"model={model_name} metric={metric} run_id={run_id} "
+        f"rows={rows_count} out={base_dir}"
+    )
 
     baseline_score = None
     if require_improvement:
@@ -168,6 +186,22 @@ def run_tuning_pipeline(
             season=season,
         )
         applied = True
+
+    if db_path and sport and season:
+        save_tuned_params(
+            db_path,
+            sport=sport,
+            season=season,
+            model=model_name,
+            metric=metric,
+            run_id=run_id,
+            params_json=json.dumps(candidate_params, sort_keys=True),
+            best_score=candidate_score,
+        )
+        if apply_best and improved:
+            set_active_tuned_params(
+                db_path, sport=sport, season=season, model=model_name, metric=metric
+            )
 
     results.to_csv(base_dir / f"tuning_results_{run_id}.csv", index=False)
     with (base_dir / f"best_params_{run_id}.json").open("w", encoding="utf-8") as handle:
@@ -297,3 +331,52 @@ def _build_run_id(
         details.append(f"{rolling_games}g")
     detail_label = "_".join(details) if details else "rolling"
     return f"{start_date}_to_{end_date}_rolling_{detail_label}_{timestamp}"
+
+
+def _validate_tuning_games(
+    games_df: pd.DataFrame,
+    start_date: str,
+    end_date: str,
+) -> int:
+    if "date" not in games_df.columns:
+        raise ValueError("Tuning data must include a date column.")
+    games = games_df.copy()
+    games["date"] = pd.to_datetime(games["date"], errors="coerce").dt.normalize()
+    start_dt = pd.to_datetime(start_date).normalize()
+    end_dt = pd.to_datetime(end_date).normalize()
+    evaluation = games[(games["date"] >= start_dt) & (games["date"] <= end_dt)]
+    if evaluation.empty:
+        raise ValueError(
+            "No tuning rows found within the start/end date range "
+            f"({start_date} to {end_date})."
+        )
+    if "home_score" not in evaluation.columns or "away_score" not in evaluation.columns:
+        raise ValueError("Tuning data must include home_score and away_score columns.")
+    has_scores = evaluation["home_score"].notna() & evaluation["away_score"].notna()
+    if not has_scores.any():
+        raise ValueError(
+            "Tuning data must include at least some rows with final scores."
+        )
+    return int(len(evaluation))
+
+
+def _resolve_tuning_output_dir(
+    *,
+    output_dir: str | Path | None,
+    model: str,
+    metric: str,
+    sport: str | None,
+    season: str | None,
+) -> Path:
+    if output_dir is not None:
+        base = Path(output_dir)
+        if base.name != metric:
+            base = base / metric
+        return base
+    if sport and season:
+        return Path("outputs/tuning") / sport / season / model / metric
+    return Path("outputs/tuning") / model / metric
+
+
+def list_metrics() -> list[str]:
+    return sorted(_METRICS)

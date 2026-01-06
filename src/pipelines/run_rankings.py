@@ -179,6 +179,7 @@ def run_rankings(
     output_path: str | Path | None = None,
     model_params: dict[str, float] | None = None,
     model_params_file: str | Path | None = None,
+    tuned_metric: str | None = None,
 ) -> Path | list[Path]:
     """Load games from SQLite, generate rankings, and write them to CSV."""
     rows = load_games(
@@ -198,7 +199,13 @@ def run_rankings(
         try:
             model_df = df.copy(deep=True)
             resolved_params = resolve_model_params(
-                model_name, params=model_params, params_file=model_params_file
+                model_name,
+                params=model_params,
+                params_file=model_params_file,
+                db_path=db_path,
+                sport=sport,
+                season=season,
+                tuned_metric=tuned_metric,
             )
             rankings = build_rankings(
                 model_df, model=model_name, model_params=resolved_params
