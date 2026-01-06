@@ -729,8 +729,9 @@ def _run_tuning(args: argparse.Namespace) -> None:
         db_path = Path(args.db)
     elif args.sport and args.season:
         db_path = db_path_for(args.sport, args.season)
+    all_forecast_models = ["bradley-terry", "toor", "gssd", "elo", "poisson"]
     models_to_run = (
-        list_backtest_models() if args.model == "all" else [args.model]
+        all_forecast_models if args.model == "all" else [args.model]
     )
     metrics_to_run = list_metrics() if args.metric == "all" else [args.metric]
     apply_metric = args.apply_metric.strip().lower()
