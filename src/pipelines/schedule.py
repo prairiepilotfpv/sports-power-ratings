@@ -257,7 +257,10 @@ def _order_schedule_export(schedule_df: pd.DataFrame) -> pd.DataFrame:
 def _resolve_models(model: str | None) -> list[str]:
     if model is None:
         return list_models()
-    return [normalize_model_name(model)]
+    normalized = normalize_model_name(model)
+    if normalized in {"all", "*"}:
+        return list_models()
+    return [normalized]
 
 
 def _resolve_workbook_path(

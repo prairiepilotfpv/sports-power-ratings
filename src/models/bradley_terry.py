@@ -6,7 +6,7 @@ from collections import defaultdict
 from math import exp, isnan, log
 from typing import Any, DefaultDict, Iterable, Mapping
 
-from models.base import ModelMetadata
+from models.base import BaseModel, GamePrediction, ModelMetadata, require_columns
 
 
 class BradleyTerry:
@@ -127,3 +127,62 @@ class BradleyTerry:
     def rankings(self) -> list[tuple[str, float]]:
         """Return ratings ordered from strongest to weakest."""
         return sorted(self.ratings.items(), key=lambda item: item[1], reverse=True)
+
+
+class BradleyTerryBacktest(BaseModel):
+    """Backtest adapter that reuses the core BradleyTerry implementation."""
+
+    def __init__(self, *, max_iter: int = 500, tol: float = 1e-8) -> None:
+        self._model = BradleyTerry(max_iter=max_iter, tol=tol)
+
+    def metadata(self) -> ModelMetadata:
+        return self._model.metadata()
+
+    def fit(self, games_df: Any) -> None:
+        require_columns(
+            games_df, ["home_team", "away_team", "home_score", "away_score"]
+        )
+        self._model.fit(games_df.to_dict(orient="records"))
+
+    def predict(self, upcoming_games_df: Any) -> list[GamePrediction]:
+        require_columns(upcoming_games_df, ["date", "home_team", "away_team"])
+        predictions: list[GamePrediction] = []
+        metadata = self.metadata().identity_dict()
+
+        for row in upcoming_games_df.to_dict(orient="records"):
+            home = str(row.get("home_team", "")).strip()
+            away = str(row.get("away_team", "")).strip()
+            if not home or not away:
+                continue
+
+            neutral_raw = row.get("neutral", False)
+            neutral = (
+                False
+                if isinstance(neutral_raw, float) and isnan(neutral_raw)
+                else bool(neutral_raw)
+            )
+            venue = "neutral" if neutral else "home"
+            p_home_win = self._model.predict_probability(home, away, venue=venue)
+            pred_margin = self._logit(p_home_win)
+            game_id = row.get("game_id") or f"{row['date']}_{home}_{away}"
+
+            predictions.append(
+                GamePrediction(
+                    game_id=str(game_id),
+                    date=str(row["date"]),
+                    home_team=home,
+                    away_team=away,
+                    p_home_win=p_home_win,
+                    win_prob_samples=None,
+                    pred_margin=pred_margin,
+                    metadata=dict(metadata),
+                )
+            )
+
+        return predictions
+
+    @staticmethod
+    def _logit(prob: float, *, epsilon: float = 1e-12) -> float:
+        """Convert probability to log-odds with numeric stability."""
+        p = min(max(prob, epsilon), 1.0 - epsilon)
+        return log(p) - log(1.0 - p)

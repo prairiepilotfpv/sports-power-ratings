@@ -265,6 +265,11 @@ def _default_param_grid(model: str) -> dict[str, Iterable[Any]]:
             "initial_rating": [1500.0],
             "min_rating": [1.0],
         }
+    if model == "bradley-terry":
+        return {
+            "max_iter": [200, 500, 800],
+            "tol": [1e-6, 1e-8],
+        }
     if model in {"bradley_terry_hfa", "bradley_terry_calibrated_hfa"}:
         return {
             "max_iter": [200, 500, 800],
