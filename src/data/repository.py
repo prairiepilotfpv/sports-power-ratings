@@ -434,6 +434,8 @@ def load_model_metrics(
                    base_total,
                    margin_std,
                    total_std,
+                   conditional_sd_intercept,
+                   conditional_sd_slope,
                    margin_mean,
                    total_mean,
                    backtest_log_loss,
