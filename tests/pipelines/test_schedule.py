@@ -529,7 +529,12 @@ def test_schedule_excel_dashboard_includes_today_games(tmp_path: Path) -> None:
         .all()
     )
     assert (
-        dashboard.loc[dashboard["game"] == "Team B @ Team A", "model_win_prob"]
+        dashboard.loc[dashboard["game"] == "Team B @ Team A", "home_win_prob"]
+        .notna()
+        .all()
+    )
+    assert (
+        dashboard.loc[dashboard["game"] == "Team B @ Team A", "winner_win_prob"]
         .notna()
         .all()
     )

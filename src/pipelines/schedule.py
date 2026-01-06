@@ -41,16 +41,13 @@ DASHBOARD_COLUMNS: List[str] = [
     "total",
     "projected_winner",
     "projected_spread",
-    "projected_win_prob",
-    "projected_win_prob_dist",
-    "model_win_prob_samples",
-    "model_win_prob",
     "margin_mean",
     "margin_sd",
-    "total_mean",
+    "home_win_prob",
+    "away_win_prob",
+    "winner_win_prob",
+    "logistic_home_win_prob",
     "total_sd",
-    "margin_dist_params",
-    "total_dist_params",
 ]
 
 MODEL_METADATA_DATA_START_ROW = 10
@@ -434,18 +431,13 @@ def _dashboard_rows_for_today(
                 "total": total,
                 "projected_winner": row.get("projected_winner"),
                 "projected_spread": row.get("projected_spread"),
-                "projected_win_prob": row.get("projected_win_prob"),
-                "projected_win_prob_dist": row.get("projected_win_prob_dist"),
-                "model_win_prob_samples": row.get("model_win_prob_samples"),
-                "model_win_prob": row.get("model_win_prob")
-                if row.get("model_win_prob") is not None
-                else row.get("projected_win_prob"),
                 "margin_mean": row.get("margin_mean"),
                 "margin_sd": row.get("margin_sd"),
-                "total_mean": row.get("total_mean"),
+                "home_win_prob": row.get("home_win_prob"),
+                "away_win_prob": row.get("away_win_prob"),
+                "winner_win_prob": row.get("winner_win_prob"),
+                "logistic_home_win_prob": row.get("logistic_home_win_prob"),
                 "total_sd": row.get("total_sd"),
-                "margin_dist_params": row.get("margin_dist_params"),
-                "total_dist_params": row.get("total_dist_params"),
             }
         )
     return rows
