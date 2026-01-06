@@ -13,7 +13,7 @@ from contracts import SCHEDULE_EXPORT_COLUMNS, validate_schedule_export_frame
 from data.paths import processed_path_for
 from data.repository import load_games, load_model_metrics
 from pipelines.common import normalize_games, resolve_output_path
-from pipelines.model_params import resolve_model_params
+from pipelines.model_params import resolve_model_params_with_metadata
 from pipelines.matchups import team_home_advantages
 from config import DEFAULT_WIN_PROB_K
 from pipelines.projection_engines import get_projection_engine
@@ -46,7 +46,7 @@ DASHBOARD_COLUMNS: List[str] = [
     "total_sd",
 ]
 
-MODEL_METADATA_DATA_START_ROW = 10
+MODEL_METADATA_DATA_START_ROW = 12
 
 
 def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
@@ -107,6 +107,8 @@ def _project_row(
     ratings: Dict[str, float],
     status: str,
     home_advantage: float,
+    params_source: str,
+    tuned_metric_used: str | None,
     model_instance: Any | None = None,
     projection_engine: Any | None = None,
     projection_context: Dict[str, Any] | None = None,
@@ -213,6 +215,8 @@ def _project_row(
     base.update(
         {
             "status": status,
+            "params_source": params_source,
+            "tuned_metric_used": tuned_metric_used,
             "home_rating": home_rating,
             "away_rating": away_rating,
             "projected_winner": projected_winner,
@@ -288,6 +292,8 @@ def _build_schedule_dataframe(
     model: str,
     upcoming_only: bool,
     model_params: dict[str, float] | None,
+    params_source: str,
+    tuned_metric_used: str | None,
 ) -> pd.DataFrame:
     played = _completed_games(df)
     upcoming = _upcoming_games(df)
@@ -345,6 +351,8 @@ def _build_schedule_dataframe(
                     ratings=ratings,
                     status="final",
                     home_advantage=home_advantages.get(home, fallback_home_advantage),
+                    params_source=params_source,
+                    tuned_metric_used=tuned_metric_used,
                     model_instance=model_instance,
                     projection_engine=projection_engine,
                     projection_context=projection_context,
@@ -354,15 +362,17 @@ def _build_schedule_dataframe(
     for _, row in upcoming.iterrows():
         home = str(row.get("home_team", "")).strip()
         schedule_rows.append(
-            _project_row(
-                row,
-                ratings=ratings,
-                status="scheduled",
-                home_advantage=home_advantages.get(home, fallback_home_advantage),
-                model_instance=model_instance,
-                projection_engine=projection_engine,
-                projection_context=projection_context,
-            )
+        _project_row(
+            row,
+            ratings=ratings,
+            status="scheduled",
+            home_advantage=home_advantages.get(home, fallback_home_advantage),
+            params_source=params_source,
+            tuned_metric_used=tuned_metric_used,
+            model_instance=model_instance,
+            projection_engine=projection_engine,
+            projection_context=projection_context,
+        )
         )
 
     schedule_df = pd.DataFrame(schedule_rows)
@@ -461,6 +471,8 @@ def _build_model_metadata(
     model_name: str,
     played: pd.DataFrame,
     schedule_df: pd.DataFrame,
+    params_source: str,
+    tuned_metric_used: str | None,
 ) -> dict[str, Any]:
     model_instance = get_model(model_name)()
     identity = resolve_model_identity(model_instance)
@@ -468,6 +480,8 @@ def _build_model_metadata(
         "model_id": identity["model_id"],
         "model_version": identity["model_version"],
         "params": _serialize_params(identity["params"]),
+        "params_source": params_source,
+        "tuned_metric_used": tuned_metric_used,
         "trained_on_date_range": _training_date_range(played),
         "n_games_train": int(len(played)),
         "run_timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -505,7 +519,7 @@ def _build_schedule_for_model(
     model_params_file: str | Path | None,
     tuned_metric: str | None,
 ) -> Path:
-    resolved_params = resolve_model_params(
+    resolution = resolve_model_params_with_metadata(
         model,
         params=model_params,
         params_file=model_params_file,
@@ -514,6 +528,7 @@ def _build_schedule_for_model(
         season=season,
         tuned_metric=tuned_metric,
     )
+    resolved_params = resolution.params
     schedule_df = _build_schedule_dataframe(
         df,
         db_path=db_path,
@@ -522,6 +537,8 @@ def _build_schedule_for_model(
         model=model,
         upcoming_only=upcoming_only,
         model_params=resolved_params,
+        params_source=resolution.params_source,
+        tuned_metric_used=resolution.tuned_metric_used,
     )
     default_path = processed_path_for(sport, season, "schedule_with_projections.csv")
     resolved_output = resolve_output_path(
@@ -619,7 +636,7 @@ def build_schedule_excel_report(
     with pd.ExcelWriter(report_path) as writer:
         for model_name in models:
             model_df = df.copy(deep=True)
-            resolved_params = resolve_model_params(
+            resolution = resolve_model_params_with_metadata(
                 model_name,
                 params=model_params,
                 params_file=model_params_file,
@@ -628,6 +645,9 @@ def build_schedule_excel_report(
                 season=season,
                 tuned_metric=tuned_metric,
             )
+            resolved_params = resolution.params
+            params_source = resolution.params_source
+            tuned_metric_used = resolution.tuned_metric_used
             schedule_df = _build_schedule_dataframe(
                 model_df,
                 db_path=db_path,
@@ -636,11 +656,15 @@ def build_schedule_excel_report(
                 model=model_name,
                 upcoming_only=upcoming_only,
                 model_params=resolved_params,
+                params_source=params_source,
+                tuned_metric_used=tuned_metric_used,
             )
             metadata = _build_model_metadata(
                 model_name=model_name,
                 played=_completed_games(model_df),
                 schedule_df=schedule_df,
+                params_source=params_source,
+                tuned_metric_used=tuned_metric_used,
             )
             start_row = _write_metadata_section(writer, model_name, metadata)
             schedule_df.to_excel(

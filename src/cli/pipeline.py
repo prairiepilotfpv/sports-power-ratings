@@ -601,6 +601,10 @@ def _run_matchup(args: argparse.Namespace) -> None:
         print(f"[{model}] {line}")
         print(f"[{model}] Spread: {metrics['spread']:.2f}")
         print(f"[{model}] Total Points: {metrics['total_points']:.2f}")
+        print(
+            f"[{model}] Params source: {metrics.get('params_source')}, "
+            f"tuned metric used: {metrics.get('tuned_metric_used')}"
+        )
 
 
 def _run_schedule(args: argparse.Namespace) -> None:
@@ -718,6 +722,7 @@ def _run_tuning(args: argparse.Namespace) -> None:
     from data.paths import db_path_for
     from models.registry import list_backtest_models, normalize_model_name
     from pipelines.tuning import list_metrics, run_tuning_pipeline
+    from pipelines.tuning_policy import default_active_metric_for_model
 
     output_dir = Path(args.output_dir) if args.output_dir else None
     grid_override = None
@@ -747,11 +752,14 @@ def _run_tuning(args: argparse.Namespace) -> None:
 
     for model in models_to_run:
         model_name = normalize_model_name(model)
+        active_metric = None
+        if args.metric == "all" and args.apply_best:
+            active_metric = default_active_metric_for_model(model_name)
         for metric in metrics_to_run:
             run_output_dir = _resolve_output_dir(model_name, metric)
             apply_best = args.apply_best
             if args.metric == "all" and args.apply_best:
-                apply_best = metric == apply_metric
+                apply_best = metric == active_metric
             try:
                 outputs = run_tuning_pipeline(
                     csv_path=Path(args.csv),

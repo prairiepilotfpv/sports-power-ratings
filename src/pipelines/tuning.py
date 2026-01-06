@@ -202,6 +202,7 @@ def run_tuning_pipeline(
             set_active_tuned_params(
                 db_path, sport=sport, season=season, model=model_name, metric=metric
             )
+            print(f"Applied ACTIVE metric={metric} for model={model_name}")
 
     results.to_csv(base_dir / f"tuning_results_{run_id}.csv", index=False)
     with (base_dir / f"best_params_{run_id}.json").open("w", encoding="utf-8") as handle:
