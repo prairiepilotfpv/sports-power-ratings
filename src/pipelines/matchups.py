@@ -10,7 +10,7 @@ import pandas as pd
 
 from data.repository import load_games, load_model_metrics
 from pipelines.common import normalize_games
-from pipelines.model_params import resolve_model_params
+from pipelines.model_params import resolve_model_params_with_metadata
 from config import (
     DEFAULT_WIN_PROB_K,
 )
@@ -43,6 +43,8 @@ class MatchupPrediction:
     margin_std: float | None
     total_mean: float
     total_std: float | None
+    params_source: str
+    tuned_metric_used: str | None
 
 
 def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
@@ -120,7 +122,7 @@ def predict_matchup(
     if df.empty:
         raise ValueError(f"No games found for sport={sport!r}, season={season!r}")
 
-    resolved_params = resolve_model_params(
+    resolution = resolve_model_params_with_metadata(
         model,
         params=model_params,
         params_file=model_params_file,
@@ -129,6 +131,7 @@ def predict_matchup(
         season=season,
         tuned_metric=tuned_metric,
     )
+    resolved_params = resolution.params
     rankings, model_instance = build_rankings(
         df, model=model, model_params=resolved_params, return_model=True
     )
@@ -229,6 +232,8 @@ def predict_matchup(
         margin_std=margin_sd_value if margin_mean is not None else None,
         total_mean=total_mean,
         total_std=total_sd_value if total_mean is not None else None,
+        params_source=resolution.params_source,
+        tuned_metric_used=resolution.tuned_metric_used,
     )
 
 
@@ -254,6 +259,8 @@ def format_matchup(prediction: MatchupPrediction) -> Tuple[str, Dict[str, float]
         "total_points": prediction.total_points,
         "margin_mean": prediction.margin_mean,
         "total_mean": prediction.total_mean,
+        "params_source": prediction.params_source,
+        "tuned_metric_used": prediction.tuned_metric_used,
     }
     if prediction.margin_std is not None:
         metrics["margin_std"] = prediction.margin_std

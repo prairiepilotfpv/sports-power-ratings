@@ -95,6 +95,8 @@ def test_integration_project_row_sign_conventions() -> None:
         scoring_averages={},
         status="scheduled",
         home_advantage=2.0,
+        params_source="default",
+        tuned_metric_used=None,
         win_prob_k=10.0,
     )
     assert output["projected_winner"] == "Home"
