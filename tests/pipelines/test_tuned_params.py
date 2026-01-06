@@ -132,10 +132,10 @@ def test_schedule_uses_tuned_params(tmp_path: Path, monkeypatch, capsys) -> None
 def test_active_metric_policy_applies_for_multiple_models(
     tmp_path: Path, monkeypatch
 ) -> None:
-    scores = [2.0, 1.0, 1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 1.0, 1.0]
-
     def fake_run_backtest(*_args, **_kwargs):
-        return _FakeOutputs(scores.pop(0))
+        output_dir = str(_kwargs.get("output_dir", ""))
+        score = 2.0 if "__baseline" in output_dir else 1.0
+        return _FakeOutputs(score)
 
     monkeypatch.setattr("pipelines.tuning.run_backtest", fake_run_backtest)
     monkeypatch.setattr(
