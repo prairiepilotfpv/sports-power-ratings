@@ -6,11 +6,112 @@ import csv
 import re
 from io import StringIO
 from pathlib import Path
-from typing import List
+from collections import defaultdict
+from typing import Iterable, List
 
 import pandas as pd
 
 from ingest.schema import GameResult
+
+_NHL_TEAM_ALIASES = {
+    "anaheim ducks": "ANA",
+    "arizona coyotes": "ARI",
+    "boston bruins": "BOS",
+    "buffalo sabres": "BUF",
+    "calgary flames": "CGY",
+    "carolina hurricanes": "CAR",
+    "chicago blackhawks": "CHI",
+    "colorado avalanche": "COL",
+    "columbus blue jackets": "CBJ",
+    "dallas stars": "DAL",
+    "detroit red wings": "DET",
+    "edmonton oilers": "EDM",
+    "florida panthers": "FLA",
+    "los angeles kings": "LAK",
+    "la kings": "LAK",
+    "minnesota wild": "MIN",
+    "montreal canadiens": "MTL",
+    "nashville predators": "NSH",
+    "new jersey devils": "NJD",
+    "new york islanders": "NYI",
+    "new york rangers": "NYR",
+    "ottawa senators": "OTT",
+    "philadelphia flyers": "PHI",
+    "pittsburgh penguins": "PIT",
+    "san jose sharks": "SJS",
+    "seattle kraken": "SEA",
+    "st louis blues": "STL",
+    "st. louis blues": "STL",
+    "tampa bay lightning": "TBL",
+    "toronto maple leafs": "TOR",
+    "utah mammoth": "UTA",
+    "utah hockey club": "UTA",
+    "vancouver canucks": "VAN",
+    "vegas golden knights": "VGK",
+    "washington capitals": "WSH",
+    "winnipeg jets": "WPG",
+}
+
+_NHL_ABBREVIATIONS = {
+    "ANA",
+    "ARI",
+    "BOS",
+    "BUF",
+    "CGY",
+    "CAR",
+    "CHI",
+    "COL",
+    "CBJ",
+    "DAL",
+    "DET",
+    "EDM",
+    "FLA",
+    "LAK",
+    "MIN",
+    "MTL",
+    "NSH",
+    "NJD",
+    "NYI",
+    "NYR",
+    "OTT",
+    "PHI",
+    "PIT",
+    "SJS",
+    "SEA",
+    "STL",
+    "TBL",
+    "TOR",
+    "UTA",
+    "VAN",
+    "VGK",
+    "WSH",
+    "WPG",
+}
+
+
+def _normalize_team_key(name: str) -> str:
+    cleaned = re.sub(r"[.']", "", name).strip().lower()
+    return re.sub(r"\s+", " ", cleaned)
+
+
+def _normalize_nhl_team(name: str, unknown: set[str]) -> str:
+    if not name:
+        unknown.add(name)
+        return name
+    raw = name.strip()
+    upper = raw.upper()
+    if upper in _NHL_ABBREVIATIONS:
+        return upper
+    key = _normalize_team_key(raw)
+    mapped = _NHL_TEAM_ALIASES.get(key)
+    if mapped is None:
+        unknown.add(raw)
+        return raw
+    return mapped
+
+
+def _format_unknown_names(names: Iterable[str]) -> str:
+    return ", ".join(sorted({name for name in names if name}))
 
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -125,6 +226,7 @@ def _parse_sr_dataframe(
     df = _rename_duplicate_stat(df, "pts", "pts_away", "pts_home")
     df = _rename_duplicate_stat(df, "g", "g_away", "g_home")
 
+    sport_key = (sport or "").lower()
     date_col = _find_column(df, "date", "game date")
     away_col = _find_column(
         df, "visitor/neutral", "visitor", "away", "away/neutral", "road", "road team"
@@ -149,6 +251,8 @@ def _parse_sr_dataframe(
         raise ValueError(f"Missing required columns: {', '.join(missing)}")
 
     games: List[GameResult] = []
+    unknown_teams: set[str] = set()
+    game_id_counts: dict[str, int] = defaultdict(int)
     for _, row in df.iterrows():
         # Validate required fields and parse any available scoring data.
         raw_date = row.get(date_col)
@@ -165,6 +269,9 @@ def _parse_sr_dataframe(
 
         away_team = str(row[away_col]).strip()
         home_team = str(row[home_col]).strip()
+        if sport_key == "nhl":
+            away_team = _normalize_nhl_team(away_team, unknown_teams)
+            home_team = _normalize_nhl_team(home_team, unknown_teams)
 
         away_score = _as_int(row.get(away_pts_col)) if away_pts_col else None
         home_score = _as_int(row.get(home_pts_col)) if home_pts_col else None
@@ -182,12 +289,18 @@ def _parse_sr_dataframe(
         overtime = decision_type is not None or bool(ot_raw)
 
         game_id = None
-        if box_col and pd.notna(row.get(box_col)):
+        if sport_key != "nhl" and box_col and pd.notna(row.get(box_col)):
             raw_game_id = str(row.get(box_col)).strip()
             if not looks_like_tip_time(raw_game_id):
                 game_id = raw_game_id
         if not game_id:
-            game_id = f"{parsed_date.date()}|{away_team}|{home_team}"
+            if sport_key == "nhl":
+                base_id = f"nhl|{parsed_date.date()}|{away_team}|{home_team}"
+                game_id_counts[base_id] += 1
+                suffix = game_id_counts[base_id]
+                game_id = base_id if suffix == 1 else f"{base_id}|{suffix}"
+            else:
+                game_id = f"{parsed_date.date()}|{away_team}|{home_team}"
 
         notes = None
         if notes_col and pd.notna(row.get(notes_col)):
@@ -210,6 +323,10 @@ def _parse_sr_dataframe(
                 notes=notes,
             )
         )
+
+    if unknown_teams and sport_key == "nhl":
+        unknown_list = _format_unknown_names(unknown_teams)
+        raise ValueError(f"Unknown NHL team names found: {unknown_list}")
 
     return games
 

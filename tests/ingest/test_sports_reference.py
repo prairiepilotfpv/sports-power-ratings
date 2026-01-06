@@ -11,6 +11,9 @@ FIXTURES_DIR = (
 NFL_FIXTURES = (
     Path(__file__).resolve().parents[1] / "fixtures" / "sports_reference" / "nfl"
 )
+NHL_FIXTURES = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "sports_reference" / "nhl"
+)
 
 
 def test_parse_sr_csv() -> None:
@@ -110,10 +113,25 @@ def test_parse_sr_csv_text_nhl_decision_types() -> None:
     )
     games = parse_sr_csv_text(text, sport="nhl", season="2025-26")
     assert len(games) == 5
-    assert games[3].away_team == "Calgary Flames"
-    assert games[3].home_team == "Edmonton Oilers"
+    assert games[3].away_team == "CGY"
+    assert games[3].home_team == "EDM"
     assert games[0].away_score == 2
     assert games[0].home_score == 3
     assert games[3].overtime is True
     assert games[3].decision_type == "SO"
     assert games[0].decision_type is None
+
+
+def test_parse_sr_csv_nhl_normalizes_teams_and_ids() -> None:
+    games = parse_sr_csv(NHL_FIXTURES / "nhl_sample.csv", sport="nhl", season="2025-26")
+    assert len(games) == 10
+    assert games[0].away_team == "CHI"
+    assert games[0].home_team == "FLA"
+    assert games[1].away_team == "UTA"
+    assert games[1].home_team == "STL"
+    assert games[3].away_score == 4
+    assert games[3].home_score == 3
+    assert games[3].overtime is True
+    assert games[3].decision_type == "SO"
+    assert games[0].game_id == "nhl|2025-10-07|CHI|FLA"
+    assert games[1].game_id == "nhl|2025-10-07|UTA|STL"
