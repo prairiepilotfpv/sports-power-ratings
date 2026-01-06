@@ -8,25 +8,57 @@ import pytest
 from models.gssd import GSSDCalibration, GSSDModel, GSSDPowerRating
 
 
-def test_gssd_build_ratings_uses_net_rating() -> None:
+def test_gssd_power_rating_builds_team_stats() -> None:
     model = GSSDPowerRating()
-    model._model.team_ratings_ = {
-        "Alpha": (110.0, 100.0, 108.0, 102.0),
-        "Beta": (95.0, 105.0, 98.0, 110.0),
-    }
+    games = [
+        {
+            "home_team": "Alpha",
+            "away_team": "Beta",
+            "home_score": 100,
+            "away_score": 90,
+        },
+        {
+            "home_team": "Beta",
+            "away_team": "Alpha",
+            "home_score": 95,
+            "away_score": 105,
+        },
+    ]
 
-    ratings = model._build_ratings()
+    model.fit(games)
 
-    assert ratings["Alpha"] == pytest.approx(8.0)
-    assert ratings["Beta"] == pytest.approx(-11.0)
+    alpha_stats = model.team_stats("Alpha")
+    beta_stats = model.team_stats("Beta")
+
+    assert alpha_stats["pfh"] == pytest.approx(100.0)
+    assert alpha_stats["pah"] == pytest.approx(90.0)
+    assert alpha_stats["pfa"] == pytest.approx(105.0)
+    assert alpha_stats["paa"] == pytest.approx(95.0)
+    assert beta_stats["pfh"] == pytest.approx(95.0)
+    assert beta_stats["pah"] == pytest.approx(105.0)
+    assert beta_stats["pfa"] == pytest.approx(90.0)
+    assert beta_stats["paa"] == pytest.approx(100.0)
 
 
-def test_gssd_predict_handles_negative_ratings() -> None:
+def test_gssd_predict_uses_coefficients() -> None:
     model = GSSDModel()
-    model._gssd._ratings = {"Alpha": -2.0, "Beta": 1.0}
+    model._gssd._team_stats = {
+        "Alpha": {"pfh": 100.0, "pah": 90.0, "pfa": 95.0, "paa": 105.0},
+        "Beta": {"pfh": 98.0, "pah": 102.0, "pfa": 92.0, "paa": 108.0},
+    }
+    model._gssd._league_stats = {
+        "pfh": 99.0,
+        "pah": 101.0,
+        "pfa": 93.0,
+        "paa": 107.0,
+    }
     model._coefficients = GSSDCalibration(
-        home_advantage_points=1.0,
-        scale=2.0,
+        intercept=1.0,
+        beta_pfh=0.1,
+        beta_pah=0.2,
+        beta_pfa=-0.05,
+        beta_paa=-0.1,
+        home_advantage_points=0.0,
         error_term=3.0,
     )
     model._win_prob_k = 10.0
@@ -46,7 +78,14 @@ def test_gssd_predict_handles_negative_ratings() -> None:
 
     assert len(predictions) == 1
     prediction = predictions[0]
-    assert prediction.pred_margin == pytest.approx(-5.0)
-    expected_prob = 1.0 / (1.0 + math.exp(5.0 / 10.0))
+    expected_margin = (
+        1.0
+        + 0.1 * 100.0
+        + 0.2 * 90.0
+        - 0.05 * 92.0
+        - 0.1 * 108.0
+    )
+    assert prediction.pred_margin == pytest.approx(expected_margin)
+    expected_prob = 1.0 / (1.0 + math.exp(-expected_margin / 10.0))
     assert prediction.p_home_win == pytest.approx(expected_prob)
     assert prediction.win_prob_dist
