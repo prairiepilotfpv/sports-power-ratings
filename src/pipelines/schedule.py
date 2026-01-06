@@ -24,8 +24,8 @@ from pipelines.projections import (
     project_game,
     total_from_ratings,
     team_scoring_averages,
-    win_prob_distribution,
 )
+from models.calibration import ConditionalSDModel
 from models.registry import get_model, list_models, normalize_model_name
 from pipelines.run_rankings import build_rankings
 from models.base import resolve_model_identity
@@ -119,6 +119,8 @@ def _project_row(
     win_prob_k: float,
     margin_std: float | None = None,
     total_std: float | None = None,
+    conditional_sd_intercept: float | None = None,
+    conditional_sd_slope: float | None = None,
     total_intercept: float | None = None,
     total_slope: float | None = None,
 ) -> Dict[str, Any]:
@@ -134,6 +136,10 @@ def _project_row(
     projected_spread = None
     projected_home_spread = None
     projected_win_prob = None
+    logistic_home_win_prob = None
+    home_win_prob = None
+    away_win_prob = None
+    winner_win_prob = None
     projected_home_score = None
     projected_away_score = None
     projected_total = None
@@ -179,34 +185,34 @@ def _project_row(
         projected_winner = projection.projected_winner
         projected_spread = projection.projected_spread
         projected_home_spread = projection.projected_home_spread
-        projected_win_prob = projection.projected_win_prob
+        logistic_home_win_prob = projection.projected_win_prob
         projected_home_score = projection.projected_home_score
         projected_away_score = projection.projected_away_score
         projected_total = projection.projected_total
         margin_mean = projection.margin
         total_mean = projected_total
-        if projected_win_prob is not None:
-            projected_win_prob_dist = None
-            model_win_prob = projected_win_prob
+        if margin_mean is not None and conditional_sd_intercept is not None:
+            if conditional_sd_slope is not None:
+                margin_sd_value = ConditionalSDModel(
+                    intercept=conditional_sd_intercept,
+                    slope=conditional_sd_slope,
+                ).predict(margin_mean)
         if margin_mean is not None:
             # Outcome distribution parameters for pricing spreads/totals (not model-opinion buckets).
             margin_dist_params = None
         if total_mean is not None:
             total_dist_params = None
-        derived_win_prob = home_win_prob_from_margin(margin_mean, margin_sd_value)
-        if projected_win_prob is None and derived_win_prob is not None:
-            projected_win_prob = derived_win_prob
-        if projected_win_prob is not None and derived_win_prob is not None:
-            if margin_mean > 0 and projected_win_prob <= 0.5 - 1e-3:
-                raise ValueError(
-                    "Inconsistent win probability: margin favors home but p_home_win <= 0.5"
-                )
-            if margin_mean < 0 and projected_win_prob >= 0.5 + 1e-3:
-                raise ValueError(
-                    "Inconsistent win probability: margin favors away but p_home_win >= 0.5"
-                )
-        if projected_win_prob is not None:
+        home_win_prob = home_win_prob_from_margin(margin_mean, margin_sd_value)
+        if home_win_prob is not None:
+            projected_win_prob = home_win_prob
+            model_win_prob = home_win_prob
+            projected_win_prob_dist = None
             model_win_prob_samples = None
+            away_win_prob = 1.0 - home_win_prob
+            if projected_winner == home:
+                winner_win_prob = home_win_prob
+            elif projected_winner == away:
+                winner_win_prob = away_win_prob
 
     result_margin = None
     result_total = None
@@ -227,6 +233,10 @@ def _project_row(
             "projected_spread": projected_spread,
             "projected_home_spread": projected_home_spread,
             "projected_win_prob": projected_win_prob,
+            "home_win_prob": home_win_prob,
+            "away_win_prob": away_win_prob,
+            "winner_win_prob": winner_win_prob,
+            "logistic_home_win_prob": logistic_home_win_prob,
             "projected_win_prob_dist": None,
             "model_win_prob_samples": model_win_prob_samples,
             "model_win_prob": model_win_prob,
@@ -313,6 +323,8 @@ def _build_schedule_dataframe(
     base_total = float(metrics.get("base_total", 0.0)) or fallback_total
     margin_std = metrics.get("margin_std")
     total_std = metrics.get("total_std")
+    conditional_sd_intercept = metrics.get("conditional_sd_intercept")
+    conditional_sd_slope = metrics.get("conditional_sd_slope")
     played_records = played.to_dict(orient="records")
     total_intercept, total_slope = fit_total_model(played_records, ratings)
     scoring_averages = team_scoring_averages(played_records)
@@ -332,6 +344,8 @@ def _build_schedule_dataframe(
                     win_prob_k=win_prob_k,
                     margin_std=margin_std,
                     total_std=total_std,
+                    conditional_sd_intercept=conditional_sd_intercept,
+                    conditional_sd_slope=conditional_sd_slope,
                     total_intercept=total_intercept,
                     total_slope=total_slope,
                 )
@@ -350,6 +364,8 @@ def _build_schedule_dataframe(
                 win_prob_k=win_prob_k,
                 margin_std=margin_std,
                 total_std=total_std,
+                conditional_sd_intercept=conditional_sd_intercept,
+                conditional_sd_slope=conditional_sd_slope,
                 total_intercept=total_intercept,
                 total_slope=total_slope,
             )

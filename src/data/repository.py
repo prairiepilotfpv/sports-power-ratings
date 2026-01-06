@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS model_metrics (
     base_total REAL NOT NULL,
     margin_std REAL,
     total_std REAL,
+    conditional_sd_intercept REAL,
+    conditional_sd_slope REAL,
     margin_mean REAL,
     total_mean REAL,
     backtest_log_loss REAL,
@@ -102,6 +104,12 @@ def _ensure_model_metrics_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE model_metrics ADD COLUMN margin_std REAL")
     if "total_std" not in existing:
         conn.execute("ALTER TABLE model_metrics ADD COLUMN total_std REAL")
+    if "conditional_sd_intercept" not in existing:
+        conn.execute(
+            "ALTER TABLE model_metrics ADD COLUMN conditional_sd_intercept REAL"
+        )
+    if "conditional_sd_slope" not in existing:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN conditional_sd_slope REAL")
     if "margin_mean" not in existing:
         conn.execute("ALTER TABLE model_metrics ADD COLUMN margin_mean REAL")
     if "total_mean" not in existing:
@@ -265,6 +273,8 @@ def save_model_metrics(
     base_total: float,
     margin_std: float | None = None,
     total_std: float | None = None,
+    conditional_sd_intercept: float | None = None,
+    conditional_sd_slope: float | None = None,
     margin_mean: float | None = None,
     total_mean: float | None = None,
 ) -> None:
@@ -283,10 +293,12 @@ def save_model_metrics(
                 base_total,
                 margin_std,
                 total_std,
+                conditional_sd_intercept,
+                conditional_sd_slope,
                 margin_mean,
                 total_mean,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
             (
                 sport,
@@ -298,6 +310,8 @@ def save_model_metrics(
                 base_total,
                 margin_std,
                 total_std,
+                conditional_sd_intercept,
+                conditional_sd_slope,
                 margin_mean,
                 total_mean,
             ),
@@ -328,6 +342,8 @@ def save_backtest_metrics(
                    base_total,
                    margin_std,
                    total_std,
+                   conditional_sd_intercept,
+                   conditional_sd_slope,
                    margin_mean,
                    total_mean,
                    backtest_log_loss,
@@ -440,16 +456,18 @@ def load_model_metrics(
     extra_values = {
         "margin_std": row[4],
         "total_std": row[5],
-        "margin_mean": row[6],
-        "total_mean": row[7],
+        "conditional_sd_intercept": row[6],
+        "conditional_sd_slope": row[7],
+        "margin_mean": row[8],
+        "total_mean": row[9],
     }
     if any(value is not None for value in extra_values.values()):
         metrics.update(extra_values)
     backtest_values = {
-        "backtest_log_loss": row[8],
-        "backtest_brier_score": row[9],
-        "backtest_mae_margin": row[10],
-        "backtest_win_prob_k": row[11],
+        "backtest_log_loss": row[10],
+        "backtest_brier_score": row[11],
+        "backtest_mae_margin": row[12],
+        "backtest_win_prob_k": row[13],
     }
     if any(value is not None for value in backtest_values.values()):
         metrics.update(backtest_values)
