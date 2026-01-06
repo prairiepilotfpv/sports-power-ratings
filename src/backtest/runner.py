@@ -15,6 +15,23 @@ from models.base import BaseModel, GamePrediction, resolve_model_identity
 from pipelines.metadata import prediction_hash
 
 DEFAULT_BUCKET_EDGES = np.linspace(0.0, 1.0, 11)
+REQUIRED_BACKTEST_PREDICTION_COLUMNS = [
+    "game_id",
+    "date",
+    "home_team",
+    "away_team",
+    "p_home_win",
+    "win_prob_samples",
+    "win_prob_dist",
+    "pred_margin",
+    "pred_total",
+    "margin_mean",
+    "margin_sd",
+    "total_mean",
+    "total_sd",
+    "model_win_prob",
+    "model_id",
+]
 
 
 @dataclass
@@ -262,7 +279,8 @@ def run_backtest(
         if not _has_data(_frame):
             continue
         # Drop columns that are entirely NA to avoid dtype inference warnings during concat.
-        cleaned = _frame.loc[:, _frame.notna().any(axis=0)]
+        keep_columns = _frame.columns.isin(REQUIRED_BACKTEST_PREDICTION_COLUMNS)
+        cleaned = _frame.loc[:, _frame.notna().any(axis=0) | keep_columns]
         if _has_data(cleaned):
             valid_frames.append(cleaned)
     if valid_frames:
@@ -274,6 +292,10 @@ def run_backtest(
             "This happens when each evaluation date has no training data "
             "(games must exist before each evaluation date)."
         )
+
+    for column in REQUIRED_BACKTEST_PREDICTION_COLUMNS:
+        if column not in predictions_df.columns:
+            predictions_df[column] = pd.NA
 
     metrics_by_date = _aggregate_metrics_by_date(predictions_df)
     metrics_overall = _aggregate_overall_metrics(predictions_df)

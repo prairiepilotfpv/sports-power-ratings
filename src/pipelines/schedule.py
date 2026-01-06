@@ -394,17 +394,7 @@ def _dashboard_rows_for_today(
     if as_of_date is not None:
         df = df[df["_date"] == today]
     else:
-        day_df = df[df["_date"] == today]
-        if day_df.empty:
-            scheduled_dates = sorted(d for d in df["_date"].dropna().unique())
-            if not scheduled_dates:
-                return []
-            target_date = next(
-                (d for d in scheduled_dates if d >= today), scheduled_dates[0]
-            )
-            df = df[df["_date"] == target_date]
-        else:
-            df = day_df
+        df = df[df["_date"] == today]
 
     if df.empty:
         return []
