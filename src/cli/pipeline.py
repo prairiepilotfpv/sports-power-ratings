@@ -329,7 +329,7 @@ def _parse_args() -> argparse.Namespace:
     tune_parser.add_argument(
         "--model",
         required=True,
-        help="Backtest model to tune (e.g., elo, gssd, toor).",
+        help="Backtest model to tune (e.g., elo, gssd, poisson, toor).",
     )
     tune_parser.add_argument(
         "--start", required=True, help="Backtest start date (YYYY-MM-DD)."

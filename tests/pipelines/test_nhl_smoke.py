@@ -67,6 +67,18 @@ def test_nhl_pipeline_smoke(tmp_path: Path) -> None:
     ]:
         assert column in schedule_df.columns
 
+    poisson_schedule_path = build_schedule_with_projections(
+        db_path,
+        sport="nhl",
+        season="2025-26",
+        model="poisson",
+        output_path=tmp_path / "schedule_poisson.csv",
+    )
+    poisson_schedule_df = pd.read_csv(poisson_schedule_path)
+    assert poisson_schedule_df["projected_home_score"].notna().any()
+    assert poisson_schedule_df["projected_away_score"].notna().any()
+    assert poisson_schedule_df["projected_win_prob"].notna().any()
+
     outputs = run_backtest_pipeline(
         csv_path=fixture_path,
         model="elo",
@@ -80,6 +92,20 @@ def test_nhl_pipeline_smoke(tmp_path: Path) -> None:
     assert not outputs.predictions.empty
     assert not outputs.metrics_by_date.empty
     assert not outputs.metrics_overall.empty
+
+    poisson_outputs = run_backtest_pipeline(
+        csv_path=fixture_path,
+        model="poisson",
+        start_date="2025-10-08",
+        end_date="2025-10-10",
+        output_dir=tmp_path / "backtest_poisson",
+        db_path=db_path,
+        sport="nhl",
+        season="2025-26",
+    )
+    assert not poisson_outputs.predictions.empty
+    assert not poisson_outputs.metrics_by_date.empty
+    assert not poisson_outputs.metrics_overall.empty
 
     csv_outputs = list(outputs.output_dir.glob("*.csv"))
     excel_outputs = list(outputs.output_dir.glob("*.xlsx"))

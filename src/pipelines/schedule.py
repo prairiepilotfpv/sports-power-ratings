@@ -15,17 +15,13 @@ from data.repository import load_games, load_model_metrics
 from pipelines.common import normalize_games, resolve_output_path
 from pipelines.model_params import resolve_model_params
 from pipelines.matchups import team_home_advantages
-from config import DEFAULT_MARGIN_SD_FALLBACK, DEFAULT_TOTAL_SD_FALLBACK, DEFAULT_WIN_PROB_K
+from config import DEFAULT_WIN_PROB_K
+from pipelines.projection_engines import get_projection_engine
 from pipelines.projections import (
     average_total_points,
     fit_total_model,
-    home_win_prob_from_margin,
-    matchup_total_from_averages,
-    project_game,
-    total_from_ratings,
     team_scoring_averages,
 )
-from models.calibration import ConditionalSDModel
 from models.registry import get_model, list_models, normalize_model_name
 from pipelines.run_rankings import build_rankings
 from models.base import resolve_model_identity
@@ -109,17 +105,11 @@ def _project_row(
     row: pd.Series,
     *,
     ratings: Dict[str, float],
-    base_total: float,
-    scoring_averages: Dict[str, tuple[float, float]],
     status: str,
     home_advantage: float,
-    win_prob_k: float,
-    margin_std: float | None = None,
-    total_std: float | None = None,
-    conditional_sd_intercept: float | None = None,
-    conditional_sd_slope: float | None = None,
-    total_intercept: float | None = None,
-    total_slope: float | None = None,
+    model_instance: Any,
+    projection_engine: Any,
+    projection_context: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Create a schedule export row with projections when ratings are available."""
     base = _base_schedule_row(row)
@@ -144,70 +134,45 @@ def _project_row(
     model_win_prob_samples = None
     model_win_prob = None
     margin_mean = None
-    margin_sd_value = (
-        margin_std if margin_std is not None and margin_std > 0 else DEFAULT_MARGIN_SD_FALLBACK
-    )
     total_mean = None
-    total_sd_value = (
-        total_std if total_std is not None and total_std > 0 else DEFAULT_TOTAL_SD_FALLBACK
-    )
+    margin_sd_value = None
+    total_sd_value = None
     margin_dist_params = None
     total_dist_params = None
 
     if home_rating is not None and away_rating is not None:
-        # Build projected spreads/totals when both team ratings are available.
-        matchup_total = matchup_total_from_averages(home, away, scoring_averages)
-        model_total = None
-        if total_intercept is not None and total_slope is not None:
-            model_total = total_from_ratings(
-                home,
-                away,
-                ratings,
-                intercept=total_intercept,
-                slope=total_slope,
-            )
-        applied_total = (
-            model_total or matchup_total or (base_total if base_total > 0 else None)
+        projection = projection_engine(
+            home,
+            away,
+            model_instance,
+            {
+                **projection_context,
+                "home_advantage": applied_home_advantage,
+                "neutral": base["neutral"],
+            },
         )
-        projection = project_game(
-            home_rating,
-            away_rating,
-            home_advantage=applied_home_advantage,
-            neutral=base["neutral"],
-            k=win_prob_k,
-            base_total=applied_total,
-            home_team=home,
-            away_team=away,
-        )
-        projected_winner = projection.projected_winner
-        projected_spread = projection.projected_spread
-        projected_home_spread = projection.projected_home_spread
-        logistic_home_win_prob = projection.projected_win_prob
-        projected_home_score = projection.projected_home_score
-        projected_away_score = projection.projected_away_score
-        projected_total = projection.projected_total
-        margin_mean = projection.margin
-        total_mean = projected_total
-        if margin_mean is not None and conditional_sd_intercept is not None:
-            if conditional_sd_slope is not None:
-                margin_sd_value = ConditionalSDModel(
-                    intercept=conditional_sd_intercept,
-                    slope=conditional_sd_slope,
-                ).predict(margin_mean)
+        projected_home_score = projection.get("projected_home_score")
+        projected_away_score = projection.get("projected_away_score")
+        projected_total = projection.get("projected_total")
+        projected_win_prob = projection.get("projected_win_prob")
+        logistic_home_win_prob = projection.get("logistic_home_win_prob")
+        margin_mean = projection.get("margin_mean")
+        margin_sd_value = projection.get("margin_sd")
+        total_mean = projection.get("total_mean")
+        total_sd_value = projection.get("total_sd")
+
         if margin_mean is not None:
-            # Outcome distribution parameters for pricing spreads/totals (not model-opinion buckets).
-            margin_dist_params = None
-        if total_mean is not None:
-            total_dist_params = None
-        home_win_prob = home_win_prob_from_margin(margin_mean, margin_sd_value)
-        if home_win_prob is not None:
-            projected_win_prob = home_win_prob
-            model_win_prob = home_win_prob
+            projected_spread = -margin_mean
+            projected_home_spread = -projected_spread
+            projected_winner = home if margin_mean > 0 else away
+        if projected_win_prob is not None:
+            home_win_prob = projected_win_prob
+            model_win_prob = projected_win_prob
             projected_win_prob_dist = None
             model_win_prob_samples = None
-            away_win_prob = 1.0 - home_win_prob
+            away_win_prob = 1.0 - projected_win_prob
             if projected_winner == home:
-                winner_win_prob = home_win_prob
+                winner_win_prob = projected_win_prob
             elif projected_winner == away:
                 winner_win_prob = away_win_prob
 
@@ -241,8 +206,8 @@ def _project_row(
             "projected_home_score": projected_home_score,
             "projected_away_score": projected_away_score,
             "projected_total": projected_total,
-            "margin_std": margin_std,
-            "total_std": total_std,
+            "margin_std": projection_context.get("margin_std"),
+            "total_std": projection_context.get("total_std"),
             "result_margin": result_margin,
             "result_total": result_total,
             "margin_mean": margin_mean,
@@ -300,10 +265,15 @@ def _build_schedule_dataframe(
     played = _completed_games(df)
     upcoming = _upcoming_games(df)
 
-    rankings = build_rankings(
-        played, model=model, require_scores=False, model_params=model_params
+    rankings, model_instance = build_rankings(
+        played,
+        model=model,
+        require_scores=False,
+        model_params=model_params,
+        return_model=True,
     )
     ratings = _rating_lookup(rankings)
+    projection_engine = get_projection_engine(model_instance)
     fallback_total = average_total_points(played.to_dict(orient="records"))
     metrics = load_model_metrics(db_path, sport=sport, season=season, model=model) or {}
     # Team-specific home advantages (per-home team residuals) are the chosen H option.
@@ -325,6 +295,18 @@ def _build_schedule_dataframe(
     played_records = played.to_dict(orient="records")
     total_intercept, total_slope = fit_total_model(played_records, ratings)
     scoring_averages = team_scoring_averages(played_records)
+    projection_context = {
+        "ratings": ratings,
+        "base_total": base_total,
+        "scoring_averages": scoring_averages,
+        "total_intercept": total_intercept,
+        "total_slope": total_slope,
+        "margin_std": margin_std,
+        "total_std": total_std,
+        "conditional_sd_intercept": conditional_sd_intercept,
+        "conditional_sd_slope": conditional_sd_slope,
+        "win_prob_k": win_prob_k,
+    }
 
     schedule_rows: List[Dict[str, Any]] = []
     if not upcoming_only:
@@ -334,17 +316,11 @@ def _build_schedule_dataframe(
                 _project_row(
                     row,
                     ratings=ratings,
-                    base_total=base_total,
-                    scoring_averages=scoring_averages,
                     status="final",
                     home_advantage=home_advantages.get(home, fallback_home_advantage),
-                    win_prob_k=win_prob_k,
-                    margin_std=margin_std,
-                    total_std=total_std,
-                    conditional_sd_intercept=conditional_sd_intercept,
-                    conditional_sd_slope=conditional_sd_slope,
-                    total_intercept=total_intercept,
-                    total_slope=total_slope,
+                    model_instance=model_instance,
+                    projection_engine=projection_engine,
+                    projection_context=projection_context,
                 )
             )
 
@@ -354,17 +330,11 @@ def _build_schedule_dataframe(
             _project_row(
                 row,
                 ratings=ratings,
-                base_total=base_total,
-                scoring_averages=scoring_averages,
                 status="scheduled",
                 home_advantage=home_advantages.get(home, fallback_home_advantage),
-                win_prob_k=win_prob_k,
-                margin_std=margin_std,
-                total_std=total_std,
-                conditional_sd_intercept=conditional_sd_intercept,
-                conditional_sd_slope=conditional_sd_slope,
-                total_intercept=total_intercept,
-                total_slope=total_slope,
+                model_instance=model_instance,
+                projection_engine=projection_engine,
+                projection_context=projection_context,
             )
         )
 

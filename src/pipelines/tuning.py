@@ -243,6 +243,12 @@ def _default_param_grid(model: str) -> dict[str, Iterable[Any]]:
         }
     if model == "gssd":
         return {}
+    if model == "poisson":
+        return {
+            "learning_rate": [0.02, 0.05],
+            "reg_strength": [0.05, 0.2],
+            "max_iter": [1500],
+        }
     return {}
 
 
