@@ -25,7 +25,7 @@ def run_backtest_pipeline(
 ) -> BacktestOutputs:
     """Run a backtest for a single model and export outputs."""
     model_cls = get_backtest_model(model)
-    games_df = load_games_df_from_csv(csv_path)
+    games_df = load_games_df_from_csv(csv_path, sport=sport, season=season)
     try:
         model_factory = lambda: model_cls(**(model_params or {}))
     except TypeError as exc:

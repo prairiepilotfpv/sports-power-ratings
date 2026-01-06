@@ -69,7 +69,12 @@ def load_games_df_from_db(
     return pd.DataFrame(rows)
 
 
-def load_games_df_from_csv(csv_path: str | Path) -> pd.DataFrame:
+def load_games_df_from_csv(
+    csv_path: str | Path,
+    *,
+    sport: str | None = None,
+    season: str | None = None,
+) -> pd.DataFrame:
     """Load a backtest dataset from CSV, accepting common Sports-Reference headers."""
     from ingest.sports_reference import load_sr_csv_lenient, parse_sr_csv
 
@@ -96,6 +101,12 @@ def load_games_df_from_csv(csv_path: str | Path) -> pd.DataFrame:
             "pts_visitor",
             "ptsaway",
             "pts away",
+            "visitor g",
+            "visitor_g",
+            "away g",
+            "away_g",
+            "g_away",
+            "g away",
         )
         home_score_col = _find(
             "home_score",
@@ -104,6 +115,10 @@ def load_games_df_from_csv(csv_path: str | Path) -> pd.DataFrame:
             "home_pts",
             "ptshome",
             "pts home",
+            "home g",
+            "home_g",
+            "g_home",
+            "g home",
         )
         neutral_col = _find("neutral", "neutral_site")
         overtime_col = _find("overtime", "ot")
@@ -143,7 +158,7 @@ def load_games_df_from_csv(csv_path: str | Path) -> pd.DataFrame:
         return normalized
 
     # Fallback: parse as a Sports-Reference export and convert to a DataFrame the backtester understands.
-    parsed = parse_sr_csv(csv_path)
+    parsed = parse_sr_csv(csv_path, sport=sport, season=season)
     if not parsed:
         raise ValueError(
             "CSV is missing required columns for backtesting "

@@ -70,7 +70,11 @@ def main() -> None:
     args = parser.parse_args()
 
     model_cls = get_backtest_model(args.model)
-    games_df = load_games_df_from_csv(Path(args.csv))
+    games_df = load_games_df_from_csv(
+        Path(args.csv),
+        sport=args.sport,
+        season=args.season,
+    )
     db_path = None
     if args.db:
         db_path = Path(args.db)

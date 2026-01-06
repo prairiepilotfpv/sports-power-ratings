@@ -61,7 +61,7 @@ def run_tuning_pipeline(
 
     model_name = normalize_model_name(model)
     model_cls = get_backtest_model(model_name)
-    games_df = load_games_df_from_csv(csv_path)
+    games_df = load_games_df_from_csv(csv_path, sport=sport, season=season)
 
     grid = _resolve_param_grid(model_name, grid_override)
     candidates = list(_iter_param_grid(grid))
