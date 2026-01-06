@@ -15,6 +15,23 @@ from models.base import BaseModel, GamePrediction, resolve_model_identity
 from pipelines.metadata import prediction_hash
 
 DEFAULT_BUCKET_EDGES = np.linspace(0.0, 1.0, 11)
+REQUIRED_BACKTEST_PREDICTION_COLUMNS = [
+    "game_id",
+    "date",
+    "home_team",
+    "away_team",
+    "p_home_win",
+    "win_prob_samples",
+    "win_prob_dist",
+    "pred_margin",
+    "pred_total",
+    "margin_mean",
+    "margin_sd",
+    "total_mean",
+    "total_sd",
+    "model_win_prob",
+    "model_id",
+]
 
 
 @dataclass
@@ -248,14 +265,37 @@ def run_backtest(
         merged["actual_margin"] = merged["home_score"] - merged["away_score"]
         prediction_frames.append(merged)
 
-    if prediction_frames:
-        predictions_df = pd.concat(prediction_frames, ignore_index=True)
+    def _has_data(frame: pd.DataFrame) -> bool:
+        """Return True when the frame has rows, columns, and at least one non-NA value."""
+        return (
+            isinstance(frame, pd.DataFrame)
+            and frame.shape[0] > 0
+            and frame.shape[1] > 0
+            and frame.notna().any().any()
+        )
+
+    valid_frames = []
+    for _frame in prediction_frames:
+        if not _has_data(_frame):
+            continue
+        # Drop columns that are entirely NA to avoid dtype inference warnings during concat.
+        keep_columns = _frame.columns.isin(REQUIRED_BACKTEST_PREDICTION_COLUMNS)
+        cleaned = _frame.loc[:, _frame.notna().any(axis=0) | keep_columns]
+        if _has_data(cleaned):
+            valid_frames.append(cleaned)
+    if valid_frames:
+        # Filter out empty/all-NA frames to avoid dtype inference changes in future pandas versions.
+        predictions_df = pd.concat(valid_frames, ignore_index=True)
     else:
         raise ValueError(
             "Backtest produced no predictions. "
             "This happens when each evaluation date has no training data "
             "(games must exist before each evaluation date)."
         )
+
+    for column in REQUIRED_BACKTEST_PREDICTION_COLUMNS:
+        if column not in predictions_df.columns:
+            predictions_df[column] = pd.NA
 
     metrics_by_date = _aggregate_metrics_by_date(predictions_df)
     metrics_overall = _aggregate_overall_metrics(predictions_df)
@@ -501,6 +541,9 @@ def _aggregate_metrics_by_date(predictions_df: pd.DataFrame) -> pd.DataFrame:
                 "brier_score",
                 "mae_margin",
                 "margin_games",
+                "calibration_intercept",
+                "calibration_slope",
+                "ece",
             ]
         )
     metrics = (
@@ -523,6 +566,9 @@ def _compute_metrics(df: pd.DataFrame) -> dict[str, float | int | None]:
         "brier_score": None,
         "mae_margin": None,
         "margin_games": 0,
+        "calibration_intercept": None,
+        "calibration_slope": None,
+        "ece": None,
     }
 
     prob_df = df.dropna(subset=["p_home_win", "home_win"])
@@ -533,6 +579,11 @@ def _compute_metrics(df: pd.DataFrame) -> dict[str, float | int | None]:
             -np.mean(actuals * np.log(probs) + (1 - actuals) * np.log(1 - probs))
         )
         metrics["brier_score"] = float(np.mean((probs - actuals) ** 2))
+        design = np.column_stack([np.ones(len(probs)), probs])
+        coeffs, *_ = np.linalg.lstsq(design, actuals, rcond=None)
+        metrics["calibration_intercept"] = float(coeffs[0])
+        metrics["calibration_slope"] = float(coeffs[1])
+        metrics["ece"] = float(_expected_calibration_error(probs, actuals))
 
     margin_df = df.dropna(subset=["pred_margin", "actual_margin"])
     if not margin_df.empty:
@@ -542,6 +593,32 @@ def _compute_metrics(df: pd.DataFrame) -> dict[str, float | int | None]:
         metrics["margin_games"] = int(len(margin_df))
 
     return metrics
+
+
+def _expected_calibration_error(
+    probs: pd.Series | np.ndarray,
+    actuals: pd.Series | np.ndarray,
+    *,
+    bins: int = 10,
+) -> float:
+    if bins <= 0:
+        raise ValueError("bins must be positive.")
+    probs_arr = np.asarray(probs, dtype=float)
+    actuals_arr = np.asarray(actuals, dtype=float)
+    if probs_arr.size == 0:
+        return 0.0
+    edges = np.linspace(0.0, 1.0, bins + 1)
+    bin_ids = np.digitize(probs_arr, edges, right=True) - 1
+    total = probs_arr.size
+    ece = 0.0
+    for idx in range(bins):
+        mask = bin_ids == idx
+        if not np.any(mask):
+            continue
+        avg_pred = float(np.mean(probs_arr[mask]))
+        avg_actual = float(np.mean(actuals_arr[mask]))
+        ece += (np.sum(mask) / total) * abs(avg_pred - avg_actual)
+    return float(ece)
 
 
 def _calibration_table(predictions_df: pd.DataFrame) -> pd.DataFrame:

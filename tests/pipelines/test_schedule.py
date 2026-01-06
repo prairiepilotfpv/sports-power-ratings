@@ -14,6 +14,7 @@ from pipelines.schedule import (
     DASHBOARD_COLUMNS,
     MODEL_METADATA_DATA_START_ROW,
     SCHEDULE_EXPORT_COLUMNS,
+    _project_row,
     _order_schedule_export,
     build_schedule_excel_report,
     build_schedule_with_projections,
@@ -79,6 +80,7 @@ def test_build_schedule_with_projections(tmp_path: Path) -> None:
     assert upcoming["margin_sd"] > 0
     assert pd.notna(upcoming["total_mean"])
     assert upcoming["total_sd"] > 0
+    assert upcoming["home_win_prob"] == pytest.approx(upcoming["projected_win_prob"])
     assert upcoming["model_win_prob"] == pytest.approx(upcoming["projected_win_prob"])
 
 
@@ -128,6 +130,53 @@ def test_build_schedule_with_elo_projections(tmp_path: Path) -> None:
     assert pd.notna(upcoming["projected_winner"])
     assert pd.notna(upcoming["projected_spread"])
     assert upcoming["projected_total"] > 0
+
+
+def test_schedule_win_probs_follow_margin_sign() -> None:
+    base_row = pd.Series(
+        {
+            "date": "2024-01-01",
+            "home_team": "Home",
+            "away_team": "Away",
+            "home_score": None,
+            "away_score": None,
+            "neutral": False,
+            "overtime": False,
+            "game_id": "gid-1",
+        }
+    )
+    ratings = {"Home": 5.0, "Away": 0.0}
+    positive = _project_row(
+        base_row,
+        ratings=ratings,
+        base_total=0.0,
+        scoring_averages={},
+        status="scheduled",
+        home_advantage=0.0,
+        win_prob_k=10.0,
+        margin_std=8.0,
+        total_std=15.0,
+    )
+    assert positive["margin_mean"] > 0
+    assert positive["home_win_prob"] > 0.5
+    assert positive["away_win_prob"] == pytest.approx(1.0 - positive["home_win_prob"])
+    assert positive["winner_win_prob"] == pytest.approx(positive["home_win_prob"])
+
+    negative = _project_row(
+        base_row,
+        ratings={"Home": 0.0, "Away": 5.0},
+        base_total=0.0,
+        scoring_averages={},
+        status="scheduled",
+        home_advantage=0.0,
+        win_prob_k=10.0,
+        margin_std=8.0,
+        total_std=15.0,
+    )
+    assert negative["margin_mean"] < 0
+    assert negative["home_win_prob"] < 0.5
+    assert negative["away_win_prob"] == pytest.approx(1.0 - negative["home_win_prob"])
+    assert negative["winner_win_prob"] == pytest.approx(negative["away_win_prob"])
 
 
 def test_schedule_uses_latest_scores(tmp_path: Path) -> None:
@@ -212,6 +261,10 @@ def test_schedule_export_column_ordering() -> None:
         "projected_spread": -4.5,
         "projected_home_spread": 4.5,
         "projected_win_prob": 0.65,
+        "home_win_prob": 0.65,
+        "away_win_prob": 0.35,
+        "winner_win_prob": 0.65,
+        "logistic_home_win_prob": 0.62,
         "projected_win_prob_dist": '[{"p_home_win": 0.65, "weight": 1.0}]',
         "projected_home_score": 102.5,
         "projected_away_score": 95.5,
@@ -256,6 +309,10 @@ def test_schedule_export_column_ordering_missing_column() -> None:
                 "projected_spread": -4.5,
                 "projected_home_spread": 4.5,
                 "projected_win_prob": 0.65,
+                "home_win_prob": 0.65,
+                "away_win_prob": 0.35,
+                "winner_win_prob": 0.65,
+                "logistic_home_win_prob": 0.62,
                 "projected_win_prob_dist": None,
                 "projected_home_score": 102.5,
                 "projected_away_score": 95.5,
@@ -472,7 +529,12 @@ def test_schedule_excel_dashboard_includes_today_games(tmp_path: Path) -> None:
         .all()
     )
     assert (
-        dashboard.loc[dashboard["game"] == "Team B @ Team A", "model_win_prob"]
+        dashboard.loc[dashboard["game"] == "Team B @ Team A", "home_win_prob"]
+        .notna()
+        .all()
+    )
+    assert (
+        dashboard.loc[dashboard["game"] == "Team B @ Team A", "winner_win_prob"]
         .notna()
         .all()
     )

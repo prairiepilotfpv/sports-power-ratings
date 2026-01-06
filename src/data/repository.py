@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS games (
     game_id TEXT,
     sport TEXT,
     season TEXT,
+    division TEXT,
+    conference TEXT,
     notes TEXT,
     UNIQUE(game_id, sport, season)
 );
@@ -41,6 +43,8 @@ CREATE TABLE IF NOT EXISTS model_metrics (
     base_total REAL NOT NULL,
     margin_std REAL,
     total_std REAL,
+    conditional_sd_intercept REAL,
+    conditional_sd_slope REAL,
     margin_mean REAL,
     total_mean REAL,
     backtest_log_loss REAL,
@@ -61,8 +65,18 @@ def init_db(db_path: str | Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(path)) as conn:
         conn.executescript(SCHEMA)
+        _ensure_games_columns(conn)
         _ensure_model_metrics_columns(conn)
         conn.commit()
+
+
+def _ensure_games_columns(conn: sqlite3.Connection) -> None:
+    """Backfill columns for older databases that predate new game metadata."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(games)").fetchall()}
+    if "division" not in existing:
+        conn.execute("ALTER TABLE games ADD COLUMN division TEXT")
+    if "conference" not in existing:
+        conn.execute("ALTER TABLE games ADD COLUMN conference TEXT")
 
 
 def _ensure_model_metrics_columns(conn: sqlite3.Connection) -> None:
@@ -90,6 +104,12 @@ def _ensure_model_metrics_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE model_metrics ADD COLUMN margin_std REAL")
     if "total_std" not in existing:
         conn.execute("ALTER TABLE model_metrics ADD COLUMN total_std REAL")
+    if "conditional_sd_intercept" not in existing:
+        conn.execute(
+            "ALTER TABLE model_metrics ADD COLUMN conditional_sd_intercept REAL"
+        )
+    if "conditional_sd_slope" not in existing:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN conditional_sd_slope REAL")
     if "margin_mean" not in existing:
         conn.execute("ALTER TABLE model_metrics ADD COLUMN margin_mean REAL")
     if "total_mean" not in existing:
@@ -115,6 +135,8 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
             g.game_id,
             g.sport,
             g.season,
+            g.division,
+            g.conference,
             g.notes,
         )
         for g in games
@@ -134,8 +156,10 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
                 game_id,
                 sport,
                 season,
+                division,
+                conference,
                 notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -147,8 +171,10 @@ def load_games(
     db_path: str | Path,
     sport: str | None = None,
     season: str | None = None,
+    division: str | None = None,
+    conference: str | None = None,
 ) -> List[GameResult]:
-    """Load games from SQLite, filtered by optional sport/season."""
+    """Load games from SQLite, filtered by optional sport/season/division/conference."""
     filters = []
     params: list[str] = []
 
@@ -158,6 +184,12 @@ def load_games(
     if season is not None:
         filters.append("season = ?")
         params.append(season)
+    if division is not None:
+        filters.append("division = ?")
+        params.append(division)
+    if conference is not None:
+        filters.append("conference = ?")
+        params.append(conference)
 
     where_clause = ""
     if filters:
@@ -174,6 +206,8 @@ def load_games(
                game_id,
                sport,
                season,
+               division,
+               conference,
                notes
         FROM games
         {where_clause}
@@ -195,7 +229,9 @@ def load_games(
             game_id=row[7],
             sport=row[8],
             season=row[9],
-            notes=row[10],
+            division=row[10],
+            conference=row[11],
+            notes=row[12],
         )
         for row in rows
     ]
@@ -237,6 +273,8 @@ def save_model_metrics(
     base_total: float,
     margin_std: float | None = None,
     total_std: float | None = None,
+    conditional_sd_intercept: float | None = None,
+    conditional_sd_slope: float | None = None,
     margin_mean: float | None = None,
     total_mean: float | None = None,
 ) -> None:
@@ -255,10 +293,12 @@ def save_model_metrics(
                 base_total,
                 margin_std,
                 total_std,
+                conditional_sd_intercept,
+                conditional_sd_slope,
                 margin_mean,
                 total_mean,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
             (
                 sport,
@@ -270,6 +310,8 @@ def save_model_metrics(
                 base_total,
                 margin_std,
                 total_std,
+                conditional_sd_intercept,
+                conditional_sd_slope,
                 margin_mean,
                 total_mean,
             ),
@@ -300,6 +342,8 @@ def save_backtest_metrics(
                    base_total,
                    margin_std,
                    total_std,
+                   conditional_sd_intercept,
+                   conditional_sd_slope,
                    margin_mean,
                    total_mean,
                    backtest_log_loss,
@@ -390,6 +434,8 @@ def load_model_metrics(
                    base_total,
                    margin_std,
                    total_std,
+                   conditional_sd_intercept,
+                   conditional_sd_slope,
                    margin_mean,
                    total_mean,
                    backtest_log_loss,
@@ -412,16 +458,18 @@ def load_model_metrics(
     extra_values = {
         "margin_std": row[4],
         "total_std": row[5],
-        "margin_mean": row[6],
-        "total_mean": row[7],
+        "conditional_sd_intercept": row[6],
+        "conditional_sd_slope": row[7],
+        "margin_mean": row[8],
+        "total_mean": row[9],
     }
     if any(value is not None for value in extra_values.values()):
         metrics.update(extra_values)
     backtest_values = {
-        "backtest_log_loss": row[8],
-        "backtest_brier_score": row[9],
-        "backtest_mae_margin": row[10],
-        "backtest_win_prob_k": row[11],
+        "backtest_log_loss": row[10],
+        "backtest_brier_score": row[11],
+        "backtest_mae_margin": row[12],
+        "backtest_win_prob_k": row[13],
     }
     if any(value is not None for value in backtest_values.values()):
         metrics.update(backtest_values)

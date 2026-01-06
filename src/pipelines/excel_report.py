@@ -20,6 +20,8 @@ def build_excel_report(
     *,
     sport: str,
     season: str,
+    division: str | None = None,
+    conference: str | None = None,
     models: Iterable[str] | None = None,
     output_path: str | Path | None = None,
     model_params: dict[str, float] | None = None,
@@ -31,7 +33,13 @@ def build_excel_report(
         requested_models = list_models()
     else:
         requested_models = [normalize_model_name(model) for model in models]
-    rows = load_games(db_path, sport=sport, season=season)
+    rows = load_games(
+        db_path,
+        sport=sport,
+        season=season,
+        division=division,
+        conference=conference,
+    )
     df = normalize_games(rows)
     if df.empty:
         raise ValueError(f"No games found for sport={sport!r}, season={season!r}")

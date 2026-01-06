@@ -81,6 +81,8 @@ def _parse_sr_dataframe(
     df: pd.DataFrame,
     sport: str | None = None,
     season: str | None = None,
+    division: str | None = None,
+    conference: str | None = None,
 ) -> List[GameResult]:
     """Convert a Sports-Reference dataframe into structured GameResult rows."""
     df = _normalize_columns(df)
@@ -157,6 +159,8 @@ def _parse_sr_dataframe(
                 game_id=game_id,
                 sport=sport,
                 season=season,
+                division=division,
+                conference=conference,
                 notes=notes,
             )
         )
@@ -224,16 +228,30 @@ def load_sr_csv_lenient(text: str) -> pd.DataFrame:
 
 
 def parse_sr_csv(
-    path: str | Path, sport: str | None = None, season: str | None = None
+    path: str | Path,
+    sport: str | None = None,
+    season: str | None = None,
+    division: str | None = None,
+    conference: str | None = None,
 ) -> List[GameResult]:
     """Parse a Sports-Reference CSV file from disk."""
     text = Path(path).read_text(encoding="utf-8", errors="ignore")
     df = load_sr_csv_lenient(text)
-    return _parse_sr_dataframe(df, sport=sport, season=season)
+    return _parse_sr_dataframe(
+        df,
+        sport=sport,
+        season=season,
+        division=division,
+        conference=conference,
+    )
 
 
 def parse_sr_html(
-    path: str | Path, sport: str | None = None, season: str | None = None
+    path: str | Path,
+    sport: str | None = None,
+    season: str | None = None,
+    division: str | None = None,
+    conference: str | None = None,
 ) -> List[GameResult]:
     """Parse a Sports-Reference HTML schedule/results table."""
     html = Path(path).read_text(encoding="utf-8", errors="ignore")
@@ -241,7 +259,13 @@ def parse_sr_html(
     last_error: ValueError | None = None
     for table in tables:
         try:
-            return _parse_sr_dataframe(table, sport=sport, season=season)
+            return _parse_sr_dataframe(
+                table,
+                sport=sport,
+                season=season,
+                division=division,
+                conference=conference,
+            )
         except ValueError as exc:
             last_error = exc
             continue
@@ -251,8 +275,18 @@ def parse_sr_html(
 
 
 def parse_sr_csv_text(
-    text: str, sport: str | None = None, season: str | None = None
+    text: str,
+    sport: str | None = None,
+    season: str | None = None,
+    division: str | None = None,
+    conference: str | None = None,
 ) -> List[GameResult]:
     """Parse pasted Sports-Reference CSV text."""
     df = load_sr_csv_lenient(text)
-    return _parse_sr_dataframe(df, sport=sport, season=season)
+    return _parse_sr_dataframe(
+        df,
+        sport=sport,
+        season=season,
+        division=division,
+        conference=conference,
+    )

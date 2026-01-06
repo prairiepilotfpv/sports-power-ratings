@@ -31,6 +31,14 @@ def main() -> None:
     parser.add_argument("--sport", help="Sport identifier (e.g., nba)")
     parser.add_argument("--season", help="Season identifier (e.g., 2023-24)")
     parser.add_argument(
+        "--division",
+        help="Optional division identifier (e.g., ncaa-d1) for grouping games.",
+    )
+    parser.add_argument(
+        "--conference",
+        help="Optional conference identifier (e.g., big-12) for grouping games.",
+    )
+    parser.add_argument(
         "--format",
         choices=["auto", "csv", "html"],
         default="auto",
@@ -51,6 +59,8 @@ def main() -> None:
         input_text=None,
         sport=args.sport or "unknown",
         season=args.season or "unknown",
+        division=args.division,
+        conference=args.conference,
         format_hint=format_hint,
     )
 

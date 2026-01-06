@@ -8,10 +8,12 @@ from pathlib import Path
 from typing import Dict
 
 import pandas as pd
+import numpy as np
 
 from data.paths import processed_path_for
 from data.repository import load_games, save_model_metrics
 from models.registry import get_model, list_models, normalize_model_name
+from models.calibration import fit_conditional_sd
 from pipelines.common import normalize_games, resolve_output_path
 from pipelines.model_params import resolve_model_params
 from config import (
@@ -165,13 +167,21 @@ def run_rankings(
     *,
     sport: str,
     season: str,
+    division: str | None = None,
+    conference: str | None = None,
     model: str | None = None,
     output_path: str | Path | None = None,
     model_params: dict[str, float] | None = None,
     model_params_file: str | Path | None = None,
 ) -> Path | list[Path]:
     """Load games from SQLite, generate rankings, and write them to CSV."""
-    rows = load_games(db_path, sport=sport, season=season)
+    rows = load_games(
+        db_path,
+        sport=sport,
+        season=season,
+        division=division,
+        conference=conference,
+    )
     df = normalize_games(rows)
     if df.empty:
         raise ValueError(f"No games found for sport={sport!r}, season={season!r}")
@@ -298,6 +308,12 @@ def _store_model_metrics(
     total_std = (
         statistics.pstdev(total_residuals) if len(total_residuals) >= 2 else None
     )
+    conditional_sd_model = None
+    if len(margin_residuals) >= MIN_CALIBRATION_SAMPLES:
+        conditional_sd_model = fit_conditional_sd(
+            np.asarray(predicted_margins, dtype=float),
+            np.asarray(margin_residuals, dtype=float),
+        )
     if margin_std is None or len(margin_residuals) < MIN_CALIBRATION_SAMPLES:
         margin_std = DEFAULT_MARGIN_SD_FALLBACK
     if total_std is None or len(total_residuals) < MIN_CALIBRATION_SAMPLES:
@@ -316,6 +332,10 @@ def _store_model_metrics(
         base_total=base_total,
         margin_std=margin_std,
         total_std=total_std,
+        conditional_sd_intercept=conditional_sd_model.intercept
+        if conditional_sd_model
+        else None,
+        conditional_sd_slope=conditional_sd_model.slope if conditional_sd_model else None,
         margin_mean=margin_mean,
         total_mean=total_mean,
     )
