@@ -28,6 +28,7 @@ from pipelines.projections import (
 )
 from pipelines.run_rankings import build_rankings
 from models.registry import normalize_model_name
+from models.calibration import ConditionalSDModel
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class MatchupPrediction:
     win_prob: float | None
     win_prob_samples: list[dict[str, float]] | None
     model_win_prob: float | None
+    logistic_home_win_prob: float | None
     margin_mean: float
     margin_std: float | None
     total_mean: float
@@ -147,6 +149,8 @@ def predict_matchup(
     total_std_value = metrics.get("total_std")
     if total_std_value is None or total_std_value <= 0:
         total_std_value = DEFAULT_TOTAL_SD_FALLBACK
+    conditional_sd_intercept = metrics.get("conditional_sd_intercept")
+    conditional_sd_slope = metrics.get("conditional_sd_slope")
     played_records = played.to_dict(orient="records")
     total_intercept, total_slope = fit_total_model(played_records, ratings)
     scoring_averages = team_scoring_averages(played_records)
@@ -186,11 +190,16 @@ def predict_matchup(
     else:
         winner, loser = away_key, home_key
     win_prob_samples = None
-    win_prob_value = projection.projected_win_prob
-    derived_home_win_prob = home_win_prob_from_margin(projection.margin, margin_std_value)
-    if win_prob_value is None:
-        win_prob_value = derived_home_win_prob
-    if win_prob_value is not None and derived_home_win_prob is not None:
+    logistic_home_win_prob = projection.projected_win_prob
+    margin_sd_value = margin_std_value
+    if projection.margin is not None and conditional_sd_intercept is not None:
+        if conditional_sd_slope is not None:
+            margin_sd_value = ConditionalSDModel(
+                intercept=conditional_sd_intercept,
+                slope=conditional_sd_slope,
+            ).predict(projection.margin)
+    win_prob_value = home_win_prob_from_margin(projection.margin, margin_sd_value)
+    if win_prob_value is not None:
         if projection.margin > 0 and win_prob_value <= 0.5 - 1e-3:
             raise ValueError(
                 "Inconsistent win probability: margin favors home but p_home_win <= 0.5"
@@ -199,11 +208,10 @@ def predict_matchup(
             raise ValueError(
                 "Inconsistent win probability: margin favors away but p_home_win >= 0.5"
             )
-    if win_prob_value is not None:
         win_prob_samples = win_prob_distribution(
             win_prob_value,
             win_prob_k=win_prob_k,
-            margin_std=margin_std_value,
+            margin_std=margin_sd_value,
         )
 
     return MatchupPrediction(
@@ -216,8 +224,9 @@ def predict_matchup(
         win_prob=win_prob_value,
         win_prob_samples=win_prob_samples,
         model_win_prob=win_prob_value,
+        logistic_home_win_prob=logistic_home_win_prob,
         margin_mean=projection.margin,
-        margin_std=margin_std_value if projection.margin is not None else None,
+        margin_std=margin_sd_value if projection.margin is not None else None,
         total_mean=projection.projected_total or 0.0,
         total_std=total_std_value if projection.projected_total is not None else None,
     )
@@ -257,4 +266,6 @@ def format_matchup(prediction: MatchupPrediction) -> Tuple[str, Dict[str, float]
         metrics["win_prob_dist"] = prediction.win_prob_samples
     if prediction.model_win_prob is not None:
         metrics["model_win_prob"] = prediction.model_win_prob
+    if prediction.logistic_home_win_prob is not None:
+        metrics["logistic_home_win_prob"] = prediction.logistic_home_win_prob
     return line, metrics
