@@ -15,12 +15,21 @@ from models.base import BaseModel, GamePrediction, ModelMetadata, require_column
 
 @dataclass(frozen=True)
 class BTCalibration:
+    """Post-fit calibration used to translate rating differences into score/margin/total distributions.
+
+    This is intentionally sport-agnostic: bounds and scales are learned from the fitted data
+    instead of being hard-coded to NBA-like totals.
+    """
+
     margin_a: float
     margin_b: float
     margin_sigma: float
     total_c: float
     total_u: float
     total_sigma: float
+    # Learned bounds for plausible totals (used for safe clamping in projections).
+    total_lower: float | None = None
+    total_upper: float | None = None
 
 
 class BradleyTerry:
@@ -57,10 +66,10 @@ class BradleyTerry:
         self.calibration = BTCalibration(
             margin_a=0.0,
             margin_b=0.0,
-            margin_sigma=12.0,
+            margin_sigma=1.0,
             total_c=0.0,
             total_u=0.0,
-            total_sigma=20.0,
+            total_sigma=1.0,
         )
 
     def metadata(self) -> ModelMetadata:
@@ -232,9 +241,27 @@ class BradleyTerry:
             total_sigma = 0.0
 
         if not np.isfinite(margin_sigma) or margin_sigma <= 0:
-            margin_sigma = 12.0
+            # Fallback to an observed margin spread if regression residuals are unusable.
+            observed_margins = np.asarray(margins)
+            margin_sigma = float(np.std(observed_margins, ddof=1 if len(observed_margins) > 1 else 0)) if observed_margins.size else 1.0
         if not np.isfinite(total_sigma) or total_sigma <= 0:
-            total_sigma = 20.0
+            observed_totals = np.asarray(totals)
+            total_sigma = float(np.std(observed_totals, ddof=1 if len(observed_totals) > 1 else 0)) if observed_totals.size else 1.0
+
+        # Learn reasonable total bounds from data (robust quantiles when possible).
+        total_lower: float | None = None
+        total_upper: float | None = None
+        if total_values.size:
+            if total_values.size >= 10:
+                total_lower = float(np.quantile(total_values, 0.01))
+                total_upper = float(np.quantile(total_values, 0.99))
+            else:
+                total_lower = float(np.min(total_values))
+                total_upper = float(np.max(total_values))
+            if not (np.isfinite(total_lower) and np.isfinite(total_upper) and total_lower < total_upper):
+                total_lower = None
+                total_upper = None
+
 
         self.calibration = BTCalibration(
             margin_a=margin_a,
@@ -243,6 +270,8 @@ class BradleyTerry:
             total_c=total_c,
             total_u=total_u,
             total_sigma=total_sigma,
+            total_lower=total_lower,
+            total_upper=total_upper,
         )
 
     def project_matchup(
@@ -251,13 +280,24 @@ class BradleyTerry:
         d_value = self.ratings[home_team] - self.ratings[away_team]
         if not neutral:
             d_value += self.hfa_logit
+
         margin_mean = self.calibration.margin_a + self.calibration.margin_b * d_value
-        margin_sd = max(self.calibration.margin_sigma, 5.0)
+        margin_sd = float(self.calibration.margin_sigma)
+        if not np.isfinite(margin_sd) or margin_sd <= 0:
+            margin_sd = 1.0
+
         total_mean = self.calibration.total_c + self.calibration.total_u * abs(d_value)
-        total_mean = float(min(max(total_mean, 200.0), 270.0))
-        total_sd = max(self.calibration.total_sigma, 8.0)
+        # Clamp totals only if we learned bounds from data (keeps the model sport-agnostic).
+        if self.calibration.total_lower is not None and self.calibration.total_upper is not None:
+            total_mean = float(min(max(total_mean, self.calibration.total_lower), self.calibration.total_upper))
+
+        total_sd = float(self.calibration.total_sigma)
+        if not np.isfinite(total_sd) or total_sd <= 0:
+            total_sd = 1.0
+
         projected_home_score = (total_mean + margin_mean) / 2.0
         projected_away_score = (total_mean - margin_mean) / 2.0
+
         p_home_win = 1.0 - self._normal_cdf(0.0, mean=margin_mean, sd=margin_sd)
         p_home_win = self._clip_prob(p_home_win)
         return {
@@ -381,12 +421,11 @@ class BradleyTerryBacktest(BaseModel):
         errors = []
         if not (0.0 < p_home_win < 1.0):
             errors.append("p_home_win must be between 0 and 1.")
-        if margin_sd < 5.0:
-            errors.append("margin_sd must be at least 5.")
-        if total_sd < 8.0:
-            errors.append("total_sd must be at least 8.")
-        if win_prob_source == "direct":
-            errors.append("win_prob_source cannot be 'direct'.")
+        if not (np.isfinite(margin_sd) and margin_sd > 0.0):
+            errors.append("margin_sd must be positive and finite.")
+        if not (np.isfinite(total_sd) and total_sd > 0.0):
+            errors.append("total_sd must be positive and finite.")
+        # win_prob_source may be 'direct' for models that return probabilities directly.
         if not errors:
             return
         message = f"Invalid BT prediction for {game_id}: " + "; ".join(errors)
