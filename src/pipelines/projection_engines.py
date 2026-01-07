@@ -176,6 +176,7 @@ def _poisson_projection_engine(
         "projected_away_score": projected_away_score,
         "projected_total": projected_total,
         "projected_win_prob": win_prob,
+        "win_prob_source": "sample",
         "margin_mean": margin_mean,
         "margin_sd": margin_sd,
         "total_mean": total_mean,
