@@ -1,5 +1,8 @@
 # Testing
 
+Ensure dependencies are installed and your virtual environment is active.
+On Windows (PowerShell): `./.pyenv/Scripts/Activate.ps1`.
+
 ## Install test tooling
 
 ```bash
@@ -9,7 +12,7 @@ pip install -r requirements.txt -r requirements-dev.txt
 ## Run all tests
 
 ```bash
-pytest -q
+python -m pytest -q
 ```
 
 ## Run fast unit tests only
