@@ -165,6 +165,7 @@ def _project_row(
     total_sd_value = None
     margin_dist_params = None
     total_dist_params = None
+    projection_status = None
 
     can_project = (
         home_rating is not None and away_rating is not None
@@ -173,7 +174,9 @@ def _project_row(
         and hasattr(model_instance, "simulate_matchup")
         and callable(getattr(model_instance, "simulate_matchup"))
     )
-    if can_project:
+    if not can_project:
+        projection_status = "missing_ratings"
+    else:
         projection = projection_engine(
             home,
             away,
@@ -193,6 +196,23 @@ def _project_row(
         margin_sd_value = projection.get("margin_sd")
         total_mean = projection.get("total_mean")
         total_sd_value = projection.get("total_sd")
+        projection_has_output = any(
+            value is not None
+            for value in (
+                projected_home_score,
+                projected_away_score,
+                projected_total,
+                projected_win_prob,
+                margin_mean,
+                total_mean,
+            )
+        )
+        if not projection_has_output and model_instance is not None and hasattr(
+            model_instance, "simulate_matchup"
+        ):
+            projection_status = "no_samples"
+        else:
+            projection_status = "ok"
 
         if margin_mean is not None:
             projected_spread = -margin_mean
@@ -222,6 +242,7 @@ def _project_row(
     base.update(
         {
             "status": status,
+            "projection_status": projection_status,
             "params_source": params_source,
             "tuned_metric_used": tuned_metric_used,
             "home_rating": home_rating,
@@ -347,6 +368,8 @@ def _build_schedule_dataframe(
         "conditional_sd_slope": conditional_sd_slope,
         "win_prob_k": win_prob_k,
     }
+    if model == "poisson" and model_params and "n_simulations" in model_params:
+        projection_context["n_simulations"] = model_params["n_simulations"]
 
     schedule_rows: List[Dict[str, Any]] = []
     if not upcoming_only:
@@ -369,17 +392,17 @@ def _build_schedule_dataframe(
     for _, row in upcoming.iterrows():
         home = str(row.get("home_team", "")).strip()
         schedule_rows.append(
-        _project_row(
-            row,
-            ratings=ratings,
-            status="scheduled",
-            home_advantage=home_advantages.get(home, fallback_home_advantage),
-            params_source=params_source,
-            tuned_metric_used=tuned_metric_used,
-            model_instance=model_instance,
-            projection_engine=projection_engine,
-            projection_context=projection_context,
-        )
+            _project_row(
+                row,
+                ratings=ratings,
+                status="scheduled",
+                home_advantage=home_advantages.get(home, fallback_home_advantage),
+                params_source=params_source,
+                tuned_metric_used=tuned_metric_used,
+                model_instance=model_instance,
+                projection_engine=projection_engine,
+                projection_context=projection_context,
+            )
         )
 
     schedule_df = pd.DataFrame(schedule_rows)

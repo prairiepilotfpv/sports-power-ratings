@@ -88,6 +88,8 @@ class BradleyTerryCalibratedHFA(BaseModel):
             supports_margin=True,
             supports_total=False,
             supports_win_prob=True,
+            role="primary",
+            ensemble_weight=1.0,
         )
 
     def fit(self, games_df: Any) -> None:

@@ -41,6 +41,7 @@ def test_calendar_projection_output_schema_and_types() -> None:
         "date",
         "game_id",
         "status",
+        "projection_status",
         "params_source",
         "tuned_metric_used",
         "home_team",
