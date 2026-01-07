@@ -177,11 +177,17 @@ def _bt_projection_engine(
         "projected_home_score": projection["projected_home_score"],
         "projected_away_score": projection["projected_away_score"],
         "projected_total": projection["total_mean"],
+        # For Bradley-Terry models, expose the model's direct win-prob as 'model_p_home_win'
+        # and mark the win_prob_source as 'direct'. Keep normal/logistic fields explicit.
         "projected_win_prob": projection["p_home_win"],
+        "model_p_home_win": projection["p_home_win"],
+        "normal_p_home_win": None,
+        "win_prob_source": "direct",
         "margin_mean": projection["margin_mean"],
         "margin_sd": projection["margin_sd"],
         "total_mean": projection["total_mean"],
         "total_sd": projection["total_sd"],
+        "margin_dist_assumption": "none",
         "logistic_home_win_prob": None,
     }
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import statistics
 import math
+import inspect
 from pathlib import Path
 from typing import Any, Dict
 
@@ -44,6 +45,29 @@ def _empty_rankings() -> pd.DataFrame:
     return pd.DataFrame(columns=["team", "rating", "points", "games"])
 
 
+def _filter_kwargs(params: dict[str, Any], func) -> dict[str, Any]:
+    """Return a dict containing only kwargs accepted by `func`.
+
+    If `func` accepts **kwargs (VAR_KEYWORD), return `params` as-is.
+    """
+    if not params:
+        return {}
+    sig = inspect.signature(func)
+    allowed: set[str] = set()
+    for name, param in sig.parameters.items():
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            # func accepts arbitrary kwargs; nothing to filter
+            return dict(params)
+        if name in ("self", "cls"):
+            continue
+        if param.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            allowed.add(name)
+    return {k: v for k, v in params.items() if k in allowed}
+
+
 def build_rankings(
     df: pd.DataFrame,
     model: str = "bradley-terry",
@@ -57,8 +81,11 @@ def build_rankings(
     played = _completed_games(working_df)
 
     model_cls = get_model(model)
+
+    # Only pass kwargs to the model __init__ that the class actually accepts.
+    init_kwargs = _filter_kwargs(model_params or {}, model_cls)
     try:
-        model_instance = model_cls(**(model_params or {}))
+        model_instance = model_cls(**init_kwargs)
     except TypeError as exc:
         raise ValueError(
             f"Invalid parameters for model {model!r}: {model_params}"
@@ -66,7 +93,9 @@ def build_rankings(
     if played.empty and require_scores:
         raise ValueError("No completed games available to build rankings.")
 
-    model_instance.fit(played.to_dict(orient="records"))
+    # Filter kwargs for the model's fit method (e.g., recency_lambda for GSSD).
+    fit_kwargs = _filter_kwargs(model_params or {}, model_instance.fit)
+    model_instance.fit(played.to_dict(orient="records"), **fit_kwargs)
 
     if played.empty:
         empty = _empty_rankings()
