@@ -605,6 +605,7 @@ def test_schedule_excel_dashboard_includes_today_games(tmp_path: Path) -> None:
     assert list(dashboard.columns) == DASHBOARD_COLUMNS
     assert not dashboard.empty
     assert set(dashboard["model"]) == {"bradley-terry"}
+    assert dashboard["model_version"].notna().all()
     assert set(dashboard["game"]) == {"Team B @ Team A"}
     assert (
         dashboard.loc[dashboard["game"] == "Team B @ Team A", "projected_winner"]

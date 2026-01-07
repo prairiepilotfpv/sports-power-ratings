@@ -30,6 +30,11 @@ from pipelines.metadata import prediction_hash
 
 DASHBOARD_COLUMNS: List[str] = [
     "model",
+    "model_version",
+    "params_source",
+    "tuned_metric_used",
+    "run_timestamp_utc",
+    "prediction_hash",
     "date",
     "game",
     "projected_home_score",
@@ -427,7 +432,11 @@ def _format_game_name(away_team: Any, home_team: Any) -> str:
 
 
 def _dashboard_rows_for_today(
-    schedule_df: pd.DataFrame, model_name: str, as_of_date: date | None = None
+    schedule_df: pd.DataFrame,
+    model_name: str,
+    as_of_date: date | None = None,
+    *,
+    model_metadata: dict[str, Any] | None = None,
 ) -> list[Dict[str, Any]]:
     """Collect scheduled games for the current day for the dashboard sheet."""
     if schedule_df.empty:
@@ -450,6 +459,7 @@ def _dashboard_rows_for_today(
         return []
 
     rows: list[Dict[str, Any]] = []
+    metadata = model_metadata or {}
     for _, row in df.iterrows():
         projected_home_score = row.get("projected_home_score")
         projected_away_score = row.get("projected_away_score")
@@ -461,6 +471,11 @@ def _dashboard_rows_for_today(
         rows.append(
             {
                 "model": model_name,
+                "model_version": metadata.get("model_version"),
+                "params_source": metadata.get("params_source"),
+                "tuned_metric_used": metadata.get("tuned_metric_used"),
+                "run_timestamp_utc": metadata.get("run_timestamp_utc"),
+                "prediction_hash": metadata.get("prediction_hash"),
                 "date": row.get("date"),
                 "game": _format_game_name(row.get("away_team"), row.get("home_team")),
                 "projected_home_score": projected_home_score,
@@ -703,7 +718,13 @@ def build_schedule_excel_report(
                 index=False,
                 startrow=start_row,
             )
-            dashboard_rows.extend(_dashboard_rows_for_today(schedule_df, model_name))
+            dashboard_rows.extend(
+                _dashboard_rows_for_today(
+                    schedule_df,
+                    model_name,
+                    model_metadata=metadata,
+                )
+            )
 
         dashboard_df = pd.DataFrame(dashboard_rows)
         if not dashboard_df.empty:
