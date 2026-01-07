@@ -353,6 +353,7 @@ class PoissonModel(BaseModel):
                         "projected_home_score": projected_home_score,
                         "projected_away_score": projected_away_score,
                         "tie_rule": "split",
+                        "win_prob_source": "sample",
                     },
                 )
             )

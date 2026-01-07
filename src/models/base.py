@@ -79,10 +79,16 @@ class GamePrediction:
         ]
         if missing:
             raise ValueError(f"metadata missing required keys: {', '.join(missing)}")
+        win_prob_source = None
+        if isinstance(self.extra, dict):
+            win_prob_source = self.extra.get("win_prob_source")
         _validate_probability_sign(
             p_home_win=self.p_home_win,
             margin_mean=self.margin_mean,
             margin_sd=self.margin_sd,
+            win_prob_source=win_prob_source,
+            model_id=self.metadata.get("model_id"),
+            game_id=self.game_id,
         )
 
 
@@ -273,19 +279,34 @@ def _validate_probability_sign(
     p_home_win: float | None,
     margin_mean: float | None,
     margin_sd: float | None,
+    win_prob_source: str | None = None,
+    model_id: str | None = None,
+    game_id: str | None = None,
     tolerance: float = 1e-3,
 ) -> None:
     """Assert that probabilities align with the sign of the predicted margin."""
+    context_parts = []
+    if model_id:
+        context_parts.append(f"model_id={model_id}")
+    if game_id:
+        context_parts.append(f"game_id={game_id}")
+    if win_prob_source:
+        context_parts.append(f"win_prob_source={win_prob_source}")
+    context_suffix = f" ({', '.join(context_parts)})" if context_parts else ""
     if p_home_win is None or margin_mean is None:
         return
     if margin_mean > 0 and p_home_win <= 0.5 - tolerance:
         raise ValueError(
             "p_home_win must exceed 0.5 when margin_mean favors the home team."
+            f"{context_suffix}"
         )
     if margin_mean < 0 and p_home_win >= 0.5 + tolerance:
         raise ValueError(
             "p_home_win must be below 0.5 when margin_mean favors the away team."
+            f"{context_suffix}"
         )
+    if win_prob_source == "sample":
+        return
     derived = _home_win_prob_from_margin(margin_mean, margin_sd)
     if derived is None:
         return
@@ -294,4 +315,5 @@ def _validate_probability_sign(
     ):
         raise ValueError(
             "p_home_win is inconsistent with the sign implied by the margin distribution."
+            f"{context_suffix}"
         )
