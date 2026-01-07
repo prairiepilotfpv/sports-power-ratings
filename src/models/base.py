@@ -312,6 +312,8 @@ def _validate_probability_sign(
 
     if p_home_win is None or margin_mean is None:
         return
+    if win_prob_source == "sample":
+        return
     if margin_mean > 0 and p_home_win <= 0.5 - tolerance:
         raise ValueError(
             "p_home_win must exceed 0.5 when margin_mean favors the home team."

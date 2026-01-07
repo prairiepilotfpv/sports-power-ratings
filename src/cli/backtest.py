@@ -16,7 +16,7 @@ def main() -> None:
     _ensure_src_on_path()
     from backtest.runner import load_games_df_from_csv, run_backtest
     from data.paths import db_path_for
-    from models.registry import get_backtest_model, list_backtest_models
+    from models.registry import get_backtest_model, list_backtest_models, normalize_model_name
 
     parser = argparse.ArgumentParser(
         description="Run a model backtest on historical games."
@@ -67,9 +67,15 @@ def main() -> None:
         "--db",
         help="Optional SQLite DB path to persist backtest calibration metrics.",
     )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Raise errors on invalid BT predictions instead of warnings.",
+    )
     args = parser.parse_args()
 
-    model_cls = get_backtest_model(args.model)
+    model_name = normalize_model_name(args.model)
+    model_cls = get_backtest_model(model_name)
     games_df = load_games_df_from_csv(
         Path(args.csv),
         sport=args.sport,
@@ -81,8 +87,16 @@ def main() -> None:
     elif args.sport and args.season:
         db_path = db_path_for(args.sport, args.season)
 
+    model_kwargs = {}
+    if args.strict and model_name in {
+        "bradley-terry",
+        "bradley_terry_hfa",
+        "bradley_terry_calibrated_hfa",
+    }:
+        model_kwargs["strict"] = True
+
     outputs = run_backtest(
-        model_factory=model_cls,
+        model_factory=lambda: model_cls(**model_kwargs),
         games_df=games_df,
         start_date=args.start,
         end_date=args.end,

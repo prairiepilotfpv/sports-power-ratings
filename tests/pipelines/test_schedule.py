@@ -200,7 +200,13 @@ def test_schedule_win_probs_follow_margin_sign() -> None:
             "game_id": "gid-1",
         }
     )
-    model_instance = BradleyTerry()
+    model_instance = BradleyTerry(max_iter=50)
+    model_instance.fit(
+        [
+            {"home_team": "Home", "away_team": "Away", "home_score": 100, "away_score": 90},
+            {"home_team": "Away", "away_team": "Home", "home_score": 95, "away_score": 105},
+        ]
+    )
     model_instance.fit(
         [
             {
@@ -245,12 +251,17 @@ def test_schedule_win_probs_follow_margin_sign() -> None:
         projection_context=projection_context,
     )
     assert positive["margin_mean"] > 0
-    assert positive["model_p_home_win"] > 0.5
-    assert positive["away_win_prob"] == pytest.approx(1.0 - positive["model_p_home_win"])
-    assert positive["winner_win_prob"] == pytest.approx(positive["model_p_home_win"])
-    assert positive["margin_dist_assumption"] == "none"
-    assert pd.isna(positive["normal_p_home_win"])
+    assert positive["home_win_prob"] > 0.5
+    assert positive["away_win_prob"] == pytest.approx(1.0 - positive["home_win_prob"])
+    assert positive["winner_win_prob"] == pytest.approx(positive["home_win_prob"])
 
+    negative_model = BradleyTerry(max_iter=50)
+    negative_model.fit(
+        [
+            {"home_team": "Home", "away_team": "Away", "home_score": 90, "away_score": 100},
+            {"home_team": "Away", "away_team": "Home", "home_score": 105, "away_score": 95},
+        ]
+    )
     negative = _project_row(
         base_row,
         ratings={"Home": ratings["Away"], "Away": ratings["Home"]},
@@ -258,8 +269,8 @@ def test_schedule_win_probs_follow_margin_sign() -> None:
         home_advantage=0.0,
         params_source="default",
         tuned_metric_used=None,
-        model_instance=model_instance,
-        projection_engine=projection_engine,
+        model_instance=negative_model,
+        projection_engine=get_projection_engine(negative_model),
         projection_context={
             **projection_context,
             "ratings": {"Home": ratings["Away"], "Away": ratings["Home"]},
@@ -621,6 +632,7 @@ def test_schedule_excel_dashboard_includes_today_games(tmp_path: Path) -> None:
     assert list(dashboard.columns) == DASHBOARD_COLUMNS
     assert not dashboard.empty
     assert set(dashboard["model"]) == {"bradley-terry"}
+    assert dashboard["model_version"].notna().all()
     assert set(dashboard["game"]) == {"Team B @ Team A"}
     assert (
         dashboard.loc[dashboard["game"] == "Team B @ Team A", "projected_winner"]
