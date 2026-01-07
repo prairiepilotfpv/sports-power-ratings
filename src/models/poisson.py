@@ -109,12 +109,23 @@ class PoissonPowerRating:
         away_avg = float(np.mean(away_goals)) if away_goals.size else 0.0
         home_advantage = log(home_avg / away_avg) if home_avg > 0 and away_avg > 0 else 0.0
 
-        step = self.learning_rate / max(1.0, float(len(games_list)))
+        # Scale the learning step by scoring levels so basketball-style totals
+        # don't blow up gradient updates.
+        training_scale = max(1.0, avg_goals)
+        step = self.learning_rate / max(
+            1.0, float(len(games_list)) * training_scale
+        )
         for _ in range(self.max_iter):
-            log_lambda_home = (
-                mu + home_advantage * home_flag + attack[home_idx] - defense[away_idx]
+            log_lambda_home = np.clip(
+                mu + home_advantage * home_flag + attack[home_idx] - defense[away_idx],
+                -30.0,
+                30.0,
             )
-            log_lambda_away = mu + attack[away_idx] - defense[home_idx]
+            log_lambda_away = np.clip(
+                mu + attack[away_idx] - defense[home_idx],
+                -30.0,
+                30.0,
+            )
             lambda_home = np.exp(log_lambda_home)
             lambda_away = np.exp(log_lambda_away)
 
@@ -158,6 +169,15 @@ class PoissonPowerRating:
                 abs(mu_update),
                 abs(home_update),
             )
+            if not (
+                np.isfinite(mu)
+                and np.isfinite(home_advantage)
+                and np.isfinite(attack).all()
+                and np.isfinite(defense).all()
+            ):
+                # Bail out if the optimizer diverges.
+                self._state = None
+                return
             if max_update < self.tol:
                 break
 
