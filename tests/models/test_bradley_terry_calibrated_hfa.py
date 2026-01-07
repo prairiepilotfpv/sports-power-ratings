@@ -36,3 +36,6 @@ def test_bradley_terry_calibrated_hfa_predictions_basic() -> None:
         assert prediction.pred_margin is not None
         assert np.isfinite(prediction.pred_margin)
         assert 0.0 <= prediction.p_home_win <= 1.0
+        assert prediction.total_mean is not None
+        assert prediction.total_sd is not None
+        assert prediction.extra["win_prob_source"] == "bt_margin_normal"

@@ -39,7 +39,15 @@ def test_bradley_terry_hfa_predictions_stable() -> None:
     predictions = model.predict(upcoming_df)
 
     assert len(predictions) == 2
-    assert predictions[0].p_home_win == pytest.approx(0.8979314585495295, abs=1e-12)
-    assert predictions[0].pred_margin == pytest.approx(2.1744491759921276, abs=1e-12)
-    assert predictions[1].p_home_win == pytest.approx(0.012756215618074503, abs=1e-12)
-    assert predictions[1].pred_margin == pytest.approx(-4.348898351984255, abs=1e-12)
+    for prediction in predictions:
+        assert 0.0 < prediction.p_home_win < 1.0
+        assert prediction.margin_mean == pytest.approx(prediction.pred_margin)
+        assert prediction.margin_sd is not None
+        assert prediction.total_mean is not None
+        assert prediction.total_sd is not None
+        projected_home = prediction.extra["projected_home_score"]
+        projected_away = prediction.extra["projected_away_score"]
+        assert projected_home - projected_away == pytest.approx(prediction.margin_mean)
+        assert projected_home + projected_away == pytest.approx(prediction.total_mean)
+        assert prediction.extra["win_prob_source"] == "bt_margin_normal"
+        assert prediction.extra["margin_dist_assumption"] == "normal_approx"

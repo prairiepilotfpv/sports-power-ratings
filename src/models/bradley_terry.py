@@ -3,24 +3,64 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from math import exp, isnan, log
+from dataclasses import dataclass
+from math import isnan
 from typing import Any, DefaultDict, Iterable, Mapping
 
+import numpy as np
+
 from models.base import BaseModel, GamePrediction, ModelMetadata, require_columns
+
+
+@dataclass(frozen=True)
+class BTCalibration:
+    margin_a: float
+    margin_b: float
+    margin_sigma: float
+    total_c: float
+    total_u: float
+    total_sigma: float
 
 
 class BradleyTerry:
     """Iterative Bradley-Terry solver with optional home advantage term."""
 
-    def __init__(self, *, max_iter: int = 500, tol: float = 1e-8) -> None:
+    def __init__(
+        self,
+        *,
+        max_iter: int = 500,
+        tol: float = 1e-8,
+        temp: float = 3.0,
+        l2_lambda: float = 1e-3,
+        hfa_logit: float = 0.0,
+        learn_hfa: bool = True,
+    ) -> None:
         self.model_id = "bradley-terry"
         self.model_version = "1.0"
-        self.params = {"max_iter": max_iter, "tol": tol}
+        self.params = {
+            "max_iter": max_iter,
+            "tol": tol,
+            "temp": temp,
+            "lambda": l2_lambda,
+            "hfa_logit": hfa_logit,
+            "learn_hfa": learn_hfa,
+        }
         self.max_iter = max_iter
         self.tol = tol
-        self.ratings: DefaultDict[str, float] = defaultdict(lambda: 1.0)
+        self.temp = temp
+        self.l2_lambda = l2_lambda
+        self.learn_hfa = learn_hfa
+        self.ratings: DefaultDict[str, float] = defaultdict(float)
         self.games_played: DefaultDict[str, int] = defaultdict(int)
-        self.home_adv = 0.0
+        self.hfa_logit = hfa_logit
+        self.calibration = BTCalibration(
+            margin_a=0.0,
+            margin_b=0.0,
+            margin_sigma=12.0,
+            total_c=0.0,
+            total_u=0.0,
+            total_sigma=20.0,
+        )
 
     def metadata(self) -> ModelMetadata:
         return ModelMetadata(
@@ -28,7 +68,7 @@ class BradleyTerry:
             model_version=self.model_version,
             params=self.params,
             supports_margin=True,
-            supports_total=False,
+            supports_total=True,
             supports_win_prob=True,
             role="primary",
             ensemble_weight=1.0,
@@ -38,10 +78,21 @@ class BradleyTerry:
     def _sigmoid(score: float) -> float:
         """Numerically stable sigmoid for logistic probability."""
         if score >= 0:
-            z = exp(-score)
-            return 1.0 / (1.0 + z)
-        z = exp(score)
-        return z / (1.0 + z)
+            z = np.exp(-score)
+            return float(1.0 / (1.0 + z))
+        z = np.exp(score)
+        return float(z / (1.0 + z))
+
+    @staticmethod
+    def _clip_prob(prob: float, *, eps: float = 1e-6) -> float:
+        return float(min(max(prob, eps), 1.0 - eps))
+
+    @staticmethod
+    def _normal_cdf(x: float, *, mean: float, sd: float) -> float:
+        if sd <= 0 or not np.isfinite(sd):
+            raise ValueError("Standard deviation must be positive and finite.")
+        z = (x - mean) / (sd * np.sqrt(2.0))
+        return float(0.5 * (1.0 + np.math.erf(z)))
 
     def predict_probability(
         self, team_a: str, team_b: str, venue: str = "neutral"
@@ -49,17 +100,18 @@ class BradleyTerry:
         """Predict win probability for team_a vs team_b with a venue adjustment."""
         rating_a = self.ratings[team_a]
         rating_b = self.ratings[team_b]
-        score = log(rating_a) - log(rating_b)
+        score = rating_a - rating_b
         if venue == "home":
-            score += self.home_adv
+            score += self.hfa_logit
         elif venue == "away":
-            score -= self.home_adv
-        return self._sigmoid(score)
+            score -= self.hfa_logit
+        score = score / self.temp if self.temp != 0 else score
+        return self._clip_prob(self._sigmoid(score))
 
     def fit(self, games: Iterable[Mapping[str, Any]]) -> None:
         """Fit Bradley-Terry ratings from game results."""
         teams: set[str] = set()
-        games_list: list[tuple[str, str, float, bool]] = []
+        games_list: list[tuple[str, str, float, bool, float, float]] = []
 
         for game in games:
             # Drop rows without names or usable scores.
@@ -77,54 +129,145 @@ class BradleyTerry:
             self.games_played[home] += 1
             self.games_played[away] += 1
 
-            if home_score == away_score:
-                outcome = 0.5
-            elif home_score > away_score:
-                outcome = 1.0
-            else:
-                outcome = 0.0
+            outcome = 0.5 if home_score == away_score else float(home_score > away_score)
 
             neutral_raw = game.get("neutral", False)
             if isinstance(neutral_raw, float) and isnan(neutral_raw):
                 neutral = False
             else:
                 neutral = False if neutral_raw is None else bool(neutral_raw)
-            games_list.append((home, away, outcome, neutral))
+            margin = float(home_score) - float(away_score)
+            total = float(home_score) + float(away_score)
+            games_list.append((home, away, outcome, neutral, margin, total))
 
         if not teams:
             return
 
-        theta: dict[str, float] = {team: 0.0 for team in teams}
-        home_adv = 0.0
+        team_list = sorted(teams)
+        team_index = {team: idx for idx, team in enumerate(team_list)}
+        ratings = np.zeros(len(team_list), dtype=float)
+        hfa_logit = float(self.hfa_logit)
         step = 0.1 / max(1.0, len(games_list) / 1000.0)
+        temp = self.temp if self.temp != 0 else 1.0
 
         for _ in range(self.max_iter):
-            grad: dict[str, float] = {team: 0.0 for team in teams}
-            grad_home_adv = 0.0
-            for home, away, outcome, neutral in games_list:
-                # Log-odds include a home advantage term when not neutral.
-                score = theta[home] - theta[away] + (0.0 if neutral else home_adv)
-                win_prob = self._sigmoid(score)
-                diff = outcome - win_prob
-                grad[home] += diff
-                grad[away] -= diff
+            grad = np.zeros_like(ratings)
+            grad_hfa = 0.0
+            for home, away, outcome, neutral, _, _ in games_list:
+                home_idx = team_index[home]
+                away_idx = team_index[away]
+                score = ratings[home_idx] - ratings[away_idx]
                 if not neutral:
-                    grad_home_adv += diff
+                    score += hfa_logit
+                score = score / temp
+                win_prob = self._clip_prob(self._sigmoid(score))
+                diff = win_prob - outcome
+                grad[home_idx] += diff / temp
+                grad[away_idx] -= diff / temp
+                if not neutral and self.learn_hfa:
+                    grad_hfa += diff / temp
 
-            max_delta = 0.0
-            for team in teams:
-                update = step * grad[team]
-                theta[team] += update
-                max_delta = max(max_delta, abs(update))
-            home_update = step * grad_home_adv
-            home_adv += home_update
-            max_delta = max(max_delta, abs(home_update))
+            grad += 2.0 * self.l2_lambda * ratings
+            updates = -step * grad
+            ratings += updates
+            max_delta = float(np.max(np.abs(updates))) if updates.size else 0.0
+            if self.learn_hfa:
+                hfa_update = -step * grad_hfa
+                hfa_logit += hfa_update
+                max_delta = max(max_delta, abs(hfa_update))
             if max_delta < self.tol:
                 break
 
         for team in teams:
-            self.ratings[team] = exp(theta[team])
-        self.home_adv = home_adv
+            self.ratings[team] = float(ratings[team_index[team]])
+        self.hfa_logit = float(hfa_logit)
+        self._fit_calibration(games_list)
+
+    def _fit_calibration(
+        self,
+        games_list: list[tuple[str, str, float, bool, float, float]],
+    ) -> None:
+        if not games_list:
+            return
+        d_values = []
+        margins = []
+        totals = []
+        for home, away, _, neutral, margin, total in games_list:
+            d_value = self.ratings[home] - self.ratings[away]
+            if not neutral:
+                d_value += self.hfa_logit
+            d_values.append(float(d_value))
+            margins.append(float(margin))
+            totals.append(float(total))
+
+        if d_values:
+            design = np.column_stack([np.ones(len(d_values)), np.asarray(d_values)])
+            coeffs, *_ = np.linalg.lstsq(design, np.asarray(margins), rcond=None)
+            margin_a = float(coeffs[0])
+            margin_b = float(coeffs[1])
+            margin_residuals = np.asarray(margins) - (design @ coeffs)
+            margin_sigma = float(
+                np.std(margin_residuals, ddof=1 if len(margin_residuals) > 1 else 0)
+            )
+        else:
+            margin_a, margin_b, margin_sigma = 0.0, 0.0, 0.0
+
+        total_values = np.asarray(totals)
+        abs_d = np.abs(np.asarray(d_values))
+        if len(total_values) > 0:
+            total_design = np.column_stack([np.ones(len(abs_d)), abs_d])
+            total_coeffs, *_ = np.linalg.lstsq(
+                total_design, total_values, rcond=None
+            )
+            total_c = float(total_coeffs[0])
+            total_u = float(total_coeffs[1])
+            total_residuals = total_values - (total_design @ total_coeffs)
+            total_sigma = float(
+                np.std(total_residuals, ddof=1 if len(total_residuals) > 1 else 0)
+            )
+        else:
+            total_c = float(np.mean(total_values)) if total_values.size else 0.0
+            total_u = 0.0
+            total_sigma = 0.0
+
+        if not np.isfinite(margin_sigma) or margin_sigma <= 0:
+            margin_sigma = 12.0
+        if not np.isfinite(total_sigma) or total_sigma <= 0:
+            total_sigma = 20.0
+
+        self.calibration = BTCalibration(
+            margin_a=margin_a,
+            margin_b=margin_b,
+            margin_sigma=margin_sigma,
+            total_c=total_c,
+            total_u=total_u,
+            total_sigma=total_sigma,
+        )
+
+    def project_matchup(
+        self, home_team: str, away_team: str, *, neutral: bool
+    ) -> dict[str, float]:
+        d_value = self.ratings[home_team] - self.ratings[away_team]
+        if not neutral:
+            d_value += self.hfa_logit
+        margin_mean = self.calibration.margin_a + self.calibration.margin_b * d_value
+        margin_sd = max(self.calibration.margin_sigma, 5.0)
+        total_mean = self.calibration.total_c + self.calibration.total_u * abs(d_value)
+        total_mean = float(min(max(total_mean, 200.0), 270.0))
+        total_sd = max(self.calibration.total_sigma, 8.0)
+        projected_home_score = (total_mean + margin_mean) / 2.0
+        projected_away_score = (total_mean - margin_mean) / 2.0
+        p_home_win = 1.0 - self._normal_cdf(0.0, mean=margin_mean, sd=margin_sd)
+        p_home_win = self._clip_prob(p_home_win)
+        return {
+            "margin_mean": float(margin_mean),
+            "margin_sd": float(margin_sd),
+            "total_mean": float(total_mean),
+            "total_sd": float(total_sd),
+            "p_home_win": float(p_home_win),
+            "projected_home_score": float(projected_home_score),
+            "projected_away_score": float(projected_away_score),
+        }
 
     def rankings(self) -> list[tuple[str, float]]:
         """Return ratings ordered from strongest to weakest."""
@@ -134,8 +277,26 @@ class BradleyTerry:
 class BradleyTerryBacktest(BaseModel):
     """Backtest adapter that reuses the core BradleyTerry implementation."""
 
-    def __init__(self, *, max_iter: int = 500, tol: float = 1e-8) -> None:
-        self._model = BradleyTerry(max_iter=max_iter, tol=tol)
+    def __init__(
+        self,
+        *,
+        max_iter: int = 500,
+        tol: float = 1e-8,
+        temp: float = 3.0,
+        l2_lambda: float = 1e-3,
+        hfa_logit: float = 0.0,
+        learn_hfa: bool = True,
+        strict: bool = False,
+    ) -> None:
+        self._model = BradleyTerry(
+            max_iter=max_iter,
+            tol=tol,
+            temp=temp,
+            l2_lambda=l2_lambda,
+            hfa_logit=hfa_logit,
+            learn_hfa=learn_hfa,
+        )
+        self._strict = strict
 
     def metadata(self) -> ModelMetadata:
         return self._model.metadata()
@@ -163,10 +324,27 @@ class BradleyTerryBacktest(BaseModel):
                 if isinstance(neutral_raw, float) and isnan(neutral_raw)
                 else bool(neutral_raw)
             )
-            venue = "neutral" if neutral else "home"
-            p_home_win = self._model.predict_probability(home, away, venue=venue)
-            pred_margin = self._logit(p_home_win)
+            projection = self._model.project_matchup(home, away, neutral=neutral)
+            p_home_win = projection["p_home_win"]
+            pred_margin = projection["margin_mean"]
             game_id = row.get("game_id") or f"{row['date']}_{home}_{away}"
+            extra = {
+                "projected_home_score": projection["projected_home_score"],
+                "projected_away_score": projection["projected_away_score"],
+                "projected_spread": -projection["margin_mean"],
+                "model_p_home_win": p_home_win,
+                "normal_p_home_win": p_home_win,
+                "win_prob_source": "bt_margin_normal",
+                "margin_dist_assumption": "normal_approx",
+                "logistic_home_win_prob": None,
+            }
+            self._validate_prediction(
+                p_home_win,
+                projection["margin_sd"],
+                projection["total_sd"],
+                extra["win_prob_source"],
+                game_id,
+            )
 
             predictions.append(
                 GamePrediction(
@@ -177,14 +355,40 @@ class BradleyTerryBacktest(BaseModel):
                     p_home_win=p_home_win,
                     win_prob_samples=None,
                     pred_margin=pred_margin,
+                    pred_total=projection["total_mean"],
+                    margin_sd=projection["margin_sd"],
+                    total_sd=projection["total_sd"],
+                    margin_mean=projection["margin_mean"],
+                    total_mean=projection["total_mean"],
                     metadata=dict(metadata),
+                    extra=extra,
                 )
             )
 
         return predictions
 
-    @staticmethod
-    def _logit(prob: float, *, epsilon: float = 1e-12) -> float:
-        """Convert probability to log-odds with numeric stability."""
-        p = min(max(prob, epsilon), 1.0 - epsilon)
-        return log(p) - log(1.0 - p)
+    def _validate_prediction(
+        self,
+        p_home_win: float,
+        margin_sd: float,
+        total_sd: float,
+        win_prob_source: str,
+        game_id: str,
+    ) -> None:
+        errors = []
+        if not (0.0 < p_home_win < 1.0):
+            errors.append("p_home_win must be between 0 and 1.")
+        if margin_sd < 5.0:
+            errors.append("margin_sd must be at least 5.")
+        if total_sd < 8.0:
+            errors.append("total_sd must be at least 8.")
+        if win_prob_source == "direct":
+            errors.append("win_prob_source cannot be 'direct'.")
+        if not errors:
+            return
+        message = f"Invalid BT prediction for {game_id}: " + "; ".join(errors)
+        if self._strict:
+            raise ValueError(message)
+        import warnings
+
+        warnings.warn(message, RuntimeWarning, stacklevel=2)
