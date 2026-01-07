@@ -77,7 +77,7 @@ def test_nhl_pipeline_smoke(tmp_path: Path) -> None:
     poisson_schedule_df = pd.read_csv(poisson_schedule_path)
     assert poisson_schedule_df["projected_home_score"].notna().any()
     assert poisson_schedule_df["projected_away_score"].notna().any()
-    assert poisson_schedule_df["projected_win_prob"].notna().any()
+    assert poisson_schedule_df["model_p_home_win"].notna().any()
 
     outputs = run_backtest_pipeline(
         csv_path=fixture_path,

@@ -348,12 +348,13 @@ class PoissonModel(BaseModel):
                     pred_total=total_mean,
                     margin_sd=margin_sd,
                     total_sd=total_sd,
+                    win_prob_source="sample",
+                    margin_dist_assumption="empirical",
                     metadata=dict(model_identity),
                     extra={
                         "projected_home_score": projected_home_score,
                         "projected_away_score": projected_away_score,
                         "tie_rule": "split",
-                        "win_prob_source": "sample",
                     },
                 )
             )

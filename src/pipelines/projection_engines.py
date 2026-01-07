@@ -8,14 +8,14 @@ import numpy as np
 
 from config import DEFAULT_MARGIN_SD_FALLBACK, DEFAULT_TOTAL_SD_FALLBACK, DEFAULT_WIN_PROB_K
 from models.calibration import ConditionalSDModel
+from models.base import _home_win_prob_from_margin
 from pipelines.projections import (
-    home_win_prob_from_margin,
     matchup_total_from_averages,
     project_game,
     total_from_ratings,
 )
 
-ProjectionOutput = dict[str, float | None]
+ProjectionOutput = dict[str, float | None | str]
 ProjectionContext = dict[str, Any]
 ProjectionEngine = Callable[[str, str, Any, ProjectionContext], ProjectionOutput]
 
@@ -48,6 +48,14 @@ def _rating_projection_engine(
     model: Any,
     context: ProjectionContext,
 ) -> ProjectionOutput:
+    model_id = None
+    if hasattr(model, "metadata") and callable(model.metadata):
+        meta = model.metadata()
+        model_id = getattr(meta, "model_id", None)
+    if model_id is None:
+        model_id = getattr(model, "model_id", None)
+    if callable(model_id):
+        model_id = model_id()
     ratings = context.get("ratings", {})
     home_rating = ratings.get(home_team)
     away_rating = ratings.get(away_team)
@@ -111,17 +119,47 @@ def _rating_projection_engine(
     if total_sd is None or total_sd <= 0:
         total_sd = DEFAULT_TOTAL_SD_FALLBACK
 
-    projected_win_prob = home_win_prob_from_margin(projection.margin, margin_sd)
+    normal_p_home_win = _home_win_prob_from_margin(
+        projection.margin, margin_sd
+    ) if projection.margin is not None else None
+    projected_win_prob = normal_p_home_win
+    model_p_home_win = projection.projected_win_prob
+    win_prob_source = "logistic"
+    margin_dist_assumption = "normal_approx"
+    if model_id == "bradley-terry":
+        win_prob_source = "direct"
+        margin_dist_assumption = "none"
+        if hasattr(model, "predict_probability"):
+            venue = "neutral" if neutral else "home"
+            try:
+                model_p_home_win = float(
+                    model.predict_probability(
+                        home_team,
+                        away_team,
+                        venue=venue,
+                    )
+                )
+            except Exception:
+                pass
+        normal_p_home_win = None
+        projected_win_prob = None
+    logistic_home_win_prob = projection.projected_win_prob
+    if win_prob_source == "direct" and model_p_home_win is not None:
+        logistic_home_win_prob = model_p_home_win
     return {
         "projected_home_score": projection.projected_home_score,
         "projected_away_score": projection.projected_away_score,
         "projected_total": projection.projected_total,
         "projected_win_prob": projected_win_prob,
+        "model_p_home_win": model_p_home_win,
+        "normal_p_home_win": normal_p_home_win,
+        "win_prob_source": win_prob_source,
+        "margin_dist_assumption": margin_dist_assumption,
         "margin_mean": projection.margin,
         "margin_sd": margin_sd if projection.margin is not None else None,
         "total_mean": projection.projected_total,
         "total_sd": total_sd if projection.projected_total is not None else None,
-        "logistic_home_win_prob": projection.projected_win_prob,
+        "logistic_home_win_prob": logistic_home_win_prob,
     }
 
 
@@ -175,8 +213,11 @@ def _poisson_projection_engine(
         "projected_home_score": projected_home_score,
         "projected_away_score": projected_away_score,
         "projected_total": projected_total,
-        "projected_win_prob": win_prob,
+        "projected_win_prob": None,
+        "model_p_home_win": win_prob,
+        "normal_p_home_win": None,
         "win_prob_source": "sample",
+        "margin_dist_assumption": "empirical",
         "margin_mean": margin_mean,
         "margin_sd": margin_sd,
         "total_mean": total_mean,

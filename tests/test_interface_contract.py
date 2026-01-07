@@ -39,7 +39,26 @@ def test_backtest_model_predictions_contract(model_name: str) -> None:
         assert prediction.away_team
         assert prediction.p_home_win is not None
         assert 0.0 <= prediction.p_home_win <= 1.0
+        assert prediction.win_prob_source is not None
+        assert prediction.margin_dist_assumption is not None
         game_ids.append(prediction.game_id)
+
+        margin_mean = prediction.margin_mean
+        if margin_mean is None:
+            continue
+        if abs(margin_mean) > 0.1:
+            assert (prediction.p_home_win > 0.5) == (
+                margin_mean > 0
+            ), "model_p_home_win should agree with margin_mean sign"
+
+        if prediction.margin_dist_assumption == "normal_approx":
+            derived = base_models._home_win_prob_from_margin(
+                margin_mean, prediction.margin_sd
+            )
+            if derived is not None and abs(margin_mean) > 0.1:
+                assert (derived > 0.5) == (
+                    prediction.p_home_win > 0.5
+                ), "derived normal win prob should match model_p_home_win side"
 
     assert len(game_ids) == len(set(game_ids)), "game_id values must be unique."
 
@@ -67,13 +86,19 @@ def test_poisson_predictions_skip_normal_consistency_check(
     predictions = model.predict(upcoming_df)
 
     assert predictions, "Expected predictions for the fixture dataset."
+    assert all(
+        pred.margin_dist_assumption == "empirical" for pred in predictions
+    )
     assert any(
         pred.margin_mean is not None and abs(pred.margin_mean) < 0.5
         for pred in predictions
     ), "Expected a near-coinflip Poisson prediction."
 
 
-@pytest.mark.parametrize("model_name", ["elo", "gssd", "toor"])
+@pytest.mark.parametrize(
+    "model_name",
+    ["elo", "gssd", "toor", "bradley_terry_calibrated_hfa"],
+)
 def test_non_poisson_models_still_use_normal_consistency_check(
     monkeypatch: pytest.MonkeyPatch,
     model_name: str,

@@ -51,6 +51,8 @@ class GamePrediction:
     margin_sd: float | None = None
     total_mean: float | None = None
     total_sd: float | None = None
+    win_prob_source: str | None = None
+    margin_dist_assumption: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -79,14 +81,21 @@ class GamePrediction:
         ]
         if missing:
             raise ValueError(f"metadata missing required keys: {', '.join(missing)}")
-        win_prob_source = None
+        win_prob_source = self.win_prob_source
+        margin_dist_assumption = self.margin_dist_assumption
         if isinstance(self.extra, dict):
-            win_prob_source = self.extra.get("win_prob_source")
+            if win_prob_source is None:
+                win_prob_source = self.extra.get("win_prob_source")
+            if margin_dist_assumption is None:
+                margin_dist_assumption = self.extra.get("margin_dist_assumption")
+        self.win_prob_source = win_prob_source
+        self.margin_dist_assumption = margin_dist_assumption
         _validate_probability_sign(
             p_home_win=self.p_home_win,
             margin_mean=self.margin_mean,
             margin_sd=self.margin_sd,
             win_prob_source=win_prob_source,
+            margin_dist_assumption=margin_dist_assumption,
             model_id=self.metadata.get("model_id"),
             game_id=self.game_id,
         )
@@ -280,32 +289,44 @@ def _validate_probability_sign(
     margin_mean: float | None,
     margin_sd: float | None,
     win_prob_source: str | None = None,
+    margin_dist_assumption: str | None = None,
     model_id: str | None = None,
     game_id: str | None = None,
     tolerance: float = 1e-3,
 ) -> None:
     """Assert that probabilities align with the sign of the predicted margin."""
-    context_parts = []
-    if model_id:
-        context_parts.append(f"model_id={model_id}")
-    if game_id:
-        context_parts.append(f"game_id={game_id}")
-    if win_prob_source:
-        context_parts.append(f"win_prob_source={win_prob_source}")
-    context_suffix = f" ({', '.join(context_parts)})" if context_parts else ""
+    base_context = {
+        "model_id": model_id,
+        "game_id": game_id,
+        "win_prob_source": win_prob_source,
+        "margin_dist_assumption": margin_dist_assumption,
+        "p_home_win": p_home_win,
+        "margin_mean": margin_mean,
+        "margin_sd": margin_sd,
+    }
+
+    def _context_suffix(extra: Mapping[str, Any] | None = None) -> str:
+        items = {**base_context, **(extra or {})}
+        parts = [f"{key}={value!r}" for key, value in items.items()]
+        return f" ({', '.join(parts)})"
+
     if p_home_win is None or margin_mean is None:
         return
     if margin_mean > 0 and p_home_win <= 0.5 - tolerance:
         raise ValueError(
             "p_home_win must exceed 0.5 when margin_mean favors the home team."
-            f"{context_suffix}"
+            f"{_context_suffix()}"
         )
     if margin_mean < 0 and p_home_win >= 0.5 + tolerance:
         raise ValueError(
             "p_home_win must be below 0.5 when margin_mean favors the away team."
-            f"{context_suffix}"
+            f"{_context_suffix()}"
         )
-    if win_prob_source == "sample":
+    if margin_dist_assumption is None:
+        should_check_derived = win_prob_source != "sample"
+    else:
+        should_check_derived = margin_dist_assumption == "normal_approx"
+    if not should_check_derived:
         return
     derived = _home_win_prob_from_margin(margin_mean, margin_sd)
     if derived is None:
@@ -315,5 +336,5 @@ def _validate_probability_sign(
     ):
         raise ValueError(
             "p_home_win is inconsistent with the sign implied by the margin distribution."
-            f"{context_suffix}"
+            f"{_context_suffix({'derived': derived})}"
         )

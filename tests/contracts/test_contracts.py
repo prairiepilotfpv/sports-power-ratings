@@ -64,6 +64,8 @@ def test_contract_end_to_end_sample_game() -> None:
         "projected_spread": -4.5,
         "projected_home_spread": 4.5,
         "projected_win_prob": 0.62,
+        "model_p_home_win": 0.62,
+        "normal_p_home_win": 0.6,
         "projected_win_prob_dist": None,
         "projected_home_score": 101.2,
         "projected_away_score": 96.7,

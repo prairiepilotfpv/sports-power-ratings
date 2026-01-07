@@ -48,6 +48,8 @@ def test_calendar_projection_output_schema_and_types() -> None:
         "away_team",
         "projected_winner",
         "projected_win_prob_dist",
+        "win_prob_source",
+        "margin_dist_assumption",
         "margin_dist_params",
         "total_dist_params",
     ]
@@ -63,6 +65,8 @@ def test_calendar_projection_output_schema_and_types() -> None:
         "projected_spread",
         "projected_home_spread",
         "projected_win_prob",
+        "model_p_home_win",
+        "normal_p_home_win",
         "home_win_prob",
         "away_win_prob",
         "winner_win_prob",

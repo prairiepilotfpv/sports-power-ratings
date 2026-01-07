@@ -190,7 +190,9 @@ def predict_matchup(
     margin_sd_value = projection.get("margin_sd")
     total_mean = projection.get("total_mean") or 0.0
     total_sd_value = projection.get("total_sd")
-    win_prob_value = projection.get("projected_win_prob")
+    win_prob_value = projection.get("model_p_home_win")
+    if win_prob_value is None:
+        win_prob_value = projection.get("projected_win_prob")
     logistic_home_win_prob = projection.get("logistic_home_win_prob")
 
     if margin_mean is None:

@@ -79,6 +79,8 @@ class BradleyTerryHFA(BaseModel):
                     p_home_win=p_home_win,
                     win_prob_dist=win_prob_dist,
                     pred_margin=pred_margin,
+                    win_prob_source="direct",
+                    margin_dist_assumption="none",
                     metadata=dict(model_identity),
                 )
             )

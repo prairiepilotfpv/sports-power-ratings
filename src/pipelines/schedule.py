@@ -39,10 +39,14 @@ DASHBOARD_COLUMNS: List[str] = [
     "projected_spread",
     "margin_mean",
     "margin_sd",
+    "model_p_home_win",
+    "normal_p_home_win",
     "home_win_prob",
     "away_win_prob",
     "winner_win_prob",
     "logistic_home_win_prob",
+    "win_prob_source",
+    "margin_dist_assumption",
     "total_sd",
 ]
 
@@ -149,6 +153,8 @@ def _project_row(
     projected_spread = None
     projected_home_spread = None
     projected_win_prob = None
+    model_p_home_win = None
+    normal_p_home_win = None
     logistic_home_win_prob = None
     home_win_prob = None
     away_win_prob = None
@@ -165,6 +171,8 @@ def _project_row(
     total_sd_value = None
     margin_dist_params = None
     total_dist_params = None
+    win_prob_source = None
+    margin_dist_assumption = None
     projection_status = None
 
     can_project = (
@@ -190,8 +198,12 @@ def _project_row(
         projected_home_score = projection.get("projected_home_score")
         projected_away_score = projection.get("projected_away_score")
         projected_total = projection.get("projected_total")
-        projected_win_prob = projection.get("projected_win_prob")
+        normal_p_home_win = projection.get("normal_p_home_win")
+        projected_win_prob = projection.get("projected_win_prob", normal_p_home_win)
+        model_p_home_win = projection.get("model_p_home_win")
         logistic_home_win_prob = projection.get("logistic_home_win_prob")
+        win_prob_source = projection.get("win_prob_source")
+        margin_dist_assumption = projection.get("margin_dist_assumption")
         margin_mean = projection.get("margin_mean")
         margin_sd_value = projection.get("margin_sd")
         total_mean = projection.get("total_mean")
@@ -203,6 +215,7 @@ def _project_row(
                 projected_away_score,
                 projected_total,
                 projected_win_prob,
+                model_p_home_win,
                 margin_mean,
                 total_mean,
             )
@@ -218,14 +231,14 @@ def _project_row(
             projected_spread = -margin_mean
             projected_home_spread = -projected_spread
             projected_winner = home if margin_mean > 0 else away
-        if projected_win_prob is not None:
-            home_win_prob = projected_win_prob
-            model_win_prob = projected_win_prob
+        if model_p_home_win is not None:
+            home_win_prob = model_p_home_win
+            model_win_prob = model_p_home_win
             projected_win_prob_dist = None
             model_win_prob_samples = None
-            away_win_prob = 1.0 - projected_win_prob
+            away_win_prob = 1.0 - model_p_home_win
             if projected_winner == home:
-                winner_win_prob = projected_win_prob
+                winner_win_prob = model_p_home_win
             elif projected_winner == away:
                 winner_win_prob = away_win_prob
 
@@ -251,10 +264,14 @@ def _project_row(
             "projected_spread": projected_spread,
             "projected_home_spread": projected_home_spread,
             "projected_win_prob": projected_win_prob,
+            "model_p_home_win": model_p_home_win,
+            "normal_p_home_win": normal_p_home_win,
             "home_win_prob": home_win_prob,
             "away_win_prob": away_win_prob,
             "winner_win_prob": winner_win_prob,
             "logistic_home_win_prob": logistic_home_win_prob,
+            "win_prob_source": win_prob_source,
+            "margin_dist_assumption": margin_dist_assumption,
             "projected_win_prob_dist": None,
             "model_win_prob_samples": model_win_prob_samples,
             "model_win_prob": model_win_prob,
@@ -470,10 +487,14 @@ def _dashboard_rows_for_today(
                 "projected_spread": row.get("projected_spread"),
                 "margin_mean": row.get("margin_mean"),
                 "margin_sd": row.get("margin_sd"),
+                "model_p_home_win": row.get("model_p_home_win"),
+                "normal_p_home_win": row.get("normal_p_home_win"),
                 "home_win_prob": row.get("home_win_prob"),
                 "away_win_prob": row.get("away_win_prob"),
                 "winner_win_prob": row.get("winner_win_prob"),
                 "logistic_home_win_prob": row.get("logistic_home_win_prob"),
+                "win_prob_source": row.get("win_prob_source"),
+                "margin_dist_assumption": row.get("margin_dist_assumption"),
                 "total_sd": row.get("total_sd"),
             }
         )

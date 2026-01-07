@@ -382,6 +382,8 @@ class GSSDModel(BaseModel):
                     win_prob_dist=win_prob_dist,
                     pred_margin=pred_margin,
                     margin_sd=margin_sd,
+                    win_prob_source="logistic",
+                    margin_dist_assumption="normal_approx",
                     metadata=dict(model_identity),
                     extra={
                         "intercept": coefficients.intercept,

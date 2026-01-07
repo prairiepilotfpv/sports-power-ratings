@@ -177,6 +177,8 @@ class BradleyTerryBacktest(BaseModel):
                     p_home_win=p_home_win,
                     win_prob_samples=None,
                     pred_margin=pred_margin,
+                    win_prob_source="direct",
+                    margin_dist_assumption="none",
                     metadata=dict(metadata),
                 )
             )

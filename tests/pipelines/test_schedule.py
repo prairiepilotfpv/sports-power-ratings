@@ -84,8 +84,11 @@ def test_build_schedule_with_projections(tmp_path: Path) -> None:
     assert upcoming["margin_sd"] > 0
     assert pd.notna(upcoming["total_mean"])
     assert upcoming["total_sd"] > 0
-    assert upcoming["home_win_prob"] == pytest.approx(upcoming["projected_win_prob"])
-    assert upcoming["model_win_prob"] == pytest.approx(upcoming["projected_win_prob"])
+    assert upcoming["home_win_prob"] == pytest.approx(upcoming["model_p_home_win"])
+    assert upcoming["model_win_prob"] == pytest.approx(upcoming["model_p_home_win"])
+    assert upcoming["win_prob_source"] == "direct"
+    assert upcoming["margin_dist_assumption"] == "none"
+    assert pd.isna(upcoming["normal_p_home_win"])
 
 
 def test_build_schedule_with_elo_projections(tmp_path: Path) -> None:
@@ -197,8 +200,26 @@ def test_schedule_win_probs_follow_margin_sign() -> None:
             "game_id": "gid-1",
         }
     )
-    ratings = {"Home": 5.0, "Away": 0.0}
     model_instance = BradleyTerry()
+    model_instance.fit(
+        [
+            {
+                "home_team": "Home",
+                "away_team": "Away",
+                "home_score": 3,
+                "away_score": 1,
+                "neutral": False,
+            },
+            {
+                "home_team": "Home",
+                "away_team": "Away",
+                "home_score": 4,
+                "away_score": 2,
+                "neutral": False,
+            },
+        ]
+    )
+    ratings = dict(model_instance.rankings())
     projection_engine = get_projection_engine(model_instance)
     projection_context = {
         "ratings": ratings,
@@ -224,13 +245,15 @@ def test_schedule_win_probs_follow_margin_sign() -> None:
         projection_context=projection_context,
     )
     assert positive["margin_mean"] > 0
-    assert positive["home_win_prob"] > 0.5
-    assert positive["away_win_prob"] == pytest.approx(1.0 - positive["home_win_prob"])
-    assert positive["winner_win_prob"] == pytest.approx(positive["home_win_prob"])
+    assert positive["model_p_home_win"] > 0.5
+    assert positive["away_win_prob"] == pytest.approx(1.0 - positive["model_p_home_win"])
+    assert positive["winner_win_prob"] == pytest.approx(positive["model_p_home_win"])
+    assert positive["margin_dist_assumption"] == "none"
+    assert pd.isna(positive["normal_p_home_win"])
 
     negative = _project_row(
         base_row,
-        ratings={"Home": 0.0, "Away": 5.0},
+        ratings={"Home": ratings["Away"], "Away": ratings["Home"]},
         status="scheduled",
         home_advantage=0.0,
         params_source="default",
@@ -239,13 +262,15 @@ def test_schedule_win_probs_follow_margin_sign() -> None:
         projection_engine=projection_engine,
         projection_context={
             **projection_context,
-            "ratings": {"Home": 0.0, "Away": 5.0},
+            "ratings": {"Home": ratings["Away"], "Away": ratings["Home"]},
         },
     )
     assert negative["margin_mean"] < 0
-    assert negative["home_win_prob"] < 0.5
-    assert negative["away_win_prob"] == pytest.approx(1.0 - negative["home_win_prob"])
+    assert negative["model_p_home_win"] < 0.5
+    assert negative["away_win_prob"] == pytest.approx(1.0 - negative["model_p_home_win"])
     assert negative["winner_win_prob"] == pytest.approx(negative["away_win_prob"])
+    assert negative["margin_dist_assumption"] == "none"
+    assert pd.isna(negative["normal_p_home_win"])
 
 
 def test_schedule_uses_latest_scores(tmp_path: Path) -> None:
@@ -333,10 +358,14 @@ def test_schedule_export_column_ordering() -> None:
         "projected_spread": -4.5,
         "projected_home_spread": 4.5,
         "projected_win_prob": 0.65,
-        "home_win_prob": 0.65,
-        "away_win_prob": 0.35,
-        "winner_win_prob": 0.65,
+        "model_p_home_win": 0.62,
+        "normal_p_home_win": 0.65,
+        "home_win_prob": 0.62,
+        "away_win_prob": 0.38,
+        "winner_win_prob": 0.62,
         "logistic_home_win_prob": 0.62,
+        "win_prob_source": "logistic",
+        "margin_dist_assumption": "normal_approx",
         "projected_win_prob_dist": '[{"p_home_win": 0.65, "weight": 1.0}]',
         "projected_home_score": 102.5,
         "projected_away_score": 95.5,
@@ -348,7 +377,7 @@ def test_schedule_export_column_ordering() -> None:
         "margin_dist_params": '{"mean": 7.0, "sd": 12.0}',
         "total_dist_params": '{"mean": 198.0, "sd": 20.0}',
         "model_win_prob_samples": '[{"p_home_win": 0.65, "weight": 1.0}]',
-        "model_win_prob": 0.65,
+        "model_win_prob": 0.62,
         "margin_std": 12.1,
         "total_std": 18.4,
     }
