@@ -125,6 +125,29 @@ def _rating_projection_engine(
     }
 
 
+def _bt_projection_engine(
+    home_team: str,
+    away_team: str,
+    model: Any,
+    context: ProjectionContext,
+) -> ProjectionOutput:
+    if not hasattr(model, "project_matchup"):
+        return _rating_projection_engine(home_team, away_team, model, context)
+    neutral = bool(context.get("neutral", False))
+    projection = model.project_matchup(home_team, away_team, neutral=neutral)
+    return {
+        "projected_home_score": projection["projected_home_score"],
+        "projected_away_score": projection["projected_away_score"],
+        "projected_total": projection["total_mean"],
+        "projected_win_prob": projection["p_home_win"],
+        "margin_mean": projection["margin_mean"],
+        "margin_sd": projection["margin_sd"],
+        "total_mean": projection["total_mean"],
+        "total_sd": projection["total_sd"],
+        "logistic_home_win_prob": None,
+    }
+
+
 def _poisson_projection_engine(
     home_team: str,
     away_team: str,
@@ -186,4 +209,5 @@ def _poisson_projection_engine(
 
 
 register_projection_engine(_DEFAULT_ENGINE_KEY, _rating_projection_engine)
+register_projection_engine("bradley-terry", _bt_projection_engine)
 register_projection_engine("poisson", _poisson_projection_engine)

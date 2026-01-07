@@ -87,7 +87,10 @@ def build_rankings(
         return (empty, model_instance) if return_model else empty
 
     # Convert rating differences into point-spread units.
-    use_log_scale = all(rating > 0 for rating in rating_map.values())
+    model_id = getattr(model_instance, "model_id", None)
+    use_log_scale = all(rating > 0 for rating in rating_map.values()) and (
+        model_id != "bradley-terry"
+    )
     point_scale = _estimate_point_scale(
         played, rating_map, use_log_scale=use_log_scale
     )
