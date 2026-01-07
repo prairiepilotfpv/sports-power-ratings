@@ -282,8 +282,14 @@ def _default_param_grid(model: str) -> dict[str, Iterable[Any]]:
             "tol": [1e-6, 1e-8],
         }
     if model == "gssd":
-        return {}
+        return {
+            "recency_lambda": [None, 0.005, 0.01, 0.02],
+            "learn_home_advantage": [False, True],
+            "conditional_sd": [False, True],
+            "learn_winprob_bias": [False, True],
+        }
     if model == "poisson":
+
         return {
             "learning_rate": [0.02, 0.05],
             "reg_strength": [0.05, 0.2],
