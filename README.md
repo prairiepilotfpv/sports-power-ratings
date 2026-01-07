@@ -6,7 +6,7 @@ Local-first tooling to turn Sports-Reference schedules/results into SQLite datab
 
 1) Ingest Sports-Reference HTML/CSV (or pasted CSV text) and normalize it. 
 2) Persist games into per-sport/per-season SQLite DBs. 
-3) Fit power ratings (Bradley-Terry, Elo, GSSD, TOOR) and store calibration metrics. 
+3) Fit power ratings (Bradley-Terry, Elo, GSSD, TOOR, Poisson) and store calibration metrics. 
 4) Generate matchup projections and daily schedules with spreads/totals/win probabilities. 
 5) Export rankings and schedule/report workbooks. 
 6) Backtest and tune models on historical CSVs.
@@ -28,6 +28,15 @@ data/
   db/<sport>/<season>.db  SQLite DB per sport/season
 outputs/               Backtest and tuning artifacts
 ```
+
+## Model overview
+
+- **Bradley-Terry**: logistic win-probability ratings for head-to-head outcomes.
+- **Elo**: incremental ratings with home-advantage adjustments.
+- **GSSD**: ratings derived from per-team scoring splits.
+- **TOORPowerRating**: OLS on game margins to derive power ratings.
+- **TOORModel**: maps Bradley-Terry strengths to margins via OLS for backtests.
+- **Poisson**: attack/defense scoring model with simulation-driven totals.
 
 ## Requirements
 
