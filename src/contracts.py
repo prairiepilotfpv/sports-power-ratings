@@ -24,6 +24,9 @@ SCHEDULE_EXPORT_COLUMNS: list[str] = [
     "date",
     "game_id",
     "status",
+    "projection_status",
+    "params_source",
+    "tuned_metric_used",
     "home_team",
     "away_team",
     "neutral",
@@ -39,10 +42,14 @@ SCHEDULE_EXPORT_COLUMNS: list[str] = [
     "projected_spread",
     "projected_home_spread",
     "projected_win_prob",
+    "model_p_home_win",
+    "normal_p_home_win",
     "home_win_prob",
     "away_win_prob",
     "winner_win_prob",
     "logistic_home_win_prob",
+    "win_prob_source",
+    "margin_dist_assumption",
     "projected_win_prob_dist",
     "projected_home_score",
     "projected_away_score",
@@ -71,6 +78,7 @@ class GameRecord:
     away_score: int | None
     neutral: bool = False
     overtime: bool = False
+    decision_type: str | None = None
     game_id: str | None = None
     sport: str | None = None
     season: str | None = None
@@ -97,6 +105,9 @@ class ScheduleExportRow:
     date: str
     game_id: str
     status: str
+    projection_status: str
+    params_source: str
+    tuned_metric_used: str | None
     home_team: str
     away_team: str
     neutral: bool
@@ -112,10 +123,14 @@ class ScheduleExportRow:
     projected_spread: float | None
     projected_home_spread: float | None
     projected_win_prob: float | None
+    model_p_home_win: float | None
+    normal_p_home_win: float | None
     home_win_prob: float | None
     away_win_prob: float | None
     winner_win_prob: float | None
     logistic_home_win_prob: float | None
+    win_prob_source: str | None
+    margin_dist_assumption: str | None
     projected_win_prob_dist: str | None
     projected_home_score: float | None
     projected_away_score: float | None

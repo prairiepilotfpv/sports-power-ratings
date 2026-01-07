@@ -6,11 +6,112 @@ import csv
 import re
 from io import StringIO
 from pathlib import Path
-from typing import List
+from collections import defaultdict
+from typing import Iterable, List
 
 import pandas as pd
 
 from ingest.schema import GameResult
+
+_NHL_TEAM_ALIASES = {
+    "anaheim ducks": "ANA",
+    "arizona coyotes": "ARI",
+    "boston bruins": "BOS",
+    "buffalo sabres": "BUF",
+    "calgary flames": "CGY",
+    "carolina hurricanes": "CAR",
+    "chicago blackhawks": "CHI",
+    "colorado avalanche": "COL",
+    "columbus blue jackets": "CBJ",
+    "dallas stars": "DAL",
+    "detroit red wings": "DET",
+    "edmonton oilers": "EDM",
+    "florida panthers": "FLA",
+    "los angeles kings": "LAK",
+    "la kings": "LAK",
+    "minnesota wild": "MIN",
+    "montreal canadiens": "MTL",
+    "nashville predators": "NSH",
+    "new jersey devils": "NJD",
+    "new york islanders": "NYI",
+    "new york rangers": "NYR",
+    "ottawa senators": "OTT",
+    "philadelphia flyers": "PHI",
+    "pittsburgh penguins": "PIT",
+    "san jose sharks": "SJS",
+    "seattle kraken": "SEA",
+    "st louis blues": "STL",
+    "st. louis blues": "STL",
+    "tampa bay lightning": "TBL",
+    "toronto maple leafs": "TOR",
+    "utah mammoth": "UTA",
+    "utah hockey club": "UTA",
+    "vancouver canucks": "VAN",
+    "vegas golden knights": "VGK",
+    "washington capitals": "WSH",
+    "winnipeg jets": "WPG",
+}
+
+_NHL_ABBREVIATIONS = {
+    "ANA",
+    "ARI",
+    "BOS",
+    "BUF",
+    "CGY",
+    "CAR",
+    "CHI",
+    "COL",
+    "CBJ",
+    "DAL",
+    "DET",
+    "EDM",
+    "FLA",
+    "LAK",
+    "MIN",
+    "MTL",
+    "NSH",
+    "NJD",
+    "NYI",
+    "NYR",
+    "OTT",
+    "PHI",
+    "PIT",
+    "SJS",
+    "SEA",
+    "STL",
+    "TBL",
+    "TOR",
+    "UTA",
+    "VAN",
+    "VGK",
+    "WSH",
+    "WPG",
+}
+
+
+def _normalize_team_key(name: str) -> str:
+    cleaned = re.sub(r"[.']", "", name).strip().lower()
+    return re.sub(r"\s+", " ", cleaned)
+
+
+def _normalize_nhl_team(name: str, unknown: set[str]) -> str:
+    if not name:
+        unknown.add(name)
+        return name
+    raw = name.strip()
+    upper = raw.upper()
+    if upper in _NHL_ABBREVIATIONS:
+        return upper
+    key = _normalize_team_key(raw)
+    mapped = _NHL_TEAM_ALIASES.get(key)
+    if mapped is None:
+        unknown.add(raw)
+        return raw
+    return mapped
+
+
+def _format_unknown_names(names: Iterable[str]) -> str:
+    return ", ".join(sorted({name for name in names if name}))
 
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -20,13 +121,15 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _rename_duplicate_pts(df: pd.DataFrame) -> pd.DataFrame:
-    """Disambiguate duplicate PTS columns (Visitor/Home)."""
+def _rename_duplicate_stat(
+    df: pd.DataFrame, label: str, away_name: str, home_name: str
+) -> pd.DataFrame:
+    """Disambiguate duplicate stat columns (Visitor/Home)."""
     cols = list(df.columns)
-    pts_indices = [i for i, c in enumerate(cols) if c == "pts"]
-    if len(pts_indices) >= 2:
-        cols[pts_indices[0]] = "pts_away"
-        cols[pts_indices[1]] = "pts_home"
+    stat_indices = [i for i, c in enumerate(cols) if c == label]
+    if len(stat_indices) >= 2:
+        cols[stat_indices[0]] = away_name
+        cols[stat_indices[1]] = home_name
         df = df.copy()
         df.columns = cols
     return df
@@ -38,6 +141,32 @@ def _find_column(df: pd.DataFrame, *names: str) -> str | None:
         if name in df.columns:
             return name
     return None
+
+
+def _normalize_decision_type(value: object) -> str | None:
+    """Normalize overtime/shootout markers like OT, 2OT, or SO."""
+    if value is None or pd.isna(value):
+        return None
+    raw = str(value).strip().upper()
+    if not raw:
+        return None
+    if raw == "SO":
+        return "SO"
+    if raw == "OT":
+        return "OT"
+    if raw.endswith("OT") and raw[:-2].isdigit():
+        return raw
+    return None
+
+
+def _find_unlabeled_columns(df: pd.DataFrame) -> list[str]:
+    """Return columns that look unlabeled in CSV exports."""
+    unlabeled = []
+    for col in df.columns:
+        label = str(col).strip().lower()
+        if not label or label.startswith("unnamed"):
+            unlabeled.append(col)
+    return unlabeled
 
 
 def _as_int(value) -> int | None:
@@ -54,12 +183,17 @@ def _as_int(value) -> int | None:
 
 
 def _resolve_pts_columns(df: pd.DataFrame) -> tuple[str | None, str | None]:
-    """Detect the away/home points columns regardless of naming conventions."""
+    """Detect the away/home points/goals columns regardless of naming conventions."""
     if "pts_away" in df.columns and "pts_home" in df.columns:
         return "pts_away", "pts_home"
+    if "g_away" in df.columns and "g_home" in df.columns:
+        return "g_away", "g_home"
     pts_cols = [c for c in df.columns if c == "pts" or c.startswith("pts.")]
     if len(pts_cols) >= 2:
         return pts_cols[0], pts_cols[1]
+    g_cols = [c for c in df.columns if c == "g" or c.startswith("g.")]
+    if len(g_cols) >= 2:
+        return g_cols[0], g_cols[1]
 
     away_pts = _find_column(
         df,
@@ -74,6 +208,9 @@ def _resolve_pts_columns(df: pd.DataFrame) -> tuple[str | None, str | None]:
     home_pts = _find_column(
         df, "home pts", "home_pts", "pts_home", "ptshome", "pts home"
     )
+    if away_pts is None and home_pts is None:
+        away_pts = _find_column(df, "visitor g", "visitor_g", "away g", "away_g", "g_away")
+        home_pts = _find_column(df, "home g", "home_g", "g_home", "g home")
     return away_pts, home_pts
 
 
@@ -86,8 +223,10 @@ def _parse_sr_dataframe(
 ) -> List[GameResult]:
     """Convert a Sports-Reference dataframe into structured GameResult rows."""
     df = _normalize_columns(df)
-    df = _rename_duplicate_pts(df)
+    df = _rename_duplicate_stat(df, "pts", "pts_away", "pts_home")
+    df = _rename_duplicate_stat(df, "g", "g_away", "g_home")
 
+    sport_key = (sport or "").lower()
     date_col = _find_column(df, "date", "game date")
     away_col = _find_column(
         df, "visitor/neutral", "visitor", "away", "away/neutral", "road", "road team"
@@ -97,6 +236,7 @@ def _parse_sr_dataframe(
     box_col = _find_column(df, "box score", "boxscore", "box")
     notes_col = _find_column(df, "notes")
     away_pts_col, home_pts_col = _resolve_pts_columns(df)
+    unlabeled_cols = _find_unlabeled_columns(df)
 
     if not date_col or not away_col or not home_col:
         missing = [
@@ -111,6 +251,8 @@ def _parse_sr_dataframe(
         raise ValueError(f"Missing required columns: {', '.join(missing)}")
 
     games: List[GameResult] = []
+    unknown_teams: set[str] = set()
+    game_id_counts: dict[str, int] = defaultdict(int)
     for _, row in df.iterrows():
         # Validate required fields and parse any available scoring data.
         raw_date = row.get(date_col)
@@ -127,6 +269,9 @@ def _parse_sr_dataframe(
 
         away_team = str(row[away_col]).strip()
         home_team = str(row[home_col]).strip()
+        if sport_key == "nhl":
+            away_team = _normalize_nhl_team(away_team, unknown_teams)
+            home_team = _normalize_nhl_team(home_team, unknown_teams)
 
         away_score = _as_int(row.get(away_pts_col)) if away_pts_col else None
         home_score = _as_int(row.get(home_pts_col)) if home_pts_col else None
@@ -134,15 +279,28 @@ def _parse_sr_dataframe(
         ot_raw = ""
         if ot_col and pd.notna(row.get(ot_col)):
             ot_raw = str(row.get(ot_col)).strip()
-        overtime = bool(ot_raw)
+        decision_type = _normalize_decision_type(ot_raw)
+        if decision_type is None and (sport or "").lower() == "nhl":
+            for col in unlabeled_cols:
+                candidate = _normalize_decision_type(row.get(col))
+                if candidate:
+                    decision_type = candidate
+                    break
+        overtime = decision_type is not None or bool(ot_raw)
 
         game_id = None
-        if box_col and pd.notna(row.get(box_col)):
+        if sport_key != "nhl" and box_col and pd.notna(row.get(box_col)):
             raw_game_id = str(row.get(box_col)).strip()
             if not looks_like_tip_time(raw_game_id):
                 game_id = raw_game_id
         if not game_id:
-            game_id = f"{parsed_date.date()}|{away_team}|{home_team}"
+            if sport_key == "nhl":
+                base_id = f"nhl|{parsed_date.date()}|{away_team}|{home_team}"
+                game_id_counts[base_id] += 1
+                suffix = game_id_counts[base_id]
+                game_id = base_id if suffix == 1 else f"{base_id}|{suffix}"
+            else:
+                game_id = f"{parsed_date.date()}|{away_team}|{home_team}"
 
         notes = None
         if notes_col and pd.notna(row.get(notes_col)):
@@ -156,6 +314,7 @@ def _parse_sr_dataframe(
                 home_score=home_score,
                 away_score=away_score,
                 overtime=overtime,
+                decision_type=decision_type,
                 game_id=game_id,
                 sport=sport,
                 season=season,
@@ -164,6 +323,10 @@ def _parse_sr_dataframe(
                 notes=notes,
             )
         )
+
+    if unknown_teams and sport_key == "nhl":
+        unknown_list = _format_unknown_names(unknown_teams)
+        raise ValueError(f"Unknown NHL team names found: {unknown_list}")
 
     return games
 

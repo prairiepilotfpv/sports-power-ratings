@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import statistics
 import math
+import inspect
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
 
 import pandas as pd
 import numpy as np
@@ -15,7 +16,7 @@ from data.repository import load_games, save_model_metrics
 from models.registry import get_model, list_models, normalize_model_name
 from models.calibration import fit_conditional_sd
 from pipelines.common import normalize_games, resolve_output_path
-from pipelines.model_params import resolve_model_params
+from pipelines.model_params import resolve_model_params_with_metadata
 from config import (
     CALIBRATION_RESIDUAL_GAMES,
     DEFAULT_MARGIN_SD_FALLBACK,
@@ -44,29 +45,61 @@ def _empty_rankings() -> pd.DataFrame:
     return pd.DataFrame(columns=["team", "rating", "points", "games"])
 
 
+def _filter_kwargs(params: dict[str, Any], func) -> dict[str, Any]:
+    """Return a dict containing only kwargs accepted by `func`.
+
+    If `func` accepts **kwargs (VAR_KEYWORD), return `params` as-is.
+    """
+    if not params:
+        return {}
+    sig = inspect.signature(func)
+    allowed: set[str] = set()
+    for name, param in sig.parameters.items():
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            # func accepts arbitrary kwargs; nothing to filter
+            return dict(params)
+        if name in ("self", "cls"):
+            continue
+        if param.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            allowed.add(name)
+    return {k: v for k, v in params.items() if k in allowed}
+
+
 def build_rankings(
     df: pd.DataFrame,
     model: str = "bradley-terry",
     *,
     require_scores: bool = True,
     model_params: dict[str, float] | None = None,
-) -> pd.DataFrame:
+    return_model: bool = False,
+) -> pd.DataFrame | tuple[pd.DataFrame, Any]:
     """Fit a ranking model and return a DataFrame of ratings and point values."""
     working_df = df.copy(deep=True)
     played = _completed_games(working_df)
-    if played.empty:
-        if require_scores:
-            raise ValueError("No completed games available to build rankings.")
-        return _empty_rankings()
 
     model_cls = get_model(model)
+
+    # Only pass kwargs to the model __init__ that the class actually accepts.
+    init_kwargs = _filter_kwargs(model_params or {}, model_cls)
     try:
-        model_instance = model_cls(**(model_params or {}))
+        model_instance = model_cls(**init_kwargs)
     except TypeError as exc:
         raise ValueError(
             f"Invalid parameters for model {model!r}: {model_params}"
         ) from exc
-    model_instance.fit(played.to_dict(orient="records"))
+    if played.empty and require_scores:
+        raise ValueError("No completed games available to build rankings.")
+
+    # Filter kwargs for the model's fit method (e.g., recency_lambda for GSSD).
+    fit_kwargs = _filter_kwargs(model_params or {}, model_instance.fit)
+    model_instance.fit(played.to_dict(orient="records"), **fit_kwargs)
+
+    if played.empty:
+        empty = _empty_rankings()
+        return (empty, model_instance) if return_model else empty
 
     games_played: Dict[str, int] = {}
     for _, row in played.iterrows():
@@ -79,10 +112,14 @@ def build_rankings(
 
     rating_map = dict(model_instance.rankings())
     if not rating_map:
-        return _empty_rankings()
+        empty = _empty_rankings()
+        return (empty, model_instance) if return_model else empty
 
     # Convert rating differences into point-spread units.
-    use_log_scale = all(rating > 0 for rating in rating_map.values())
+    model_id = getattr(model_instance, "model_id", None)
+    use_log_scale = all(rating > 0 for rating in rating_map.values()) and (
+        model_id != "bradley-terry"
+    )
     point_scale = _estimate_point_scale(
         played, rating_map, use_log_scale=use_log_scale
     )
@@ -107,7 +144,8 @@ def build_rankings(
                 "games": games_played.get(team, 0),
             }
         )
-    return pd.DataFrame(items).sort_values("rating", ascending=False)
+    rankings_df = pd.DataFrame(items).sort_values("rating", ascending=False)
+    return (rankings_df, model_instance) if return_model else rankings_df
 
 
 def _estimate_point_scale(
@@ -159,7 +197,10 @@ def _center_ratings(ratings: Dict[str, float]) -> Dict[str, float]:
 def _resolve_models(model: str | None) -> list[str]:
     if model is None:
         return list_models()
-    return [normalize_model_name(model)]
+    normalized = normalize_model_name(model)
+    if normalized in {"all", "*"}:
+        return list_models()
+    return [normalized]
 
 
 def run_rankings(
@@ -173,6 +214,7 @@ def run_rankings(
     output_path: str | Path | None = None,
     model_params: dict[str, float] | None = None,
     model_params_file: str | Path | None = None,
+    tuned_metric: str | None = None,
 ) -> Path | list[Path]:
     """Load games from SQLite, generate rankings, and write them to CSV."""
     rows = load_games(
@@ -191,11 +233,22 @@ def run_rankings(
     for model_name in models:
         try:
             model_df = df.copy(deep=True)
-            resolved_params = resolve_model_params(
-                model_name, params=model_params, params_file=model_params_file
+            resolution = resolve_model_params_with_metadata(
+                model_name,
+                params=model_params,
+                params_file=model_params_file,
+                db_path=db_path,
+                sport=sport,
+                season=season,
+                tuned_metric=tuned_metric,
             )
+            resolved_params = resolution.params
             rankings = build_rankings(
                 model_df, model=model_name, model_params=resolved_params
+            )
+            rankings = rankings.assign(
+                params_source=resolution.params_source,
+                tuned_metric_used=resolution.tuned_metric_used,
             )
         except ValueError as exc:
             if "No completed games" in str(exc):

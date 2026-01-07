@@ -25,6 +25,7 @@ def test_load_games_and_discovery_functions(tmp_path) -> None:
             home_score=101,
             away_score=99,
             overtime=True,
+            decision_type="OT",
             game_id="202401020DET",
             sport="nba",
             season="2023-24",
@@ -63,3 +64,4 @@ def test_load_games_and_discovery_functions(tmp_path) -> None:
 
     season_games = load_games(db_path, sport="nba", season="2023-24")
     assert len(season_games) == 2
+    assert {game.decision_type for game in season_games} == {None, "OT"}

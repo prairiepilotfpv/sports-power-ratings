@@ -13,19 +13,15 @@ from contracts import SCHEDULE_EXPORT_COLUMNS, validate_schedule_export_frame
 from data.paths import processed_path_for
 from data.repository import load_games, load_model_metrics
 from pipelines.common import normalize_games, resolve_output_path
-from pipelines.model_params import resolve_model_params
+from pipelines.model_params import resolve_model_params_with_metadata
 from pipelines.matchups import team_home_advantages
-from config import DEFAULT_MARGIN_SD_FALLBACK, DEFAULT_TOTAL_SD_FALLBACK, DEFAULT_WIN_PROB_K
+from config import DEFAULT_WIN_PROB_K
+from pipelines.projection_engines import get_projection_engine
 from pipelines.projections import (
     average_total_points,
     fit_total_model,
-    home_win_prob_from_margin,
-    matchup_total_from_averages,
-    project_game,
-    total_from_ratings,
     team_scoring_averages,
 )
-from models.calibration import ConditionalSDModel
 from models.registry import get_model, list_models, normalize_model_name
 from pipelines.run_rankings import build_rankings
 from models.base import resolve_model_identity
@@ -34,6 +30,11 @@ from pipelines.metadata import prediction_hash
 
 DASHBOARD_COLUMNS: List[str] = [
     "model",
+    "model_version",
+    "params_source",
+    "tuned_metric_used",
+    "run_timestamp_utc",
+    "prediction_hash",
     "date",
     "game",
     "projected_home_score",
@@ -43,14 +44,18 @@ DASHBOARD_COLUMNS: List[str] = [
     "projected_spread",
     "margin_mean",
     "margin_sd",
+    "model_p_home_win",
+    "normal_p_home_win",
     "home_win_prob",
     "away_win_prob",
     "winner_win_prob",
     "logistic_home_win_prob",
+    "win_prob_source",
+    "margin_dist_assumption",
     "total_sd",
 ]
 
-MODEL_METADATA_DATA_START_ROW = 10
+MODEL_METADATA_DATA_START_ROW = 12
 
 
 def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
@@ -109,19 +114,39 @@ def _project_row(
     row: pd.Series,
     *,
     ratings: Dict[str, float],
-    base_total: float,
-    scoring_averages: Dict[str, tuple[float, float]],
     status: str,
     home_advantage: float,
-    win_prob_k: float,
+    params_source: str,
+    tuned_metric_used: str | None,
+    model_instance: Any | None = None,
+    projection_engine: Any | None = None,
+    projection_context: Dict[str, Any] | None = None,
+    base_total: float | None = None,
+    scoring_averages: Dict[str, Any] | None = None,
+    win_prob_k: float | None = None,
+    total_intercept: float | None = None,
+    total_slope: float | None = None,
     margin_std: float | None = None,
     total_std: float | None = None,
     conditional_sd_intercept: float | None = None,
     conditional_sd_slope: float | None = None,
-    total_intercept: float | None = None,
-    total_slope: float | None = None,
 ) -> Dict[str, Any]:
     """Create a schedule export row with projections when ratings are available."""
+    if projection_context is None:
+        projection_context = {
+            "ratings": ratings,
+            "base_total": base_total,
+            "scoring_averages": scoring_averages or {},
+            "total_intercept": total_intercept,
+            "total_slope": total_slope,
+            "margin_std": margin_std,
+            "total_std": total_std,
+            "conditional_sd_intercept": conditional_sd_intercept,
+            "conditional_sd_slope": conditional_sd_slope,
+            "win_prob_k": win_prob_k,
+        }
+    if projection_engine is None:
+        projection_engine = get_projection_engine(model_instance)
     base = _base_schedule_row(row)
     home = base["home_team"]
     away = base["away_team"]
@@ -133,6 +158,8 @@ def _project_row(
     projected_spread = None
     projected_home_spread = None
     projected_win_prob = None
+    model_p_home_win = None
+    normal_p_home_win = None
     logistic_home_win_prob = None
     home_win_prob = None
     away_win_prob = None
@@ -144,70 +171,79 @@ def _project_row(
     model_win_prob_samples = None
     model_win_prob = None
     margin_mean = None
-    margin_sd_value = (
-        margin_std if margin_std is not None and margin_std > 0 else DEFAULT_MARGIN_SD_FALLBACK
-    )
     total_mean = None
-    total_sd_value = (
-        total_std if total_std is not None and total_std > 0 else DEFAULT_TOTAL_SD_FALLBACK
-    )
+    margin_sd_value = None
+    total_sd_value = None
     margin_dist_params = None
     total_dist_params = None
+    win_prob_source = None
+    margin_dist_assumption = None
+    projection_status = None
 
-    if home_rating is not None and away_rating is not None:
-        # Build projected spreads/totals when both team ratings are available.
-        matchup_total = matchup_total_from_averages(home, away, scoring_averages)
-        model_total = None
-        if total_intercept is not None and total_slope is not None:
-            model_total = total_from_ratings(
-                home,
-                away,
-                ratings,
-                intercept=total_intercept,
-                slope=total_slope,
+    can_project = (
+        home_rating is not None and away_rating is not None
+    ) or (
+        model_instance is not None
+        and hasattr(model_instance, "simulate_matchup")
+        and callable(getattr(model_instance, "simulate_matchup"))
+    )
+    if not can_project:
+        projection_status = "missing_ratings"
+    else:
+        projection = projection_engine(
+            home,
+            away,
+            model_instance,
+            {
+                **projection_context,
+                "home_advantage": applied_home_advantage,
+                "neutral": base["neutral"],
+            },
+        )
+        projected_home_score = projection.get("projected_home_score")
+        projected_away_score = projection.get("projected_away_score")
+        projected_total = projection.get("projected_total")
+        normal_p_home_win = projection.get("normal_p_home_win")
+        projected_win_prob = projection.get("projected_win_prob", normal_p_home_win)
+        model_p_home_win = projection.get("model_p_home_win")
+        logistic_home_win_prob = projection.get("logistic_home_win_prob")
+        win_prob_source = projection.get("win_prob_source")
+        margin_dist_assumption = projection.get("margin_dist_assumption")
+        margin_mean = projection.get("margin_mean")
+        margin_sd_value = projection.get("margin_sd")
+        total_mean = projection.get("total_mean")
+        total_sd_value = projection.get("total_sd")
+        projection_has_output = any(
+            value is not None
+            for value in (
+                projected_home_score,
+                projected_away_score,
+                projected_total,
+                projected_win_prob,
+                model_p_home_win,
+                margin_mean,
+                total_mean,
             )
-        applied_total = (
-            model_total or matchup_total or (base_total if base_total > 0 else None)
         )
-        projection = project_game(
-            home_rating,
-            away_rating,
-            home_advantage=applied_home_advantage,
-            neutral=base["neutral"],
-            k=win_prob_k,
-            base_total=applied_total,
-            home_team=home,
-            away_team=away,
-        )
-        projected_winner = projection.projected_winner
-        projected_spread = projection.projected_spread
-        projected_home_spread = projection.projected_home_spread
-        logistic_home_win_prob = projection.projected_win_prob
-        projected_home_score = projection.projected_home_score
-        projected_away_score = projection.projected_away_score
-        projected_total = projection.projected_total
-        margin_mean = projection.margin
-        total_mean = projected_total
-        if margin_mean is not None and conditional_sd_intercept is not None:
-            if conditional_sd_slope is not None:
-                margin_sd_value = ConditionalSDModel(
-                    intercept=conditional_sd_intercept,
-                    slope=conditional_sd_slope,
-                ).predict(margin_mean)
+        if not projection_has_output and model_instance is not None and hasattr(
+            model_instance, "simulate_matchup"
+        ):
+            projection_status = "no_samples"
+        else:
+            projection_status = "ok"
+
         if margin_mean is not None:
-            # Outcome distribution parameters for pricing spreads/totals (not model-opinion buckets).
-            margin_dist_params = None
-        if total_mean is not None:
-            total_dist_params = None
-        home_win_prob = home_win_prob_from_margin(margin_mean, margin_sd_value)
-        if home_win_prob is not None:
-            projected_win_prob = home_win_prob
-            model_win_prob = home_win_prob
+            projected_spread = -margin_mean
+            projected_home_spread = -projected_spread
+            projected_winner = home if margin_mean > 0 else away
+        if model_p_home_win is not None:
+            home_win_prob = model_p_home_win
+            model_win_prob = model_p_home_win
             projected_win_prob_dist = None
             model_win_prob_samples = None
-            away_win_prob = 1.0 - home_win_prob
+            away_win_prob = 1.0 - model_p_home_win
             if projected_winner == home:
-                winner_win_prob = home_win_prob
+                winner_win_prob = model_p_home_win
             elif projected_winner == away:
                 winner_win_prob = away_win_prob
 
@@ -224,16 +260,23 @@ def _project_row(
     base.update(
         {
             "status": status,
+            "projection_status": projection_status,
+            "params_source": params_source,
+            "tuned_metric_used": tuned_metric_used,
             "home_rating": home_rating,
             "away_rating": away_rating,
             "projected_winner": projected_winner,
             "projected_spread": projected_spread,
             "projected_home_spread": projected_home_spread,
             "projected_win_prob": projected_win_prob,
+            "model_p_home_win": model_p_home_win,
+            "normal_p_home_win": normal_p_home_win,
             "home_win_prob": home_win_prob,
             "away_win_prob": away_win_prob,
             "winner_win_prob": winner_win_prob,
             "logistic_home_win_prob": logistic_home_win_prob,
+            "win_prob_source": win_prob_source,
+            "margin_dist_assumption": margin_dist_assumption,
             "projected_win_prob_dist": None,
             "model_win_prob_samples": model_win_prob_samples,
             "model_win_prob": model_win_prob,
@@ -241,8 +284,8 @@ def _project_row(
             "projected_home_score": projected_home_score,
             "projected_away_score": projected_away_score,
             "projected_total": projected_total,
-            "margin_std": margin_std,
-            "total_std": total_std,
+            "margin_std": projection_context.get("margin_std"),
+            "total_std": projection_context.get("total_std"),
             "result_margin": result_margin,
             "result_total": result_total,
             "margin_mean": margin_mean,
@@ -268,7 +311,10 @@ def _order_schedule_export(schedule_df: pd.DataFrame) -> pd.DataFrame:
 def _resolve_models(model: str | None) -> list[str]:
     if model is None:
         return list_models()
-    return [normalize_model_name(model)]
+    normalized = normalize_model_name(model)
+    if normalized in {"all", "*"}:
+        return list_models()
+    return [normalized]
 
 
 def _resolve_workbook_path(
@@ -296,14 +342,21 @@ def _build_schedule_dataframe(
     model: str,
     upcoming_only: bool,
     model_params: dict[str, float] | None,
+    params_source: str,
+    tuned_metric_used: str | None,
 ) -> pd.DataFrame:
     played = _completed_games(df)
     upcoming = _upcoming_games(df)
 
-    rankings = build_rankings(
-        played, model=model, require_scores=False, model_params=model_params
+    rankings, model_instance = build_rankings(
+        played,
+        model=model,
+        require_scores=False,
+        model_params=model_params,
+        return_model=True,
     )
     ratings = _rating_lookup(rankings)
+    projection_engine = get_projection_engine(model_instance)
     fallback_total = average_total_points(played.to_dict(orient="records"))
     metrics = load_model_metrics(db_path, sport=sport, season=season, model=model) or {}
     # Team-specific home advantages (per-home team residuals) are the chosen H option.
@@ -325,6 +378,20 @@ def _build_schedule_dataframe(
     played_records = played.to_dict(orient="records")
     total_intercept, total_slope = fit_total_model(played_records, ratings)
     scoring_averages = team_scoring_averages(played_records)
+    projection_context = {
+        "ratings": ratings,
+        "base_total": base_total,
+        "scoring_averages": scoring_averages,
+        "total_intercept": total_intercept,
+        "total_slope": total_slope,
+        "margin_std": margin_std,
+        "total_std": total_std,
+        "conditional_sd_intercept": conditional_sd_intercept,
+        "conditional_sd_slope": conditional_sd_slope,
+        "win_prob_k": win_prob_k,
+    }
+    if model == "poisson" and model_params and "n_simulations" in model_params:
+        projection_context["n_simulations"] = model_params["n_simulations"]
 
     schedule_rows: List[Dict[str, Any]] = []
     if not upcoming_only:
@@ -334,17 +401,13 @@ def _build_schedule_dataframe(
                 _project_row(
                     row,
                     ratings=ratings,
-                    base_total=base_total,
-                    scoring_averages=scoring_averages,
                     status="final",
                     home_advantage=home_advantages.get(home, fallback_home_advantage),
-                    win_prob_k=win_prob_k,
-                    margin_std=margin_std,
-                    total_std=total_std,
-                    conditional_sd_intercept=conditional_sd_intercept,
-                    conditional_sd_slope=conditional_sd_slope,
-                    total_intercept=total_intercept,
-                    total_slope=total_slope,
+                    params_source=params_source,
+                    tuned_metric_used=tuned_metric_used,
+                    model_instance=model_instance,
+                    projection_engine=projection_engine,
+                    projection_context=projection_context,
                 )
             )
 
@@ -354,17 +417,13 @@ def _build_schedule_dataframe(
             _project_row(
                 row,
                 ratings=ratings,
-                base_total=base_total,
-                scoring_averages=scoring_averages,
                 status="scheduled",
                 home_advantage=home_advantages.get(home, fallback_home_advantage),
-                win_prob_k=win_prob_k,
-                margin_std=margin_std,
-                total_std=total_std,
-                conditional_sd_intercept=conditional_sd_intercept,
-                conditional_sd_slope=conditional_sd_slope,
-                total_intercept=total_intercept,
-                total_slope=total_slope,
+                params_source=params_source,
+                tuned_metric_used=tuned_metric_used,
+                model_instance=model_instance,
+                projection_engine=projection_engine,
+                projection_context=projection_context,
             )
         )
 
@@ -390,7 +449,11 @@ def _format_game_name(away_team: Any, home_team: Any) -> str:
 
 
 def _dashboard_rows_for_today(
-    schedule_df: pd.DataFrame, model_name: str, as_of_date: date | None = None
+    schedule_df: pd.DataFrame,
+    model_name: str,
+    as_of_date: date | None = None,
+    *,
+    model_metadata: dict[str, Any] | None = None,
 ) -> list[Dict[str, Any]]:
     """Collect scheduled games for the current day for the dashboard sheet."""
     if schedule_df.empty:
@@ -413,6 +476,7 @@ def _dashboard_rows_for_today(
         return []
 
     rows: list[Dict[str, Any]] = []
+    metadata = model_metadata or {}
     for _, row in df.iterrows():
         projected_home_score = row.get("projected_home_score")
         projected_away_score = row.get("projected_away_score")
@@ -424,6 +488,11 @@ def _dashboard_rows_for_today(
         rows.append(
             {
                 "model": model_name,
+                "model_version": metadata.get("model_version"),
+                "params_source": metadata.get("params_source"),
+                "tuned_metric_used": metadata.get("tuned_metric_used"),
+                "run_timestamp_utc": metadata.get("run_timestamp_utc"),
+                "prediction_hash": metadata.get("prediction_hash"),
                 "date": row.get("date"),
                 "game": _format_game_name(row.get("away_team"), row.get("home_team")),
                 "projected_home_score": projected_home_score,
@@ -433,10 +502,14 @@ def _dashboard_rows_for_today(
                 "projected_spread": row.get("projected_spread"),
                 "margin_mean": row.get("margin_mean"),
                 "margin_sd": row.get("margin_sd"),
+                "model_p_home_win": row.get("model_p_home_win"),
+                "normal_p_home_win": row.get("normal_p_home_win"),
                 "home_win_prob": row.get("home_win_prob"),
                 "away_win_prob": row.get("away_win_prob"),
                 "winner_win_prob": row.get("winner_win_prob"),
                 "logistic_home_win_prob": row.get("logistic_home_win_prob"),
+                "win_prob_source": row.get("win_prob_source"),
+                "margin_dist_assumption": row.get("margin_dist_assumption"),
                 "total_sd": row.get("total_sd"),
             }
         )
@@ -464,6 +537,8 @@ def _build_model_metadata(
     model_name: str,
     played: pd.DataFrame,
     schedule_df: pd.DataFrame,
+    params_source: str,
+    tuned_metric_used: str | None,
 ) -> dict[str, Any]:
     model_instance = get_model(model_name)()
     identity = resolve_model_identity(model_instance)
@@ -471,6 +546,8 @@ def _build_model_metadata(
         "model_id": identity["model_id"],
         "model_version": identity["model_version"],
         "params": _serialize_params(identity["params"]),
+        "params_source": params_source,
+        "tuned_metric_used": tuned_metric_used,
         "trained_on_date_range": _training_date_range(played),
         "n_games_train": int(len(played)),
         "run_timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -506,10 +583,18 @@ def _build_schedule_for_model(
     add_prefix: bool,
     model_params: dict[str, float] | None,
     model_params_file: str | Path | None,
+    tuned_metric: str | None,
 ) -> Path:
-    resolved_params = resolve_model_params(
-        model, params=model_params, params_file=model_params_file
+    resolution = resolve_model_params_with_metadata(
+        model,
+        params=model_params,
+        params_file=model_params_file,
+        db_path=db_path,
+        sport=sport,
+        season=season,
+        tuned_metric=tuned_metric,
     )
+    resolved_params = resolution.params
     schedule_df = _build_schedule_dataframe(
         df,
         db_path=db_path,
@@ -518,6 +603,8 @@ def _build_schedule_for_model(
         model=model,
         upcoming_only=upcoming_only,
         model_params=resolved_params,
+        params_source=resolution.params_source,
+        tuned_metric_used=resolution.tuned_metric_used,
     )
     default_path = processed_path_for(sport, season, "schedule_with_projections.csv")
     resolved_output = resolve_output_path(
@@ -543,6 +630,7 @@ def build_schedule_with_projections(
     upcoming_only: bool = False,
     model_params: dict[str, float] | None = None,
     model_params_file: str | Path | None = None,
+    tuned_metric: str | None = None,
 ) -> Path | list[Path]:
     """Build a schedule export containing projections for upcoming games."""
     rows = load_games(
@@ -570,6 +658,7 @@ def build_schedule_with_projections(
             add_prefix=multiple,
             model_params=model_params,
             model_params_file=model_params_file,
+            tuned_metric=tuned_metric,
         )
         for model_name in models
     ]
@@ -588,6 +677,7 @@ def build_schedule_excel_report(
     upcoming_only: bool = False,
     model_params: dict[str, float] | None = None,
     model_params_file: str | Path | None = None,
+    tuned_metric: str | None = None,
 ) -> Path:
     """Build an Excel workbook with schedule projections (one sheet per model)."""
     rows = load_games(
@@ -612,9 +702,18 @@ def build_schedule_excel_report(
     with pd.ExcelWriter(report_path) as writer:
         for model_name in models:
             model_df = df.copy(deep=True)
-            resolved_params = resolve_model_params(
-                model_name, params=model_params, params_file=model_params_file
+            resolution = resolve_model_params_with_metadata(
+                model_name,
+                params=model_params,
+                params_file=model_params_file,
+                db_path=db_path,
+                sport=sport,
+                season=season,
+                tuned_metric=tuned_metric,
             )
+            resolved_params = resolution.params
+            params_source = resolution.params_source
+            tuned_metric_used = resolution.tuned_metric_used
             schedule_df = _build_schedule_dataframe(
                 model_df,
                 db_path=db_path,
@@ -623,11 +722,15 @@ def build_schedule_excel_report(
                 model=model_name,
                 upcoming_only=upcoming_only,
                 model_params=resolved_params,
+                params_source=params_source,
+                tuned_metric_used=tuned_metric_used,
             )
             metadata = _build_model_metadata(
                 model_name=model_name,
                 played=_completed_games(model_df),
                 schedule_df=schedule_df,
+                params_source=params_source,
+                tuned_metric_used=tuned_metric_used,
             )
             start_row = _write_metadata_section(writer, model_name, metadata)
             schedule_df.to_excel(
@@ -636,7 +739,13 @@ def build_schedule_excel_report(
                 index=False,
                 startrow=start_row,
             )
-            dashboard_rows.extend(_dashboard_rows_for_today(schedule_df, model_name))
+            dashboard_rows.extend(
+                _dashboard_rows_for_today(
+                    schedule_df,
+                    model_name,
+                    model_metadata=metadata,
+                )
+            )
 
         dashboard_df = pd.DataFrame(dashboard_rows)
         if not dashboard_df.empty:

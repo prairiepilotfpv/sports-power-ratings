@@ -48,7 +48,14 @@ def test_run_rankings_smoke(tmp_path: Path) -> None:
 
     assert output_path.exists()
     df = pd.read_csv(output_path)
-    assert set(df.columns) == {"team", "rating", "points", "games"}
+    assert set(df.columns) == {
+        "team",
+        "rating",
+        "points",
+        "games",
+        "params_source",
+        "tuned_metric_used",
+    }
     assert {"A", "B"}.issubset(set(df["team"]))
     assert math.isclose(df["points"].mean(), 0.0, abs_tol=1e-9)
 

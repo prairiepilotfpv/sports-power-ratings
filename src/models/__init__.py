@@ -16,6 +16,7 @@ from .bradley_terry import BradleyTerry
 from .bradley_terry_hfa import BradleyTerryHFA
 from .elo import EloModel, EloPowerRating
 from .gssd import GSSDModel, GSSDPowerRating
+from .poisson import PoissonModel, PoissonPowerRating
 from .toor import TOORModel, TOORPowerRating
 
 __all__ = [
@@ -29,6 +30,8 @@ __all__ = [
     "EloPowerRating",
     "GSSDModel",
     "GSSDPowerRating",
+    "PoissonModel",
+    "PoissonPowerRating",
     "TOORModel",
     "TOORPowerRating",
     "normalize_optional_float",

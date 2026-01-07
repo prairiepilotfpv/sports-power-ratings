@@ -7,10 +7,12 @@ import re
 from typing import Type
 
 from models.base import BaseModel, PowerRatingModel
+from models.bradley_terry import BradleyTerryBacktest
 from models.bradley_terry_calibrated_hfa import BradleyTerryCalibratedHFA
 from models.bradley_terry_hfa import BradleyTerryHFA
 from models.elo import EloModel
 from models.gssd import GSSDModel
+from models.poisson import PoissonModel
 from models.toor import TOORModel
 
 
@@ -39,6 +41,11 @@ _MODEL_SPECS: dict[str, ModelSpec] = {
         abbreviation="gssd",
         required_module="ssat",
     ),
+    "poisson": ModelSpec(
+        name="poisson",
+        path="models.poisson.PoissonPowerRating",
+        abbreviation="pois",
+    ),
     "toor": ModelSpec(
         name="toor",
         path="models.toor.TOORPowerRating",
@@ -50,10 +57,12 @@ _DYNAMIC_MODELS: dict[str, Type[PowerRatingModel]] = {}
 _DYNAMIC_ABBREVIATIONS: dict[str, str] = {}
 
 _BACKTEST_REGISTRY: dict[str, Type[BaseModel]] = {
+    "bradley-terry": BradleyTerryBacktest,
     "bradley_terry_hfa": BradleyTerryHFA,
     "bradley_terry_calibrated_hfa": BradleyTerryCalibratedHFA,
     "elo": EloModel,
     "gssd": GSSDModel,
+    "poisson": PoissonModel,
     "toor": TOORModel,
 }
 

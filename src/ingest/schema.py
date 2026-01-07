@@ -18,6 +18,7 @@ class GameResult(BaseModel):
     away_score: Optional[int] = Field(default=None, ge=0)
     neutral: bool = False
     overtime: bool = False
+    decision_type: Optional[str] = None
     game_id: Optional[str] = None
     sport: Optional[str] = None
     season: Optional[str] = None

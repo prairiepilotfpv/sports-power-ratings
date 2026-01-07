@@ -9,7 +9,9 @@ import pytest
 
 from data.repository import load_games, save_games
 from ingest.schema import GameResult
+from models.bradley_terry import BradleyTerry
 from pipelines.metadata import prediction_hash
+from pipelines.projection_engines import get_projection_engine
 from pipelines.schedule import (
     DASHBOARD_COLUMNS,
     MODEL_METADATA_DATA_START_ROW,
@@ -69,10 +71,12 @@ def test_build_schedule_with_projections(tmp_path: Path) -> None:
     assert "model_error" not in df.columns
     assert "margin_mean" in df.columns
     assert "total_mean" in df.columns
+    assert "projection_status" in df.columns
 
     upcoming = df[df["status"] == "scheduled"].iloc[0]
     assert upcoming["home_team"] == "Team B"
     assert upcoming["away_team"] == "Team C"
+    assert upcoming["projection_status"] == "ok"
     assert pd.notna(upcoming["projected_winner"])
     assert pd.notna(upcoming["projected_spread"])
     assert upcoming["projected_total"] > 0
@@ -80,8 +84,11 @@ def test_build_schedule_with_projections(tmp_path: Path) -> None:
     assert upcoming["margin_sd"] > 0
     assert pd.notna(upcoming["total_mean"])
     assert upcoming["total_sd"] > 0
-    assert upcoming["home_win_prob"] == pytest.approx(upcoming["projected_win_prob"])
-    assert upcoming["model_win_prob"] == pytest.approx(upcoming["projected_win_prob"])
+    assert upcoming["home_win_prob"] == pytest.approx(upcoming["model_p_home_win"])
+    assert upcoming["model_win_prob"] == pytest.approx(upcoming["model_p_home_win"])
+    assert upcoming["win_prob_source"] == "direct"
+    assert upcoming["margin_dist_assumption"] == "none"
+    assert pd.isna(upcoming["normal_p_home_win"])
 
 
 def test_build_schedule_with_elo_projections(tmp_path: Path) -> None:
@@ -132,6 +139,54 @@ def test_build_schedule_with_elo_projections(tmp_path: Path) -> None:
     assert upcoming["projected_total"] > 0
 
 
+def test_poisson_schedule_exports_total_sd(tmp_path: Path) -> None:
+    db_path = tmp_path / "games.db"
+    games = [
+        GameResult(
+            date=date(2024, 1, 1),
+            home_team="Team A",
+            away_team="Team B",
+            home_score=3,
+            away_score=2,
+            sport="nhl",
+            season="2024-25",
+        ),
+        GameResult(
+            date=date(2024, 1, 2),
+            home_team="Team B",
+            away_team="Team A",
+            home_score=4,
+            away_score=1,
+            sport="nhl",
+            season="2024-25",
+        ),
+        GameResult(
+            date=date(2024, 1, 5),
+            home_team="Team A",
+            away_team="Team B",
+            home_score=None,
+            away_score=None,
+            sport="nhl",
+            season="2024-25",
+        ),
+    ]
+    save_games(db_path, games)
+
+    output_path = build_schedule_with_projections(
+        db_path,
+        sport="nhl",
+        season="2024-25",
+        model="poisson",
+        model_params={"n_simulations": 500, "random_seed": 7},
+        output_path=tmp_path / "schedule_poisson.csv",
+    )
+
+    df = pd.read_csv(output_path)
+    upcoming = df[df["status"] == "scheduled"].iloc[0]
+    assert pd.notna(upcoming["projected_total"])
+    assert pd.notna(upcoming["total_sd"])
+
+
 def test_schedule_win_probs_follow_margin_sign() -> None:
     base_row = pd.Series(
         {
@@ -145,38 +200,88 @@ def test_schedule_win_probs_follow_margin_sign() -> None:
             "game_id": "gid-1",
         }
     )
-    ratings = {"Home": 5.0, "Away": 0.0}
+    model_instance = BradleyTerry(max_iter=50)
+    model_instance.fit(
+        [
+            {"home_team": "Home", "away_team": "Away", "home_score": 100, "away_score": 90},
+            {"home_team": "Away", "away_team": "Home", "home_score": 95, "away_score": 105},
+        ]
+    )
+    model_instance.fit(
+        [
+            {
+                "home_team": "Home",
+                "away_team": "Away",
+                "home_score": 3,
+                "away_score": 1,
+                "neutral": False,
+            },
+            {
+                "home_team": "Home",
+                "away_team": "Away",
+                "home_score": 4,
+                "away_score": 2,
+                "neutral": False,
+            },
+        ]
+    )
+    ratings = dict(model_instance.rankings())
+    projection_engine = get_projection_engine(model_instance)
+    projection_context = {
+        "ratings": ratings,
+        "base_total": 0.0,
+        "scoring_averages": {},
+        "total_intercept": None,
+        "total_slope": None,
+        "margin_std": 8.0,
+        "total_std": 15.0,
+        "conditional_sd_intercept": None,
+        "conditional_sd_slope": None,
+        "win_prob_k": 10.0,
+    }
     positive = _project_row(
         base_row,
         ratings=ratings,
-        base_total=0.0,
-        scoring_averages={},
         status="scheduled",
         home_advantage=0.0,
-        win_prob_k=10.0,
-        margin_std=8.0,
-        total_std=15.0,
+        params_source="default",
+        tuned_metric_used=None,
+        model_instance=model_instance,
+        projection_engine=projection_engine,
+        projection_context=projection_context,
     )
     assert positive["margin_mean"] > 0
     assert positive["home_win_prob"] > 0.5
     assert positive["away_win_prob"] == pytest.approx(1.0 - positive["home_win_prob"])
     assert positive["winner_win_prob"] == pytest.approx(positive["home_win_prob"])
 
+    negative_model = BradleyTerry(max_iter=50)
+    negative_model.fit(
+        [
+            {"home_team": "Home", "away_team": "Away", "home_score": 90, "away_score": 100},
+            {"home_team": "Away", "away_team": "Home", "home_score": 105, "away_score": 95},
+        ]
+    )
     negative = _project_row(
         base_row,
-        ratings={"Home": 0.0, "Away": 5.0},
-        base_total=0.0,
-        scoring_averages={},
+        ratings={"Home": ratings["Away"], "Away": ratings["Home"]},
         status="scheduled",
         home_advantage=0.0,
-        win_prob_k=10.0,
-        margin_std=8.0,
-        total_std=15.0,
+        params_source="default",
+        tuned_metric_used=None,
+        model_instance=negative_model,
+        projection_engine=get_projection_engine(negative_model),
+        projection_context={
+            **projection_context,
+            "ratings": {"Home": ratings["Away"], "Away": ratings["Home"]},
+        },
     )
     assert negative["margin_mean"] < 0
-    assert negative["home_win_prob"] < 0.5
-    assert negative["away_win_prob"] == pytest.approx(1.0 - negative["home_win_prob"])
+    assert negative["model_p_home_win"] < 0.5
+    assert negative["away_win_prob"] == pytest.approx(1.0 - negative["model_p_home_win"])
     assert negative["winner_win_prob"] == pytest.approx(negative["away_win_prob"])
+    assert negative["margin_dist_assumption"] == "none"
+    assert pd.isna(negative["normal_p_home_win"])
 
 
 def test_schedule_uses_latest_scores(tmp_path: Path) -> None:
@@ -246,6 +351,9 @@ def test_schedule_export_column_ordering() -> None:
         "date": "2024-01-01",
         "game_id": "gid-1",
         "status": "final",
+        "projection_status": "ok",
+        "params_source": "default",
+        "tuned_metric_used": None,
         "home_team": "Home",
         "away_team": "Away",
         "neutral": False,
@@ -261,10 +369,14 @@ def test_schedule_export_column_ordering() -> None:
         "projected_spread": -4.5,
         "projected_home_spread": 4.5,
         "projected_win_prob": 0.65,
-        "home_win_prob": 0.65,
-        "away_win_prob": 0.35,
-        "winner_win_prob": 0.65,
+        "model_p_home_win": 0.62,
+        "normal_p_home_win": 0.65,
+        "home_win_prob": 0.62,
+        "away_win_prob": 0.38,
+        "winner_win_prob": 0.62,
         "logistic_home_win_prob": 0.62,
+        "win_prob_source": "logistic",
+        "margin_dist_assumption": "normal_approx",
         "projected_win_prob_dist": '[{"p_home_win": 0.65, "weight": 1.0}]',
         "projected_home_score": 102.5,
         "projected_away_score": 95.5,
@@ -276,7 +388,7 @@ def test_schedule_export_column_ordering() -> None:
         "margin_dist_params": '{"mean": 7.0, "sd": 12.0}',
         "total_dist_params": '{"mean": 198.0, "sd": 20.0}',
         "model_win_prob_samples": '[{"p_home_win": 0.65, "weight": 1.0}]',
-        "model_win_prob": 0.65,
+        "model_win_prob": 0.62,
         "margin_std": 12.1,
         "total_std": 18.4,
     }
@@ -294,6 +406,9 @@ def test_schedule_export_column_ordering_missing_column() -> None:
             {
                 "date": "2024-01-01",
                 "status": "final",
+                "projection_status": "ok",
+                "params_source": "default",
+                "tuned_metric_used": None,
                 "home_team": "Home",
                 "away_team": "Away",
                 "neutral": False,
@@ -517,6 +632,7 @@ def test_schedule_excel_dashboard_includes_today_games(tmp_path: Path) -> None:
     assert list(dashboard.columns) == DASHBOARD_COLUMNS
     assert not dashboard.empty
     assert set(dashboard["model"]) == {"bradley-terry"}
+    assert dashboard["model_version"].notna().all()
     assert set(dashboard["game"]) == {"Team B @ Team A"}
     assert (
         dashboard.loc[dashboard["game"] == "Team B @ Team A", "projected_winner"]

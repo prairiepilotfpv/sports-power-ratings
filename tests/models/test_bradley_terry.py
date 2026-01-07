@@ -37,7 +37,7 @@ def test_bradley_terry_rankings_order() -> None:
 
 def test_predict_probability_symmetry_neutral() -> None:
     model = BradleyTerry()
-    model.ratings.update({"Alpha": 1.7, "Beta": 0.9})
+    model.ratings.update({"Alpha": 0.8, "Beta": -0.4})
 
     prob_alpha = model.predict_probability("Alpha", "Beta", venue="neutral")
     prob_beta = model.predict_probability("Beta", "Alpha", venue="neutral")
@@ -47,8 +47,8 @@ def test_predict_probability_symmetry_neutral() -> None:
 
 def test_hfa_directional_effects() -> None:
     model = BradleyTerry()
-    model.ratings.update({"Alpha": 1.5, "Beta": 1.2})
-    model.home_adv = 0.35
+    model.ratings.update({"Alpha": 0.5, "Beta": 0.2})
+    model.hfa_logit = 0.35
 
     neutral_prob = model.predict_probability("Alpha", "Beta", venue="neutral")
     home_prob = model.predict_probability("Alpha", "Beta", venue="home")
@@ -60,11 +60,11 @@ def test_hfa_directional_effects() -> None:
 
 def test_monotonicity_in_team_strength() -> None:
     model = BradleyTerry()
-    model.ratings.update({"Alpha": 1.0, "Beta": 1.0})
+    model.ratings.update({"Alpha": 0.0, "Beta": 0.0})
 
     base_prob = model.predict_probability("Alpha", "Beta", venue="neutral")
 
-    model.ratings["Alpha"] = 2.0
+    model.ratings["Alpha"] = 1.5
     stronger_prob = model.predict_probability("Alpha", "Beta", venue="neutral")
 
     assert stronger_prob > base_prob
@@ -72,15 +72,15 @@ def test_monotonicity_in_team_strength() -> None:
 
 def test_extreme_ratings_no_overflow() -> None:
     model = BradleyTerry()
-    model.ratings.update({"Alpha": 1e12, "Beta": 1e-12})
+    model.ratings.update({"Alpha": 100.0, "Beta": -100.0})
 
     prob_alpha = model.predict_probability("Alpha", "Beta", venue="neutral")
     prob_beta = model.predict_probability("Beta", "Alpha", venue="neutral")
 
     assert isfinite(prob_alpha)
     assert isfinite(prob_beta)
-    assert prob_alpha >= 1.0 - 1e-9
-    assert prob_beta <= 1e-9
+    assert 0.0 < prob_alpha < 1.0
+    assert 0.0 < prob_beta < 1.0
 
 
 def test_deterministic_predictions() -> None:

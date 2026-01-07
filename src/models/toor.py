@@ -46,7 +46,7 @@ DEFAULT_COEFFICIENTS = ToorCoefficients(
 
 
 class TOORPowerRating:
-    """Power rating wrapper that fits team strengths via OLS on margins."""
+    """Power ratings fit via OLS on game margins."""
 
     def __init__(
         self,
@@ -77,6 +77,8 @@ class TOORPowerRating:
             supports_margin=True,
             supports_total=False,
             supports_win_prob=True,
+            role="primary",
+            ensemble_weight=1.0,
         )
 
     def fit(self, games: Iterable[Mapping[str, Any]]) -> None:
@@ -154,7 +156,7 @@ class TOORPowerRating:
 
 
 class TOORModel(BaseModel):
-    """TOOR backtest model that applies OLS to Bradley-Terry logistic strengths."""
+    """Backtest model mapping Bradley-Terry strengths to margins via OLS."""
 
     def __init__(
         self,
@@ -201,6 +203,8 @@ class TOORModel(BaseModel):
             supports_margin=True,
             supports_total=False,
             supports_win_prob=True,
+            role="primary",
+            ensemble_weight=1.0,
         )
 
     def fit(self, games_df: Any) -> None:
@@ -352,6 +356,8 @@ class TOORModel(BaseModel):
                     win_prob_dist=win_prob_dist,
                     pred_margin=pred_margin,
                     margin_sd=margin_sd,
+                    win_prob_source="logistic",
+                    margin_dist_assumption="normal_approx",
                     metadata=dict(model_identity),
                     extra={
                         "home_advantage": coefficients.home_advantage,
