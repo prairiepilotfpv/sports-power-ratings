@@ -30,6 +30,8 @@ class BradleyTerry:
             supports_margin=True,
             supports_total=False,
             supports_win_prob=True,
+            role="primary",
+            ensemble_weight=1.0,
         )
 
     @staticmethod

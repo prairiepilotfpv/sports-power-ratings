@@ -21,12 +21,16 @@ class ModelMetadata:
     supports_margin: bool
     supports_total: bool
     supports_win_prob: bool
+    role: str | None = None
+    ensemble_weight: float | None = None
 
     def identity_dict(self) -> dict[str, Any]:
         return {
             "model_id": self.model_id,
             "model_version": self.model_version,
             "params": dict(self.params),
+            "role": self.role,
+            "ensemble_weight": self.ensemble_weight,
         }
 
 

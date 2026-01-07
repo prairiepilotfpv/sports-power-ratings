@@ -61,6 +61,8 @@ class PoissonPowerRating:
             supports_margin=True,
             supports_total=True,
             supports_win_prob=True,
+            role="specialist_total",
+            ensemble_weight=0.0,
         )
 
     def fit(self, games: Iterable[Mapping[str, Any]]) -> None:
@@ -265,6 +267,8 @@ class PoissonModel(BaseModel):
             supports_margin=True,
             supports_total=True,
             supports_win_prob=True,
+            role="specialist_total",
+            ensemble_weight=0.0,
         )
 
     def fit(self, games_df: Any) -> None:

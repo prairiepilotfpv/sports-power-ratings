@@ -71,10 +71,12 @@ def test_build_schedule_with_projections(tmp_path: Path) -> None:
     assert "model_error" not in df.columns
     assert "margin_mean" in df.columns
     assert "total_mean" in df.columns
+    assert "projection_status" in df.columns
 
     upcoming = df[df["status"] == "scheduled"].iloc[0]
     assert upcoming["home_team"] == "Team B"
     assert upcoming["away_team"] == "Team C"
+    assert upcoming["projection_status"] == "ok"
     assert pd.notna(upcoming["projected_winner"])
     assert pd.notna(upcoming["projected_spread"])
     assert upcoming["projected_total"] > 0
@@ -132,6 +134,54 @@ def test_build_schedule_with_elo_projections(tmp_path: Path) -> None:
     assert pd.notna(upcoming["projected_winner"])
     assert pd.notna(upcoming["projected_spread"])
     assert upcoming["projected_total"] > 0
+
+
+def test_poisson_schedule_exports_total_sd(tmp_path: Path) -> None:
+    db_path = tmp_path / "games.db"
+    games = [
+        GameResult(
+            date=date(2024, 1, 1),
+            home_team="Team A",
+            away_team="Team B",
+            home_score=3,
+            away_score=2,
+            sport="nhl",
+            season="2024-25",
+        ),
+        GameResult(
+            date=date(2024, 1, 2),
+            home_team="Team B",
+            away_team="Team A",
+            home_score=4,
+            away_score=1,
+            sport="nhl",
+            season="2024-25",
+        ),
+        GameResult(
+            date=date(2024, 1, 5),
+            home_team="Team A",
+            away_team="Team B",
+            home_score=None,
+            away_score=None,
+            sport="nhl",
+            season="2024-25",
+        ),
+    ]
+    save_games(db_path, games)
+
+    output_path = build_schedule_with_projections(
+        db_path,
+        sport="nhl",
+        season="2024-25",
+        model="poisson",
+        model_params={"n_simulations": 500, "random_seed": 7},
+        output_path=tmp_path / "schedule_poisson.csv",
+    )
+
+    df = pd.read_csv(output_path)
+    upcoming = df[df["status"] == "scheduled"].iloc[0]
+    assert pd.notna(upcoming["projected_total"])
+    assert pd.notna(upcoming["total_sd"])
 
 
 def test_schedule_win_probs_follow_margin_sign() -> None:
@@ -265,6 +315,7 @@ def test_schedule_export_column_ordering() -> None:
         "date": "2024-01-01",
         "game_id": "gid-1",
         "status": "final",
+        "projection_status": "ok",
         "params_source": "default",
         "tuned_metric_used": None,
         "home_team": "Home",
@@ -315,6 +366,7 @@ def test_schedule_export_column_ordering_missing_column() -> None:
             {
                 "date": "2024-01-01",
                 "status": "final",
+                "projection_status": "ok",
                 "params_source": "default",
                 "tuned_metric_used": None,
                 "home_team": "Home",

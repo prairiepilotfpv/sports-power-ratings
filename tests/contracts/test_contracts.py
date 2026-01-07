@@ -48,6 +48,7 @@ def test_contract_end_to_end_sample_game() -> None:
         "date": "2024-01-01",
         "game_id": "gid-1",
         "status": "scheduled",
+        "projection_status": "ok",
         "home_team": "Home",
         "away_team": "Away",
         "neutral": False,

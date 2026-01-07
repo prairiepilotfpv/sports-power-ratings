@@ -24,6 +24,7 @@ SCHEDULE_EXPORT_COLUMNS: list[str] = [
     "date",
     "game_id",
     "status",
+    "projection_status",
     "params_source",
     "tuned_metric_used",
     "home_team",
@@ -100,6 +101,7 @@ class ScheduleExportRow:
     date: str
     game_id: str
     status: str
+    projection_status: str
     params_source: str
     tuned_metric_used: str | None
     home_team: str
