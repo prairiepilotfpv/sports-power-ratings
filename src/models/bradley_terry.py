@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+import math
 from math import isnan
 from typing import Any, DefaultDict, Iterable, Mapping
 
@@ -92,7 +93,7 @@ class BradleyTerry:
         if sd <= 0 or not np.isfinite(sd):
             raise ValueError("Standard deviation must be positive and finite.")
         z = (x - mean) / (sd * np.sqrt(2.0))
-        return float(0.5 * (1.0 + np.math.erf(z)))
+        return float(0.5 * (1.0 + math.erf(z)))
 
     def predict_probability(
         self, team_a: str, team_b: str, venue: str = "neutral"
