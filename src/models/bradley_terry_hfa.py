@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
+
 from models.base import BaseModel, GamePrediction, ModelMetadata, require_columns
 from models.bradley_terry import BradleyTerry
 
@@ -24,6 +26,7 @@ class BradleyTerryHFA(BaseModel):
         hfa_logit: float = 0.0,
         learn_hfa: bool = True,
         strict: bool = False,
+        suppress_small_sd_warning: bool = False,
     ) -> None:
         self._max_iter = max_iter
         self._tol = tol
@@ -36,6 +39,9 @@ class BradleyTerryHFA(BaseModel):
             learn_hfa=learn_hfa,
         )
         self._strict = strict
+        # If True, do not emit warnings about small margin/total sd which are
+        # expected for some low-scoring sports (e.g., NHL).
+        self._suppress_small_sd_warning = bool(suppress_small_sd_warning)
 
     def metadata(self) -> ModelMetadata:
         return ModelMetadata(
@@ -49,6 +55,7 @@ class BradleyTerryHFA(BaseModel):
                 "hfa_logit": self._model.hfa_logit,
                 "learn_hfa": self._model.learn_hfa,
                 "strict": self._strict,
+                "suppress_small_sd_warning": self._suppress_small_sd_warning,
             },
             supports_margin=True,
             supports_total=True,
@@ -133,10 +140,33 @@ class BradleyTerryHFA(BaseModel):
         errors = []
         if not (0.0 < p_home_win < 1.0):
             errors.append("p_home_win must be between 0 and 1.")
-        if margin_sd < 5.0:
-            errors.append("margin_sd must be at least 5.")
-        if total_sd < 8.0:
-            errors.append("total_sd must be at least 8.")
+
+        # Allow callers to suppress small-sd warnings (useful for low-scoring sports
+        # where learned margin/total sigmas are naturally small).
+        if not self._suppress_small_sd_warning:
+            calib = getattr(self._model, "calibration", None)
+            try:
+                calib_margin = float(calib.margin_sigma)
+            except Exception:
+                calib_margin = 1.0
+            try:
+                calib_total = float(calib.total_sigma)
+            except Exception:
+                calib_total = 1.0
+
+            # Derive adaptive floor thresholds from the learned calibration but
+            # do not raise the bar above the historical constants used previously
+            # (5.0 for margin, 8.0 for total). This keeps the check conservative
+            # for high-scoring sports while avoiding spurious warnings for low
+            # scoring sports like NHL.
+            min_margin = min(5.0, max(1.0, calib_margin))
+            min_total = min(8.0, max(1.0, calib_total))
+
+            if margin_sd < min_margin:
+                errors.append(f"margin_sd must be at least {min_margin:.2f}.")
+            if total_sd < min_total:
+                errors.append(f"total_sd must be at least {min_total:.2f}.")
+
         if win_prob_source == "direct":
             errors.append("win_prob_source cannot be 'direct'.")
         if not errors:

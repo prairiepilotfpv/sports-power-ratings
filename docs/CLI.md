@@ -14,6 +14,7 @@ python -m src.cli.pipeline <command> [options]
 - `--season`: Season identifier like `2025-26`.
 - `--model`: One of `bradley_terry_hfa`, `bradley_terry_calibrated_hfa`, `elo`, `gssd`, `toor`.
 - `--model-params`: JSON string of model params, e.g. `'{"k_factor": 20}'`.
+  - Example: to suppress small-sigma warnings for `bradley_terry_hfa` (useful for low-scoring sports like `nhl`) pass `--model-params '{"suppress_small_sd_warning": true}'`.
 - `--model-params-file`: Path to JSON file with params (supports per-model keys when multiple models run).
 - `--output`/`--output-dir`: Override default output paths.
 - `--db`: Override default SQLite path.
@@ -123,6 +124,7 @@ Options:
 - `--window`: `expanding` (default) or `rolling`.
 - `--rolling-days` or `--rolling-games`: Size for rolling window.
 - `--model-params` / `--model-params-file`: As above.
+  - Note: model-specific options are supported; for example `bradley_terry_hfa` accepts `suppress_small_sd_warning` (boolean) to silence warnings about small learned margin/total sigmas for low-scoring sports. Default: `false`.
 - `--output-dir`: Override default directory (`outputs/backtests/<model>/`).
 - `--sport` / `--season` / `--db`: Optional persistence of metrics to DB for use in projections.
 
