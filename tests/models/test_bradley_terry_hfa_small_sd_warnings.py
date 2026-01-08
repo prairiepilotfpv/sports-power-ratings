@@ -8,7 +8,12 @@ import pandas as pd
 from models.bradley_terry_hfa import BradleyTerryHFA
 
 
-DATA_PATH = Path(__file__).resolve().parents[2] / "data" / "raw" / "NHL-2025-26.csv"
+DATA_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "fixtures"
+    / "bradley_terry_hfa"
+    / "nhl_games.csv"
+)
 
 
 def _build_games_df(csv_path: Path) -> pd.DataFrame:
