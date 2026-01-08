@@ -11,7 +11,7 @@ from __future__ import annotations
 
 
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from openpyxl import load_workbook
 
@@ -21,7 +21,7 @@ from data.betting_repository import get_opportunities_with_game_info, create_rev
 
 
 def _resolve_output_path(sport: str, season: str, review_run_id: str) -> Path:
-    ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     filename = f"review_{review_run_id}_{ts}.xlsx"
     return processed_path_for(sport, season, f"review/{filename}")
 
@@ -93,7 +93,7 @@ def build_review_workbook(db_path: str | Path, *, review_run_id: str, sport: str
         {"key": "review_run_id", "value": review_run_id},
         {"key": "sport", "value": sport},
         {"key": "season", "value": season},
-        {"key": "created_at", "value": datetime.utcnow().isoformat()},
+        {"key": "created_at", "value": datetime.now(timezone.utc).isoformat()},
     ]
     meta_df = pd.DataFrame(meta_rows)
 

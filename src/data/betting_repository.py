@@ -22,7 +22,7 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 from typing import Iterable, Sequence, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 from .paths import db_path_for
@@ -277,7 +277,7 @@ def resolve_staging_to_game(
 # --- Timestamp helpers and review_run CRUD ---
 
 def _utcnow_iso() -> str:
-    return datetime.utcnow().isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def create_review_run(

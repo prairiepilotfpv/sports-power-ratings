@@ -8,7 +8,7 @@ Responsibilities:
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -22,7 +22,7 @@ from src.data import betting_repository as br
 
 
 def _utcnow_iso() -> str:
-    return datetime.utcnow().isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _resolve_db_path(db_path: Optional[str | Path], sport: Optional[str], season: Optional[str]) -> str | None:
