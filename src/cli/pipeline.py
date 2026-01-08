@@ -233,6 +233,16 @@ def _parse_args() -> argparse.Namespace:
         aliases=["excel", "excel_report"],
         help="Generate an Excel report with rankings per model.",
     )
+
+    # Betting subcommands (delegated to src.cli.betting)
+    try:
+        from src.cli.betting import add_subparser as add_betting_subparser
+
+        add_betting_subparser(subparsers)
+    except Exception:
+        # Best-effort: if betting module isn't available or errors, keep CLI usable
+        pass
+
     report_parser.add_argument(
         "--sport", required=True, help="Sport identifier (e.g., nba)"
     )
@@ -873,8 +883,135 @@ def main() -> None:
         _run_backtest(args)
     elif args.command == "tune":
         _run_tuning(args)
+    elif args.command == "betting":
+        _run_betting(args)
     else:
         raise ValueError(f"Unknown command: {args.command}")
+
+
+def _run_betting(args: argparse.Namespace) -> None:
+    from src.cli import betting as betting_cli
+    from src.pipelines import market_ocr as market_ocr_pipeline
+    from src.data import betting_repository as br
+    from src.pipelines import review_runs as rr
+    from src.pipelines import bets as bets_pipeline
+    from data.paths import db_path_for
+    import sqlite3
+
+    # Resolve DB
+    db_path = args.db if hasattr(args, "db") and args.db else db_path_for(args.sport, args.season) if (hasattr(args, "sport") and hasattr(args, "season")) else None
+
+    cmd = getattr(args, "betting_cmd", None)
+    if cmd == "market-ocr":
+        images = args.images
+        book = getattr(args, "book", None)
+        captured_at = getattr(args, "captured_at", None)
+        json_out = getattr(args, "json_output", None)
+        if db_path is None and not json_out:
+            raise ValueError("DB path could not be resolved; pass --db or --sport/--season, or use --json-output")
+        created = market_ocr_pipeline.ingest_screenshots([images], db_path=db_path, sport=args.sport, season=args.season, source=book or "screenshot", book=book, captured_at=captured_at, json_output=json_out)
+        print(f"market-ocr: ingested {created} staging rows")
+
+    elif cmd == "market-commit":
+        snapshot_run_id = args.snapshot_run_id
+        require_matched = bool(getattr(args, "require_matched", False))
+        force = bool(getattr(args, "force", False))
+        if db_path is None:
+            raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
+        conn = sqlite3.connect(db_path)
+        try:
+            cur = conn.execute("SELECT id, match_status FROM market_snapshot_staging WHERE match_status IN ('matched','needs_review')")
+            rows = cur.fetchall()
+            staging_ids = [r[0] for r in rows]
+            needs_review_ids = [r[0] for r in rows if r[1] == "needs_review"]
+        finally:
+            conn.close()
+
+        if require_matched and needs_review_ids:
+            raise ValueError(f"Found needs_review staging rows: {needs_review_ids}; aborting due to --require-matched")
+        # If force is not provided, commit will only commit matched rows; pass force flag accordingly
+        committed = br.commit_market_snapshots(db_path, snapshot_run_id=snapshot_run_id, staging_ids=staging_ids, force=force)
+        print(f"Committed {committed} market snapshots (snapshot_run_id={snapshot_run_id})")
+
+    elif cmd == "review-generate":
+        sport = args.sport
+        season = args.season
+        model = args.model
+        review_id = getattr(args, "review_run_id", None)
+        output_dir = getattr(args, "output_dir", None)
+        if review_id:
+            path = rr.build_review_workbook(db_path, review_run_id=review_id, sport=sport, season=season, output_path=output_dir)
+        else:
+            path = rr.create_and_build_review(db_path, sport=sport, season=season, model=model, notes=None)
+        print(f"Review workbook -> {path}")
+
+    elif cmd == "log-bets":
+        workbook = args.workbook
+        dry_run = bool(getattr(args, "dry_run", False))
+        writeback = bool(getattr(args, "writeback", False))
+        if db_path is None:
+            raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
+        if dry_run:
+            print("log_bets dry-run: parsing workbook (no writes)")
+            updated = bets_pipeline.log_bets(workbook, review_run_id=None, db_path=db_path, dry_run=True, writeback=False)
+            print(f"log_bets dry-run parsed {updated} bet rows")
+        else:
+            updated = bets_pipeline.log_bets(workbook, review_run_id=None, db_path=db_path, dry_run=False, writeback=writeback)
+            print(f"log_bets processed {updated} rows")
+
+    elif cmd == "settle-bets":
+        sport = args.sport
+        season = args.season
+        settled = bets_pipeline.settle_bets(sport=sport, season=season)
+        print(f"Settled {settled} bets")
+
+    elif cmd == "report":
+        # Generate aggregated betting reports (daily/weekly/monthly)
+        rpt_type = getattr(args, "report_type", "daily")
+        from src.data import reporting as rpt
+
+        if db_path is None:
+            raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
+        output = getattr(args, "output", None)
+        start = getattr(args, "start", None)
+        end = getattr(args, "end", None)
+        fmt = getattr(args, "format", None)
+
+        if rpt_type == "daily":
+            rows = rpt.daily_report(db_path, sport=args.sport, season=args.season)
+        elif rpt_type == "weekly":
+            rows = rpt.weekly_report(db_path, sport=args.sport, season=args.season, start=start, end=end)
+        elif rpt_type == "monthly":
+            rows = rpt.monthly_report(db_path, sport=args.sport, season=args.season, start=start, end=end)
+        else:
+            raise ValueError(f"Unsupported report type: {rpt_type}")
+
+        if output:
+            outp = Path(output)
+            use_format = fmt or (outp.suffix.lstrip('.').lower() if outp.suffix else 'csv')
+            if use_format == "csv":
+                rpt.write_report_csv(rows, output)
+                print(f"Report written -> {output}")
+            elif use_format == "xlsx":
+                # write composite workbook with main sheet + edge_buckets + clv
+                rpt.write_full_report_xlsx(
+                    db_path,
+                    sport=args.sport,
+                    season=args.season,
+                    rpt_type=rpt_type,
+                    rows=rows,
+                    output_path=output,
+                )
+                print(f"Report written -> {output}")
+            else:
+                rpt.write_report_csv(rows, output)
+                print(f"Report written -> {output}")
+        else:
+            for r in rows:
+                print(r)
+
+    else:
+        raise ValueError(f"Unknown betting command: {cmd}")
 
 
 def _parse_json_arg(raw: str | None) -> dict | None:

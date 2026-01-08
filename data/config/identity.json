@@ -1,0 +1,6 @@
+{
+  "match_thresholds": {
+    "auto": 0.9,
+    "needs_review": 0.75
+  }
+}

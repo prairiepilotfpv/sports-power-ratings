@@ -1,54 +1,26 @@
 # TODO
 
-## 🚀 Core Pipeline (ASAP)
-**Priority: High** | **Status: In Progress**
+## Bet Tracking Suite — OCR & Parsing (Active)
+- [ ] **Group parsed lines into team bundles**: update `src/pipelines/market_ocr.py` so JSON mode emits exactly three ordered rows per team (moneyline, spread, total) and flags gaps for manual review.
+- [ ] **Confidence heuristics + tagging**: add per-line metadata (font row index, odds confidence, spread/total keywords) to the JSON to speed up downstream QA.
+- [ ] **Golden sample tests**: create fixture images + expected JSON in `tests/fixtures/ocr/` and add regression tests that exercise the OCR parser sans Tesseract (use stored text dumps).
 
-- [ ] Simple CLI commands: streamline common workflows (ingest → rank → schedule/report) while preserving advanced options
+## Bet Tracking Suite — Logging & Review
+- [ ] **Review CLI**: build `python -m src.cli.pipeline market-review` to list `market_snapshot_staging` rows filtered by `match_status` and allow accepting/rejecting matches (persisting `game_id`).
+- [ ] **Bet logger**: implement a CLI that pivots reviewed staging rows into `bets` entries (stake, book, market metadata) with simple stake presets.
+- [ ] **Auto-hold detection**: add rules that detect duplicate markets from the same screenshot and tag them before logging bets.
 
----
+## Bet Tracking Suite — Reporting & Analytics
+- [ ] **Weekly/monthly workbook polish**: add sparkline columns and highlight rules to the `edge_buckets` + `clv` sheets in `write_full_report_xlsx()`.
+- [ ] **CLV ingestion**: extend the DB schema helper to store close odds/line snapshots and surface them in the reports.
+- [ ] **PnL scenarios**: create an optional worksheet that simulates Kelly/unit sizing scenarios using the aggregated bets.
 
-## 📊 Excel/Report Improvements
-**Priority: Medium** | **Status: Complete**
+## Core Pipeline & Housekeeping
+- [ ] Sunset or document the legacy `src/cli/ingest.py` entry point.
+- [ ] Wire `market-ocr` + bet-report commands into `docs/CLI.md` with end-to-end examples.
+- [ ] Add smoke tests for the new CLI flags (`--json-output`, bet-report `--type/--format`).
 
-- [x] Add rank column to Excel output
-- [x] Dashboard grouped by games
-- [x] Totals/summary column on dashboard
-- [x] Modular reporting separated from core model math
-
----
-
-## 🧮 Model Enhancements
-**Priority: Medium** | **Status: Planned**
-
-- [ ] Accuracy evaluation framework (consistent metrics + reports across models)
-- [ ] Probability calibration curves and summary tables
-- [ ] Per-sport home-advantage estimation with confidence intervals
-
-
----
-
-## 💰 Features
-**Priority: Low** | **Status: Not Started**
-
-- [ ] Betting utilities: pricing (e.g., bet-to-win calculator)
-
----
-
-## 📝 Documentation & Cleanup
-**Priority: Low** | **Status: In Progress**
-
-- [ ] Legacy code review: confirm whether legacy "import sports reference" path is still needed
-
----
-
-## ✅ Completed
-_Move finished items here to track progress_
-
-- [x] Daily data pipeline: consistent rankings and matchup projections
-- [x] Excel output: clean worksheets with projected matchups
-- [x] Idempotency: repeated runs produce stable outputs
-- [x] Home-court advantage integrated into Bradley-Terry
-- [x] Margin of victory incorporated into models
-- [x] Additional models added (Elo, GSSD, TOOR, etc.)
-- [x] Multi-model framework groundwork
-- [x] CLI reference documented
+## ✅ Recently Completed
+- [x] Weekly/monthly aggregations + formatted Excel writer.
+- [x] OCR fallback path detection for Windows installs.
+- [x] `market-ocr` CLI accepts `--json-output` to skip DB writes.

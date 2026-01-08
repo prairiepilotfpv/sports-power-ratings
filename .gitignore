@@ -33,6 +33,12 @@ data/db/
 data/processed/
 output/
 outputs/
+outputs/**
+tmp-debug/
+tmp-test-*/
+tmp-test-sched/
+ocr-output/
+market-ocr-output/
 
 # Generated/Temporary files
 *.csv
@@ -41,6 +47,16 @@ outputs/
 !tests/fixtures/**/*.xlsx
 tmp-*/
 temp-*/
+*.log
+*.tmp
+*.bak
+*.sqlite
+*.db3
+*.market.json
+*.market-ocr.json
+outputs/**/*.json
+outputs/**/*.csv
+outputs/**/*.xlsx
 
 # OS/editor
 .DS_Store

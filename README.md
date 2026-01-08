@@ -128,6 +128,32 @@ python -m src.cli.pipeline backtest --csv nba_results.csv --model bradley_terry_
 python -m src.cli.pipeline tune --model elo --csv nba_results.csv --start 2024-11-01 --end 2024-12-01 --metric log_loss
 ```
 
+## Bet Tracking Suite
+
+The bet-tracking flow layers on top of the core pipelines and adds OCR ingestion, staging review, and formatted reporting. Use these steps whenever you want to turn screenshot dumps into structured logs and weekly/monthly summaries:
+
+1. **Capture sportsbook boards via OCR.**
+  ```bash
+  python -m src.cli.pipeline market-ocr \
+    --sport nba --season 2025-26 \
+    --input screenshots/2024-12-01 \
+    --book dn \
+    --captured-at 2024-12-01T14:30:00Z
+  ```
+  - Accepts individual files or directories.
+  - When `--json-output path.json` is provided, no DB writes occur; instead a structured JSON file is emitted that contains every parsed moneyline/spread/total row (three rows per team when markets are detected).
+  - Without `--json-output`, rows are persisted into `market_snapshot_staging` for reconciliation against the schedule database.
+
+2. **Match OCR rows to games (optional for now).**
+  - Staging rows automatically call `resolve_staging_to_game()` to attempt a fuzzy match against the ingested schedule.
+  - Use SQLite viewers or forthcoming review scripts to inspect anything left in `needs_review` status.
+
+3. **Log bets + export reports.**
+  - Weekly/monthly aggregations live in `src/data/reporting.py` (see `weekly_report()` / `monthly_report()`).
+  - The CLI wraps them with `python -m src.cli.pipeline bet-report ...` and writes either CSV or an auto-formatted Excel workbook via `write_full_report_xlsx()` (main sheet + edge buckets + CLV + dashboard KPI sheet).
+
+The workflow is intentionally modular: you can pause after OCR (JSON only) when book lines need manual cleanup, then append finalized wagers into the DB before running reports.
+
 ## CLI reference (detailed)
 
 ### Common flags
@@ -188,6 +214,38 @@ python -m src.cli.pipeline report --sport nba --season 2025-26 --models bradley-
 ```
 
 - Default output: `data/processed/<sport>/<season>/report.xlsx` (one sheet per model). Prefixed filenames when multiple models are written.
+
+### `market-ocr` — capture sportsbook boards
+
+```bash
+python -m src.cli.pipeline market-ocr \
+  --sport nba --season 2025-26 \
+  --input screenshots/2024-12-01 \
+  --book dn \
+  --captured-at 2024-12-01T14:30:00Z \
+  --json-output tmp/lines-2024-12-01.json
+```
+
+- Accepts `--input` (file/dir), multiple `--input` values, or `--input-dir`.
+- Set `--json-output` to emit parsed records without touching SQLite. The JSON contains the raw text, inferred market type (ML/spread/total), odds, line, and detected home/away teams.
+- When JSON output is omitted, rows are inserted into `market_snapshot_staging` with fuzzy team matching results (`match_status`, `match_confidence`).
+- Requires Tesseract to be installed; the OCR wrapper auto-detects common Windows install paths when it is not on `PATH`.
+
+### `bet-report` — aggregate logged bets
+
+```bash
+python -m src.cli.pipeline bet-report \
+  --sport nba --season 2025-26 \
+  --type weekly \
+  --start 2024-12-01 --end 2024-12-31 \
+  --format xlsx \
+  --output outputs/reports/bets-nba-dec.xlsx
+```
+
+- `--type` controls the aggregation window (`daily`, `weekly`, or `monthly`).
+- CSV output mirrors the aggregation table. `.xlsx` output calls `write_full_report_xlsx()` to produce a workbook containing the main table, `edge_buckets`, `clv`, and a KPI dashboard (stake totals, win rate, EV, etc.).
+- `--start` / `--end` bounds the reporting window; omit both to auto-span every logged bet.
+- Reports pull from the same SQLite DB used for schedule + betting pipelines, so make sure your ingest/rank runs targeted the same `--sport/--season` first.
 
 ### `backtest` — evaluate models on historical games
 
