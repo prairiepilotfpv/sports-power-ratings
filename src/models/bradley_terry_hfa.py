@@ -158,9 +158,10 @@ class BradleyTerryHFA(BaseModel):
             # do not raise the bar above the historical constants used previously
             # (5.0 for margin, 8.0 for total). This keeps the check conservative
             # for high-scoring sports while avoiding spurious warnings for low
-            # scoring sports like NHL.
-            min_margin = min(5.0, max(1.0, calib_margin))
-            min_total = min(8.0, max(1.0, calib_total))
+            # scoring sports like NHL. Use a small epsilon to guard against
+            # zero/invalid calibration values without enforcing a 1.0 floor.
+            min_margin = min(5.0, max(0.1, calib_margin))
+            min_total = min(8.0, max(0.1, calib_total))
 
             if margin_sd < min_margin:
                 errors.append(f"margin_sd must be at least {min_margin:.2f}.")
