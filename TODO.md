@@ -1,9 +1,9 @@
 # TODO
 
 ## Bet Tracking Suite — OCR & Parsing (Active)
-- [ ] **Group parsed lines into team bundles**: update `src/pipelines/market_ocr.py` so JSON mode emits exactly three ordered rows per team (moneyline, spread, total) and flags gaps for manual review.
-- [ ] **Confidence heuristics + tagging**: add per-line metadata (font row index, odds confidence, spread/total keywords) to the JSON to speed up downstream QA.
-- [ ] **Golden sample tests**: create fixture images + expected JSON in `tests/fixtures/ocr/` and add regression tests that exercise the OCR parser sans Tesseract (use stored text dumps).
+- [x] **Group parsed lines into team bundles**: update `src/pipelines/market_ocr.py` so JSON mode emits exactly three ordered rows per team (moneyline, spread, total) and flags gaps for manual review.
+- [x] **Confidence heuristics + tagging**: add per-line metadata (font row index, odds confidence, spread/total keywords) to the JSON to speed up downstream QA.
+- [x] **Golden sample tests**: create fixture images + expected JSON in `tests/fixtures/ocr/` and add regression tests that exercise the OCR parser sans Tesseract (use stored text dumps).
 
 ## Bet Tracking Suite — Logging & Review
 - [ ] **Review CLI**: build `python -m src.cli.pipeline market-review` to list `market_snapshot_staging` rows filtered by `match_status` and allow accepting/rejecting matches (persisting `game_id`).

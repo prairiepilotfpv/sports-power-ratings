@@ -1,0 +1,39 @@
+[
+  {
+    "team_home_raw": "Los Angeles Lakers",
+    "team_away_raw": "LA Clippers",
+    "markets": [
+      {
+        "market_type": "ML",
+        "selection": "Lakers",
+        "odds": 110,
+        "line": null,
+        "raw": "Lakers +110",
+        "font_row_index": 1,
+        "odds_confidence": 1.0,
+        "keywords": ["Lakers"]
+      },
+      {
+        "market_type": "spread",
+        "selection": "Lakers",
+        "odds": -110,
+        "line": -3.5,
+        "raw": "Lakers -3.5 -110",
+        "font_row_index": 2,
+        "odds_confidence": 1.0,
+        "keywords": ["line:-3.5"]
+      },
+      {
+        "market_type": "total",
+        "selection": null,
+        "odds": -110,
+        "line": 215.5,
+        "raw": "Over 215.5 -110",
+        "font_row_index": 3,
+        "odds_confidence": 1.0,
+        "keywords": ["over"]
+      }
+    ],
+    "gap_flags": []
+  }
+]
