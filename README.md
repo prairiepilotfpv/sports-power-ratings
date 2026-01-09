@@ -146,7 +146,7 @@ The bet-tracking flow layers on top of the core pipelines and adds OCR ingestion
 
 2. **Match OCR rows to games (optional for now).**
   - Staging rows automatically call `resolve_staging_to_game()` to attempt a fuzzy match against the ingested schedule.
-  - Use SQLite viewers or forthcoming review scripts to inspect anything left in `needs_review` status.
+    - Use SQLite viewers or `python -m src.cli.pipeline market-review` to inspect or resolve anything left in `needs_review` status (see docs/market-review.md).
 
 3. **Log bets + export reports.**
   - Weekly/monthly aggregations live in `src/data/reporting.py` (see `weekly_report()` / `monthly_report()`).

@@ -11,9 +11,9 @@
 - [ ] **Auto-hold detection**: add rules that detect duplicate markets from the same screenshot and tag them before logging bets.
 
 ## Bet Tracking Suite — Reporting & Analytics
-- [ ] **Weekly/monthly workbook polish**: add sparkline columns and highlight rules to the `edge_buckets` + `clv` sheets in `write_full_report_xlsx()`.
+- [x] **Weekly/monthly workbook polish**: add sparkline columns and highlight rules to the `edge_buckets` + `clv` sheets in `write_full_report_xlsx()`.
 - [ ] **CLV ingestion**: extend the DB schema helper to store close odds/line snapshots and surface them in the reports.
-- [ ] **PnL scenarios**: create an optional worksheet that simulates Kelly/unit sizing scenarios using the aggregated bets.
+- [x] **PnL scenarios**: create an optional worksheet that simulates Kelly/unit sizing scenarios using the aggregated bets.
 
 ## Core Pipeline & Housekeeping
 - [ ] Sunset or document the legacy `src/cli/ingest.py` entry point.

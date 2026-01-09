@@ -228,6 +228,50 @@ def _parse_args() -> argparse.Namespace:
         help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db)",
     )
 
+    market_review_parser = subparsers.add_parser(
+        "market-review",
+        help="Review OCR staging rows and accept/reject matches.",
+    )
+    market_review_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
+    market_review_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
+    market_review_parser.add_argument(
+        "--status",
+        default="needs_review",
+        help="Comma-separated match_status filters (default: needs_review). Use 'all' for every status.",
+    )
+    market_review_parser.add_argument(
+        "--limit",
+        type=int,
+        help="Limit number of staging rows when listing.",
+    )
+    market_review_parser.add_argument(
+        "--accept",
+        dest="accept_id",
+        type=int,
+        help="Staging row id to mark as matched.",
+    )
+    market_review_parser.add_argument(
+        "--game-id",
+        dest="game_id",
+        help="Game id to persist when accepting a staging row.",
+    )
+    market_review_parser.add_argument(
+        "--match-confidence",
+        dest="match_confidence",
+        type=float,
+        help="Optional manual match_confidence when accepting (default: 1.0).",
+    )
+    market_review_parser.add_argument(
+        "--reject",
+        dest="reject_id",
+        type=int,
+        help="Staging row id to mark as unmatched.",
+    )
+    market_review_parser.add_argument(
+        "--db",
+        help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db)",
+    )
+
     report_parser = subparsers.add_parser(
         "report",
         aliases=["excel", "excel_report"],
@@ -666,6 +710,68 @@ def _run_schedule(args: argparse.Namespace) -> None:
     print(f"Saved schedule workbook -> {result_path}")
 
 
+def _run_market_review(args: argparse.Namespace) -> None:
+    """List or update staging rows for manual review."""
+    _ensure_src_on_path()
+    from data.paths import db_path_for
+    from pipelines import market_review as review_pipeline
+
+    db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
+    raw_status = getattr(args, "status", None)
+    statuses = None
+    if raw_status and raw_status.lower() != "all":
+        statuses = [s.strip() for s in raw_status.split(",") if s.strip()]
+
+    limit = getattr(args, "limit", None)
+    accept_id = getattr(args, "accept_id", None)
+    reject_id = getattr(args, "reject_id", None)
+
+    if accept_id and reject_id:
+        raise ValueError("Provide only one of --accept or --reject.")
+
+    if accept_id is not None:
+        if not args.game_id:
+            raise ValueError("--game-id is required when accepting a staging row.")
+        updated = review_pipeline.accept_match(
+            db_path,
+            staging_id=accept_id,
+            game_id=args.game_id,
+            match_confidence=getattr(args, "match_confidence", None),
+        )
+        print(
+            "Accepted staging "
+            f"{updated.get('id')} -> game_id={updated.get('game_id')} "
+            f"status={updated.get('match_status')} confidence={updated.get('match_confidence')}"
+        )
+        return
+
+    if reject_id is not None:
+        updated = review_pipeline.reject_match(db_path, staging_id=reject_id)
+        print(
+            "Rejected staging "
+            f"{updated.get('id')} -> status={updated.get('match_status')}"
+        )
+        return
+
+    rows = review_pipeline.list_staging_rows(
+        db_path, match_statuses=statuses, limit=limit
+    )
+    if not rows:
+        print("No staging rows found for given filters.")
+        return
+
+    for r in rows:
+        teams = f"{r.get('team_home_raw') or '?'} vs {r.get('team_away_raw') or '?'}"
+        captured = r.get("captured_at") or "-"
+        print(
+            f"#{r.get('id')} [{r.get('match_status')}] "
+            f"conf={r.get('match_confidence')} game={r.get('game_id') or '-'} "
+            f"market={r.get('market_type') or '-'} sel={r.get('selection') or '-'} "
+            f"line={r.get('line')} odds={r.get('odds')} teams={teams} "
+            f"captured={captured} book={r.get('book') or '-'}"
+        )
+
+
 def _run_report(args: argparse.Namespace) -> None:
     """Build an Excel report with one sheet per model."""
     _ensure_src_on_path()
@@ -877,6 +983,8 @@ def main() -> None:
         _run_matchup(args)
     elif args.command == "schedule":
         _run_schedule(args)
+    elif args.command == "market-review":
+        _run_market_review(args)
     elif args.command == "report":
         _run_report(args)
     elif args.command == "backtest":

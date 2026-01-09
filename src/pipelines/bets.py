@@ -83,15 +83,31 @@ def log_bets(
         conn = sqlite3.connect(resolved_db)
         cur = conn.cursor()
 
+        # detect duplicates inside the workbook (same game_id, market_type, selection)
+        seen = set()
         for idx, row in df.iterrows():
             stake = row.get("stake")
             if pd.isna(stake) or stake == "" or stake == 0:
                 # PASS
                 continue
-            stake = float(stake)
+            try:
+                stake = float(stake)
+            except Exception:
+                continue
+
             game_id = row.get("game_id")
             market_type = row.get("market_type")
             selection = row.get("selection")
+            key = (game_id, market_type, selection)
+            if key in seen:
+                # mark as hold in the workbook and skip logging (duplicate within same snapshot)
+                df.at[idx, "log_status"] = "hold"
+                if writeback:
+                    # we'll write back the log_status later
+                    pass
+                continue
+            seen.add(key)
+
             line = row.get("line")
             odds = row.get("price") if not pd.isna(row.get("price")) and row.get("price") else row.get("odds")
             if pd.isna(odds):
@@ -104,12 +120,17 @@ def log_bets(
             logged_at = _utcnow_iso()
             status = "pending"
 
+            # attach latest CLV snapshot if present
+            clv = br.get_latest_clv(resolved_db, game_id=game_id, market_type=market_type, selection=selection)
+            clv_line = clv.get("close_line") if clv else None
+            clv_odds = clv.get("close_odds") if clv else None
+
             # Upsert (INSERT OR REPLACE) to maintain idempotency on unique key
             cur.execute(
                 """
                 INSERT INTO bets (
-                    review_run_id, game_id, market_type, selection, line, odds, stake, book, logged_at, status, source_opportunity_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    review_run_id, game_id, market_type, selection, line, odds, stake, book, logged_at, status, source_opportunity_id, clv_close_odds, clv_close_line
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(review_run_id, game_id, market_type, selection) DO UPDATE SET
                     stake = excluded.stake,
                     odds = excluded.odds,
@@ -117,7 +138,9 @@ def log_bets(
                     book = excluded.book,
                     logged_at = excluded.logged_at,
                     status = excluded.status,
-                    source_opportunity_id = excluded.source_opportunity_id
+                    source_opportunity_id = excluded.source_opportunity_id,
+                    clv_close_odds = excluded.clv_close_odds,
+                    clv_close_line = excluded.clv_close_line
                 """,
                 (
                     review_run_id,
@@ -131,6 +154,8 @@ def log_bets(
                     logged_at,
                     status,
                     source_opportunity_id,
+                    clv_odds,
+                    clv_line,
                 ),
             )
             conn.commit()
@@ -142,33 +167,24 @@ def log_bets(
             ).fetchone()
             bet_id = bid_row[0] if bid_row is not None else None
             if writeback and bet_id:
-                writeback_rows.append((idx, bet_id, logged_at))
+                df.at[idx, "bet_id"] = bet_id
+                df.at[idx, "logged_at"] = logged_at
+                df.at[idx, "log_status"] = "logged"
             inserted += 1
 
     finally:
         if conn:
             conn.close()
 
-    if writeback and writeback_rows:
-        # write back to workbook
-        wb = load_workbook(wb_path)
-        ws = wb["BETS"]
-        # find header row
-        headers = {c.value: i + 1 for i, c in enumerate(next(ws.iter_rows(min_row=1, max_row=1)))}
-        bid_col = headers.get("bet_id")
-        logged_col = headers.get("logged_at")
-        if bid_col is None or logged_col is None:
-            # if columns missing, append them
-            max_col = ws.max_column
-            bid_col = max_col + 1
-            logged_col = max_col + 2
-            ws.cell(row=1, column=bid_col, value="bet_id")
-            ws.cell(row=1, column=logged_col, value="logged_at")
-        for df_idx, bet_id, logged_at in writeback_rows:
-            excel_row = df_idx + 2  # pandas index 0 => excel row 2
-            ws.cell(row=excel_row, column=bid_col, value=bet_id)
-            ws.cell(row=excel_row, column=logged_col, value=logged_at)
-        wb.save(wb_path)
+    if writeback and not dry_run:
+        # write modified dataframe back to the workbook (replace BETS sheet)
+        import pandas as _pd
+        with _pd.ExcelWriter(wb_path, engine="openpyxl", mode="a") as writer:
+            try:
+                writer.book.remove(writer.book["BETS"])
+            except Exception:
+                pass
+            df.to_excel(writer, sheet_name="BETS", index=False)
 
     return inserted
 

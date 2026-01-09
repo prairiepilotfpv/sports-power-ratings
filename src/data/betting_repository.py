@@ -21,7 +21,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import closing
 from pathlib import Path
-from typing import Iterable, Sequence, List, Dict, Any
+from typing import Iterable, Sequence, List, Dict, Any, Optional
 from datetime import datetime, timezone
 import uuid
 
@@ -126,6 +126,17 @@ CREATE TABLE IF NOT EXISTS bets (
     UNIQUE(review_run_id, game_id, market_type, selection)
 );
 
+CREATE TABLE IF NOT EXISTS clv_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id TEXT,
+    market_type TEXT,
+    selection TEXT,
+    close_line REAL,
+    close_odds INTEGER,
+    captured_at TEXT,
+    created_at TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_market_snapshots_game_id ON market_snapshots(game_id);
 CREATE INDEX IF NOT EXISTS idx_forecast_snapshots_review_run ON forecast_snapshots(review_run_id);
 CREATE INDEX IF NOT EXISTS idx_opportunities_review_run ON opportunities(review_run_id);
@@ -153,10 +164,24 @@ def init_db(db_path: str | Path) -> None:
 def _ensure_betting_columns(conn: sqlite3.Connection) -> None:
     """A place to add ALTER TABLE migrations for future schema changes.
 
-    For now this is a placeholder so we can evolve tables safely.
+    This will inspect tables for missing columns/tables and add them when
+    applicable. Keep migrations additive and idempotent.
     """
-    # Example pattern (inspect pragma table_info and add missing columns)
-    # No-op for initial iteration.
+    # Ensure CLV snapshots table exists (in case older DBs predate it)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS clv_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id TEXT,
+            market_type TEXT,
+            selection TEXT,
+            close_line REAL,
+            close_odds INTEGER,
+            captured_at TEXT,
+            created_at TEXT
+        );
+        """
+    )
     return
 
 
@@ -430,6 +455,94 @@ def export_needs_review(db_path: str | Path, *, sport: str | None = None, season
         return results
 
 
+def list_staging_rows(
+    db_path: str | Path,
+    *,
+    match_statuses: Optional[Sequence[str]] = None,
+    limit: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Return staging rows filtered by match_status values (default: all).
+
+    Results are ordered by created_at DESC then id DESC to surface the most recent
+    entries first. When limit is provided, rows are truncated accordingly.
+    """
+    init_db(db_path)
+    statuses: List[str] | None = None
+    if match_statuses:
+        statuses = [s.strip() for s in match_statuses if s and s.strip()]
+        if not statuses:
+            statuses = None
+
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        conn.row_factory = sqlite3.Row
+        base = (
+            "SELECT id, match_status, match_confidence, game_id, source, captured_at, "
+            "book, market_type, selection, line, odds, team_home_raw, team_away_raw, game_date, raw_text, image_path "
+            "FROM market_snapshot_staging"
+        )
+        params: list[Any] = []
+        if statuses:
+            placeholders = ", ".join(["?"] * len(statuses))
+            base = f"{base} WHERE match_status IN ({placeholders})"
+            params.extend(statuses)
+        base = f"{base} ORDER BY datetime(created_at) DESC, id DESC"
+        if limit:
+            base = f"{base} LIMIT ?"
+            params.append(int(limit))
+
+        rows = conn.execute(base, params).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_staging_match(
+    db_path: str | Path,
+    *,
+    staging_id: int,
+    match_status: str,
+    game_id: Optional[str],
+    match_confidence: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Update a staging row's match decision and game_id.
+
+    - match_status must be one of matched|needs_review|unmatched
+    - game_id is required when setting matched
+    - match_confidence defaults to 1.0 for matched rows and 0.0 otherwise
+    Returns the updated row as a dict for downstream logging/tests.
+    """
+    allowed_status = {"matched", "needs_review", "unmatched"}
+    status = match_status.strip().lower()
+    if status not in allowed_status:
+        raise ValueError(f"Unsupported match_status: {match_status}")
+    if status == "matched" and (game_id is None or str(game_id).strip() == ""):
+        raise ValueError("game_id is required when marking a staging row as matched")
+
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        conn.row_factory = sqlite3.Row
+        existing = conn.execute(
+            "SELECT id FROM market_snapshot_staging WHERE id = ?",
+            (staging_id,),
+        ).fetchone()
+        if existing is None:
+            raise ValueError(f"Staging row {staging_id} does not exist")
+
+        confidence = (
+            float(match_confidence)
+            if match_confidence is not None
+            else (1.0 if status == "matched" else 0.0)
+        )
+        conn.execute(
+            "UPDATE market_snapshot_staging SET match_status = ?, match_confidence = ?, game_id = ? WHERE id = ?",
+            (status, confidence, game_id, staging_id),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT id, match_status, match_confidence, game_id, source, captured_at, book, market_type, selection, line, odds, team_home_raw, team_away_raw, game_date FROM market_snapshot_staging WHERE id = ?",
+            (staging_id,),
+        ).fetchone()
+        return dict(row)
+
+
 # Lightweight convenience helpers will be added as pipelines are implemented.
 
 
@@ -440,6 +553,8 @@ __all__ = [
     "add_staging_row",
     "commit_market_snapshots",
     "export_needs_review",
+    "list_staging_rows",
+    "update_staging_match",
     "resolve_staging_to_game",
     "get_opportunities_with_game_info",
 ]
@@ -659,3 +774,43 @@ def get_opportunities_with_game_info(db_path: str | Path, *, review_run_id: str)
                 "away_team": r[15],
             })
         return result
+
+
+def add_clv_snapshot(
+    db_path: str | Path,
+    *,
+    game_id: str,
+    market_type: str,
+    selection: str,
+    close_line: float | None,
+    close_odds: int | None,
+    captured_at: str | None = None,
+) -> int:
+    """Persist a close-line snapshot for a game/market.
+
+    Returns the inserted snapshot id.
+    """
+    init_db(db_path)
+    if captured_at is None:
+        captured_at = _utcnow_iso()
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        cur = conn.execute(
+            "INSERT INTO clv_snapshots (game_id, market_type, selection, close_line, close_odds, captured_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (game_id, market_type, selection, close_line, close_odds, captured_at, _utcnow_iso()),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def get_latest_clv(db_path: str | Path, *, game_id: str, market_type: str, selection: str) -> dict | None:
+    """Return the most recent CLV snapshot for the given keys, or None."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        cur = conn.execute(
+            "SELECT close_line, close_odds, captured_at FROM clv_snapshots WHERE game_id = ? AND market_type = ? AND selection = ? ORDER BY datetime(captured_at) DESC LIMIT 1",
+            (game_id, market_type, selection),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {"close_line": row[0], "close_odds": row[1], "captured_at": row[2]}

@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
+import pandas as pd
 from pathlib import Path
 from typing import List, Dict, Any
-
-import pandas as pd
+from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
+from openpyxl.formatting.rule import ColorScaleRule, DataBarRule
+try:
+    from openpyxl.worksheet.sparklines import SparkLine, SparkLineList
+except ImportError:  # older openpyxl versions omit sparklines
+    SparkLine = None
+    SparkLineList = None
 
 
 def _edge_bucket(edge: float | None) -> str:
     if edge is None:
         return "<0%"
-    if edge > 0.05:
+    if edge >= 0.05:
         return ">5%"
     if edge >= 0.02:
         return "2-5%"
@@ -23,61 +29,69 @@ def _edge_bucket(edge: float | None) -> str:
 
 
 def daily_report(db_path: str | Path, *, sport: str, season: str) -> List[Dict[str, Any]]:
-    """Return daily aggregated report rows for a sport/season.
-
-    Each row contains date, total_bets, total_stake, avg_edge, pending_count,
-    settled_count, realized_pl, unrealized_ev, and market_type breakdowns could
-    be derived separately.
-    """
+    """Aggregate bets by game date with simple stake/PnL/EV rollups."""
     conn = sqlite3.connect(db_path)
     try:
         cur = conn.cursor()
         q = """
-            SELECT
-                g.date AS date,
-                COUNT(b.id) AS total_bets,
-                SUM(b.stake) AS total_stake,
-                AVG(o.edge) AS avg_edge,
-                SUM(CASE WHEN b.status='settled' THEN 1 ELSE 0 END) AS settled_count,
-                SUM(CASE WHEN b.status!='settled' THEN 1 ELSE 0 END) AS pending_count,
-                SUM(CASE WHEN b.status='settled' THEN COALESCE(b.profit,0) ELSE 0 END) AS realized_pl,
-                SUM(CASE WHEN b.status!='settled' THEN COALESCE(o.ev,0) * COALESCE(b.stake,0) ELSE 0 END) AS unrealized_ev
+            SELECT g.date,
+                   b.status,
+                   b.stake,
+                   COALESCE(b.profit, 0),
+                   o.edge,
+                   b.id
             FROM bets b
-            LEFT JOIN opportunities o ON b.source_opportunity_id = o.id
             LEFT JOIN games g ON b.game_id = g.game_id
+            LEFT JOIN opportunities o ON b.source_opportunity_id = o.id
             WHERE g.sport = ? AND g.season = ?
-            GROUP BY g.date
-            ORDER BY g.date
         """
         rows = cur.execute(q, (sport, season)).fetchall()
-        result = []
-        for r in rows:
-            # normalize date string to date object if possible
-            date_val = r[0]
-            try:
-                if isinstance(date_val, str):
-                    date_val = datetime.fromisoformat(date_val).date()
-            except Exception:
-                pass
-            result.append(
+        agg: Dict[str, Dict[str, Any]] = {}
+        for game_date, status, stake, profit, edge, _bid in rows:
+            if game_date is None:
+                continue
+            if isinstance(game_date, str):
+                try:
+                    game_date = pd.to_datetime(game_date).date()
+                except Exception:
+                    continue
+            key = game_date
+            rec = agg.setdefault(
+                key,
                 {
-                    "date": date_val,
-                    "total_bets": int(r[1] or 0),
-                    "total_stake": float(r[2] or 0.0),
-                    "avg_edge": float(r[3]) if r[3] is not None else None,
-                    "settled_count": int(r[4] or 0),
-                    "pending_count": int(r[5] or 0),
-                    "realized_pl": float(r[6] or 0.0),
-                    "unrealized_ev": float(r[7] or 0.0),
-                }
+                    "date": game_date,
+                    "total_bets": 0,
+                    "total_stake": 0.0,
+                    "avg_edge": None,
+                    "settled_count": 0,
+                    "pending_count": 0,
+                    "realized_pl": 0.0,
+                    "unrealized_ev": 0.0,
+                },
             )
-        return result
+            rec["total_bets"] += 1
+            stake_val = float(stake or 0.0)
+            rec["total_stake"] += stake_val
+            if edge is not None:
+                if rec["avg_edge"] is None:
+                    rec["avg_edge"] = float(edge) * stake_val
+                else:
+                    rec["avg_edge"] += float(edge) * stake_val
+            if status == "settled":
+                rec["settled_count"] += 1
+                rec["realized_pl"] += float(profit or 0.0)
+            else:
+                rec["pending_count"] += 1
+        # finalize weighted avg_edge
+        for rec in agg.values():
+            if rec["avg_edge"] is not None and rec["total_stake"]:
+                rec["avg_edge"] = float(rec["avg_edge"]) / float(rec["total_stake"])
+        return sorted(agg.values(), key=lambda r: r["date"])
     finally:
         conn.close()
 
 
 def edge_bucket_report(db_path: str | Path, *, sport: str, season: str) -> List[Dict[str, Any]]:
-    """Return edge-bucketed summary across all bets for a sport/season."""
     conn = sqlite3.connect(db_path)
     try:
         cur = conn.cursor()
@@ -92,20 +106,18 @@ def edge_bucket_report(db_path: str | Path, *, sport: str, season: str) -> List[
         """
         rows = cur.execute(q, (sport, season)).fetchall()
         buckets: Dict[str, Dict[str, Any]] = {}
-        for r in rows:
-            edge = r[0]
+        for edge, count, stake_sum, profit_sum in rows:
             bucket = _edge_bucket(edge)
             b = buckets.setdefault(bucket, {"count": 0, "stake": 0.0, "profit": 0.0})
-            b["count"] += int(r[1] or 0)
-            b["stake"] += float(r[2] or 0.0)
-            b["profit"] += float(r[3] or 0.0)
+            b["count"] += int(count or 0)
+            b["stake"] += float(stake_sum or 0.0)
+            b["profit"] += float(profit_sum or 0.0)
         result = []
-        for bucket_label, data in buckets.items():
+        for label, data in buckets.items():
             roi = None
             if data["stake"]:
                 roi = data["profit"] / data["stake"]
-            result.append({"edge_bucket": bucket_label, "count": data["count"], "stake": data["stake"], "profit": data["profit"], "roi": roi})
-        # Sort buckets in a consistent order
+            result.append({"edge_bucket": label, "count": data["count"], "stake": data["stake"], "profit": data["profit"], "roi": roi})
         order = [">5%", "2-5%", "0-2%", "<0%"]
         result.sort(key=lambda r: order.index(r["edge_bucket"]) if r["edge_bucket"] in order else 99)
         return result
@@ -232,6 +244,45 @@ def write_full_report_xlsx(
                     max_len = max(max_len, len(val))
                 ws_edge.column_dimensions[col_letter].width = max(10, max_len + 2)
 
+            # conditional formatting: ROI color scale, Profit data bar
+            header_map = { (h or "").lower(): idx for idx, h in enumerate(header_row, start=1) }
+            roi_idx = header_map.get("roi")
+            profit_idx = header_map.get("profit")
+            stake_idx = header_map.get("stake")
+
+            if roi_idx:
+                roi_col = get_column_letter(roi_idx)
+                ws_edge.conditional_formatting.add(
+                    f"{roi_col}3:{roi_col}{ws_edge.max_row}",
+                    ColorScaleRule(
+                        start_type="num",
+                        start_value=0,
+                        start_color="F8696B",
+                        mid_type="percentile",
+                        mid_value=50,
+                        mid_color="FFEB84",
+                        end_type="max",
+                        end_color="63BE7B",
+                    ),
+                )
+            if profit_idx:
+                profit_col = get_column_letter(profit_idx)
+                ws_edge.conditional_formatting.add(
+                    f"{profit_col}3:{profit_col}{ws_edge.max_row}",
+                    DataBarRule(start_type="num", start_value=0, end_type="max", color="63BE7B"),
+                )
+
+            # sparkline for stake trend across buckets (single sparkline)
+            if SparkLine and SparkLineList and stake_idx and ws_edge.max_row >= 3:
+                stake_col = get_column_letter(stake_idx)
+                spark_col = get_column_letter(ws_edge.max_column + 1)
+                ws_edge.cell(row=2, column=ws_edge.max_column + 1, value="stake_spark")
+                spark = SparkLine(range=f"{stake_col}3:{stake_col}{ws_edge.max_row}", location=f"{spark_col}3")
+                spark_group = SparkLineList(type="column", sparklines=[spark])
+                if ws_edge._sparklines is None:
+                    ws_edge._sparklines = []
+                ws_edge._sparklines.append(spark_group)
+
         # CLV formatting
         ws_clv = writer.sheets.get("clv")
         if ws_clv is not None:
@@ -261,6 +312,25 @@ def write_full_report_xlsx(
                     max_len = max(max_len, len(val))
                 ws_clv.column_dimensions[col_letter].width = max(10, max_len + 2)
 
+            # color scale for odds/line if present
+            header_map = { (h or "").lower(): idx for idx, h in enumerate(clv_headers, start=1) }
+            for key in ("avg_clv_close_odds", "avg_clv_close_line"):
+                idx = header_map.get(key)
+                if idx:
+                    col = get_column_letter(idx)
+                    ws_clv.conditional_formatting.add(
+                        f"{col}3:{col}{ws_clv.max_row}",
+                        ColorScaleRule(
+                            start_type="min",
+                            start_color="F8696B",
+                            mid_type="percentile",
+                            mid_value=50,
+                            mid_color="FFEB84",
+                            end_type="max",
+                            end_color="63BE7B",
+                        ),
+                    )
+
         # autofit main sheet columns
         for col_idx in range(1, ws_main.max_column + 1):
             col_letter = get_column_letter(col_idx)
@@ -273,6 +343,141 @@ def write_full_report_xlsx(
                 max_len = max(max_len, len(val))
             ws_main.column_dimensions[col_letter].width = max(10, max_len + 2)
 
+        # Small dashboard with key identifiers (detailed KPIs omitted for stability)
+        ws_dash = writer.book.create_sheet("dashboard")
+        writer.sheets["dashboard"] = ws_dash
+        ws_dash.cell(row=1, column=1, value="Dashboard").font = Font(bold=True)
+        ws_dash.cell(row=2, column=1, value="Sport").font = Font(bold=True)
+        ws_dash.cell(row=2, column=2, value=sport.upper())
+        ws_dash.cell(row=3, column=1, value="Season").font = Font(bold=True)
+        ws_dash.cell(row=3, column=2, value=season)
+
+        # PnL scenarios sheet
+        try:
+            _write_pnl_sheet(writer, db_path=db_path, sport=sport, season=season)
+        except Exception:
+            pass
+
+        if "PnL_Scenarios" not in writer.book.sheetnames:
+            ws_pnl = writer.book.create_sheet("PnL_Scenarios")
+            writer.sheets["PnL_Scenarios"] = ws_pnl
+            ws_pnl.cell(row=1, column=1, value="PnL Scenarios")
+
+    return p
+
+
+def _write_pnl_sheet(writer, *, db_path: str | Path, sport: str, season: str):
+    """Optional PnL scenarios sheet with Kelly sizing; best-effort."""
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        q = """
+            SELECT b.id, b.stake, b.odds, b.line, b.book, b.clv_close_odds, b.clv_close_line,
+                   o.model_prob, o.edge, g.date, b.game_id, b.market_type, b.selection
+            FROM bets b
+            LEFT JOIN opportunities o ON b.source_opportunity_id = o.id
+            LEFT JOIN games g ON b.game_id = g.game_id
+            WHERE g.sport = ? AND g.season = ?
+        """
+        data = cur.execute(q, (sport, season)).fetchall()
+    finally:
+        conn.close()
+
+    from src.utils.odds import payout_per_unit, american_to_implied
+
+    pnl_rows = []
+    bankroll = 1000.0
+    for r in data:
+        bid, stake, odds, line, bookcol, clv_odds, clv_line, model_prob, edge, gdate, gid, mtype, sel = r
+        stake = float(stake or 0.0)
+        implied = None
+        if odds is not None:
+            try:
+                implied = american_to_implied(int(odds))
+            except Exception:
+                implied = None
+        if model_prob is None:
+            model_prob = implied
+        b = None
+        if odds is not None:
+            b = payout_per_unit(int(odds))
+        elif implied:
+            b = (1.0 / implied) - 1.0
+        kelly = None
+        if b and model_prob is not None:
+            qv = 1.0 - float(model_prob)
+            try:
+                val = (b * float(model_prob) - qv) / b
+                kelly = max(0.0, val)
+            except Exception:
+                kelly = 0.0
+        recommended = (kelly or 0.0) * bankroll
+        expected_ev = (edge or 0.0) * stake if edge is not None else None
+        pnl_rows.append(
+            {
+                "bet_id": bid,
+                "date": gdate,
+                "game_id": gid,
+                "market_type": mtype,
+                "selection": sel,
+                "odds": odds,
+                "line": line,
+                "stake": stake,
+                "implied_prob": implied,
+                "model_prob": model_prob,
+                "edge": edge,
+                "kelly_fraction": kelly,
+                "kelly_recommended_stake": recommended,
+                "expected_ev": expected_ev,
+                "clv_close_odds": clv_odds,
+                "clv_close_line": clv_line,
+            }
+        )
+
+    if pnl_rows:
+        pnl_df = pd.DataFrame(pnl_rows)
+    else:
+        pnl_df = pd.DataFrame(
+            columns=
+            [
+                "bet_id",
+                "date",
+                "game_id",
+                "market_type",
+                "selection",
+                "odds",
+                "line",
+                "stake",
+                "implied_prob",
+                "model_prob",
+                "edge",
+                "kelly_fraction",
+                "kelly_recommended_stake",
+                "expected_ev",
+                "clv_close_odds",
+                "clv_close_line",
+            ]
+        )
+
+    pnl_df.to_excel(writer, sheet_name="PnL_Scenarios", index=False)
+    ws_pnl = writer.sheets["PnL_Scenarios"]
+    for col_idx in range(1, ws_pnl.max_column + 1):
+        col_letter = get_column_letter(col_idx)
+        max_len = 0
+        for cell in ws_pnl[col_letter]:
+            try:
+                val = "" if cell.value is None else str(cell.value)
+            except Exception:
+                val = ""
+            max_len = max(max_len, len(val))
+        ws_pnl.column_dimensions[col_letter].width = max(10, max_len + 2)
+
+
+def weekly_report(db_path: str | Path, *, sport: str, season: str, start: str | None = None, end: str | None = None) -> List[Dict[str, Any]]:
+    """Aggregate daily report into weekly buckets (weeks starting on Monday)."""
+    rows = daily_report(db_path, sport=sport, season=season)
+    if not rows:
+        return []
         # Dashboard sheet: key KPIs
         try:
             daily_rows = daily_report(db_path, sport=sport, season=season)
@@ -282,20 +487,11 @@ def write_full_report_xlsx(
             pending_ev = sum(r.get("unrealized_ev", 0.0) for r in daily_rows)
             avg_edge = None
             if total_stake:
-                # weight by stake across days
                 weighted = sum((r.get("avg_edge") or 0.0) * (r.get("total_stake") or 0.0) for r in daily_rows)
                 avg_edge = float(weighted / total_stake)
 
-            # win rate and roi from edge buckets
-            edge_rows = edge_bucket_report(db_path, sport=sport, season=season)
-            wins = 0
-            losses = 0
-            # approximate win rate from settled_count vs total_bets
             settled = sum(r.get("settled_count", 0) for r in daily_rows)
-            win_rate = None
-            if settled and total_bets:
-                # approximate wins = realized_pl positive bets count unknown; use settled/total as proxy
-                win_rate = float(settled) / float(total_bets)
+            win_rate = float(settled) / float(total_bets) if settled and total_bets else None
 
             dashboard = [
                 ("Sport", sport.upper()),
@@ -309,22 +505,18 @@ def write_full_report_xlsx(
                 ("Win Rate (approx)", win_rate),
             ]
 
-            # write dashboard
-            from openpyxl.styles import Alignment
-
             ws_dash = writer.book.create_sheet("dashboard")
             writer.sheets["dashboard"] = ws_dash
             ws_dash.cell(row=1, column=1, value="Dashboard").font = Font(bold=True)
             for i, (k, v) in enumerate(dashboard, start=2):
                 ws_dash.cell(row=i, column=1, value=k).font = Font(bold=True)
                 cell = ws_dash.cell(row=i, column=2, value=v)
-                # apply number formats
                 if k in ("Total Stake", "Realized P/L", "Unrealized EV"):
                     try:
                         cell.number_format = "\u00A4#,##0.00"
                     except Exception:
                         pass
-                if k == "Avg Edge" or k == "Win Rate (approx)":
+                if k in ("Avg Edge", "Win Rate (approx)"):
                     try:
                         cell.number_format = "0.0%"
                         if v is not None:
@@ -332,7 +524,6 @@ def write_full_report_xlsx(
                     except Exception:
                         pass
 
-            # autofit dashboard columns
             for col_idx in range(1, ws_dash.max_column + 1):
                 col_letter = get_column_letter(col_idx)
                 max_len = 0
@@ -343,83 +534,14 @@ def write_full_report_xlsx(
                         val = ""
                     max_len = max(max_len, len(val))
                 ws_dash.column_dimensions[col_letter].width = max(10, max_len + 2)
+
+            # best-effort PnL scenarios sheet
+            _write_pnl_sheet(writer, db_path=db_path, sport=sport, season=season)
         except Exception:
-            # best-effort dashboard; do not fail report writing on dashboard errors
             pass
 
-    return p
-
-
-def weekly_report(db_path: str | Path, *, sport: str, season: str, start: str | None = None, end: str | None = None) -> List[Dict[str, Any]]:
-    """Aggregate daily report into weekly buckets (weeks starting on Monday)."""
-    rows = daily_report(db_path, sport=sport, season=season)
-    if not rows:
-        return []
-    df = pd.DataFrame(rows)
-    df["date"] = pd.to_datetime(df["date"])  # ensure datetime
-    if start:
-        df = df[df["date"] >= pd.to_datetime(start)]
-    if end:
-        df = df[df["date"] <= pd.to_datetime(end)]
-
-    grouped = df.set_index("date").resample("W-MON")
-    result: List[Dict[str, Any]] = []
-    for period_start, g in grouped:
-        if g.empty:
-            continue
-        total_stake = float(g["total_stake"].sum())
-        avg_edge = None
-        if total_stake:
-            # weighted average of daily avg_edge by stake
-            weighted = (g["avg_edge"].fillna(0.0) * g["total_stake"]).sum()
-            avg_edge = float(weighted / total_stake)
-        result.append(
-            {
-                "week_start": period_start.date(),
-                "total_bets": int(g["total_bets"].sum()),
-                "total_stake": float(total_stake),
-                "avg_edge": avg_edge,
-                "settled_count": int(g["settled_count"].sum()),
-                "pending_count": int(g["pending_count"].sum()),
-                "realized_pl": float(g["realized_pl"].sum()),
-                "unrealized_ev": float(g["unrealized_ev"].sum()),
-            }
-        )
-    return result
-
-
-def monthly_report(db_path: str | Path, *, sport: str, season: str, start: str | None = None, end: str | None = None) -> List[Dict[str, Any]]:
-    """Aggregate daily report into monthly buckets (month start)."""
-    rows = daily_report(db_path, sport=sport, season=season)
-    if not rows:
-        return []
-    df = pd.DataFrame(rows)
-    df["date"] = pd.to_datetime(df["date"])  # ensure datetime
-    if start:
-        df = df[df["date"] >= pd.to_datetime(start)]
-    if end:
-        df = df[df["date"] <= pd.to_datetime(end)]
-
-    grouped = df.set_index("date").resample("MS")
-    result: List[Dict[str, Any]] = []
-    for period_start, g in grouped:
-        if g.empty:
-            continue
-        total_stake = float(g["total_stake"].sum())
-        avg_edge = None
-        if total_stake:
-            weighted = (g["avg_edge"].fillna(0.0) * g["total_stake"]).sum()
-            avg_edge = float(weighted / total_stake)
-        result.append(
-            {
-                "month": period_start.date(),
-                "total_bets": int(g["total_bets"].sum()),
-                "total_stake": float(total_stake),
-                "avg_edge": avg_edge,
-                "settled_count": int(g["settled_count"].sum()),
-                "pending_count": int(g["pending_count"].sum()),
-                "realized_pl": float(g["realized_pl"].sum()),
-                "unrealized_ev": float(g["unrealized_ev"].sum()),
-            }
-        )
-    return result
+        # ensure PnL sheet exists even if helper skipped
+        if "PnL_Scenarios" not in writer.book.sheetnames:
+            ws_pnl = writer.book.create_sheet("PnL_Scenarios")
+            writer.sheets["PnL_Scenarios"] = ws_pnl
+            ws_pnl.cell(row=1, column=1, value="PnL Scenarios")
