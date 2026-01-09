@@ -95,11 +95,23 @@ python -m src.cli.pipeline betting log-bets --workbook outputs/review/nba-2025-2
 # Settle bets up to completed games
 python -m src.cli.pipeline betting settle-bets --sport nba --season 2025-26 --db data/db/nba/2025-26.db
 
+# Import closing lines/odds and backfill CLV
+python -m src.cli.pipeline betting clv-csv --sport nba --season 2025-26 --csv data/raw/nba_closing_lines.csv --default-market-type ML
+
 # Generate aggregated betting reports (daily/weekly/monthly)
 python -m src.cli.pipeline betting report --sport nba --season 2025-26 --type weekly --start 2025-11-01 --end 2026-01-01 --output outputs/reports/nba-weekly.xlsx
 
 # Output CSV instead of Excel (use --format or .csv extension)
 python -m src.cli.pipeline betting report --sport nba --season 2025-26 --type monthly --format csv --output outputs/reports/nba-monthly.csv
+
+# End-to-end OCR ingest to report
+python -m src.cli.pipeline betting market-ocr --sport nba --season 2025-26 --images screenshots/ --book DK --captured-at 2025-12-01T14:30:00Z --json-output tmp/lines.json
+# Review/accept matches (optional when using DB mode)
+python -m src.cli.pipeline market-review --sport nba --season 2025-26 --status all --limit 20
+# Commit staging to market_snapshots (DB mode only)
+python -m src.cli.pipeline betting market-commit --sport nba --season 2025-26 --snapshot-run-id run_20251201
+# Generate weekly report
+python -m src.cli.pipeline betting report --sport nba --season 2025-26 --type weekly --start 2025-12-01 --end 2025-12-31 --format xlsx --output outputs/reports/bets-nba-dec.xlsx
 ```
 
 Notes:
@@ -107,6 +119,84 @@ Notes:
 - `--start` / `--end` filter the date range for weekly/monthly aggregations (YYYY-MM-DD).
 - `--format` overrides output type; otherwise the CLI infers format from the `--output` extension.
 - Betting report workbooks include three sheets: the main period sheet (`daily`, `weekly`, or `monthly`), an `edge_buckets` summary, and a `clv` summary.
+- `clv-csv` resolves games via `game_id` or `team_home`/`team_away` + `game_date`; invalid rows are skipped and counted. See [docs/market-clv.md](docs/market-clv.md) for the expected CSV schema and flags.
+
+## market-ocr — OCR ingest quick reference
+
+```bash
+# Parse images and write JSON only (no DB writes)
+python -m src.cli.pipeline betting market-ocr --sport nba --season 2025-26 --images screenshots/ --book DK --captured-at 2025-12-01T14:30:00Z --json-output tmp/lines.json
+
+# Parse and write staging rows to DB (omit --json-output)
+python -m src.cli.pipeline betting market-ocr --sport nba --season 2025-26 --images screenshots/ --book DK --captured-at 2025-12-01T14:30:00Z --db data/db/nba/2025-26.db
+```
+
+Notes: `--json-output` switches the command to JSON-only mode (no DB writes). Without it, rows go to `market_snapshot_staging` for later review/commit.
+
+## Legacy ingest entry point (deprecated)
+
+`python -m src.cli.ingest` is retained for backward compatibility but is deprecated. Prefer the unified pipeline command:
+
+```bash
+python -m src.cli.pipeline import --sport nba --season 2025-26 --input data/raw/nba.csv
+```
+
+## market-review — review staging rows
+
+List or resolve OCR/CSV staging rows stored in `market_snapshot_staging`.
+
+```bash
+# List pending rows (default: needs_review only)
+python -m src.cli.pipeline market-review --sport nba --season 2025-26
+
+# Show all statuses and limit to 20 rows
+python -m src.cli.pipeline market-review --sport nba --season 2025-26 --status all --limit 20
+
+# Accept or reject a specific staging row
+python -m src.cli.pipeline market-review --sport nba --season 2025-26 --accept 12 --game-id 2024-12-01-lal-lac --match-confidence 0.95
+python -m src.cli.pipeline market-review --sport nba --season 2025-26 --reject 12
+```
+
+Notes: `--status` accepts comma-separated values (e.g., `matched,needs_review`); `--game-id` is required when accepting.
+
+## market-bets — pivot reviewed staging rows into bets
+
+Convert matched staging rows into `bets` entries with simple stake presets and duplicate detection.
+
+```bash
+# Insert bets with default unit stake (1.0) and preset "unit"
+python -m src.cli.pipeline market-bets --sport nba --season 2025-26 --status matched
+
+# Use custom review_run_id, double-unit stakes, and fallback book name
+python -m src.cli.pipeline market-bets --sport nba --season 2025-26 --review-run-id rr-2025-12-01 --stake-preset double --unit-stake 2.0 --default-book DraftKings
+
+# Dry-run to see counts without writing
+python -m src.cli.pipeline market-bets --sport nba --season 2025-26 --dry-run
+```
+
+Behaviors:
+- Filters by `match_status` (default: `matched`; use `--status all` to include everything).
+- Stake presets: `half` (0.5x), `unit` (1.0x), `double` (2.0x) multiplied by `--unit-stake`.
+- Auto-hold detection skips duplicate markets from the same image (disable with `--disable-auto-hold`). Held rows are tagged in `hold_reason`.
+- If a CLV snapshot exists for the same game/market/selection, the bet is populated with `clv_close_odds` / `clv_close_line`.
+
+See [docs/market-bets.md](docs/market-bets.md) for a fuller walkthrough.
+
+## clv-csv — ingest closing lines and update bets
+
+Import closing lines/odds, store them in `clv_snapshots`, and (by default) apply the latest snapshot to matching bets so reports contain closing numbers.
+
+```bash
+python -m src.cli.pipeline betting clv-csv --sport nba --season 2025-26 --csv data/raw/nba_closing_lines.csv --default-market-type ML
+```
+
+Flags:
+- `--csv`: path to the closing-lines CSV. Required.
+- `--default-market-type`: fallback when the CSV omits `market_type`.
+- `--captured-at`: override captured_at for all rows.
+- `--no-update-bets`: skip backfilling `bets.clv_close_odds` / `bets.clv_close_line`.
+
+CSV expectations (aliases allowed): `market_type`, `selection`, `close_odds` (or `odds`), optional `close_line`; either `game_id` or `team_home`/`team_away` + `game_date` is required. Invalid odds or missing keys are rejected and counted. See [docs/market-clv.md](docs/market-clv.md) for details.
 
 ## backtest — evaluate models on historical games
 

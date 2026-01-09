@@ -1,5 +1,26 @@
 # Copilot instructions for sports-power-ratings
 
+You are the lead programmer for this repo. Do not wait for me to specify every detail.
+
+Your job:
+- Implement the feature end-to-end with correct architecture and tests.
+- Fill in conceptual gaps I missed by proposing sensible defaults and documenting assumptions.
+- If something is ambiguous, make the smallest reasonable assumption that preserves existing behavior, and write it down in docs + code comments.
+- Only ask me questions if the choice would materially change behavior or require external data I must provide.
+
+Constraints:
+- Do NOT refactor unrelated modules.
+- Do NOT change existing model fitting/training logic unless explicitly required.
+- Prefer additive changes: new modules + small, clearly-scoped integration points.
+- Add tests and a short README for the new feature.
+- Update CLI/output schemas only if necessary; if you do, keep backward compatibility.
+
+Deliverable format:
+1) Implementation plan (bullets, file-level changes)
+2) Code changes (actual implementation)
+3) Tests + how to run
+4) Notes: assumptions, risks, follow-ups
+
 Summary: concise reference to help an AI code agent be productive in this repository (architecture, workflows, conventions, and examples).
 
 ## Big picture

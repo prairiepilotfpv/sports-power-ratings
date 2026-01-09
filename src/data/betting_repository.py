@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS market_snapshot_staging (
     match_status TEXT,
     match_confidence REAL,
     game_id TEXT,
+    hold_reason TEXT,
     created_at TEXT
 );
 
@@ -182,6 +183,10 @@ def _ensure_betting_columns(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    # Ensure hold_reason column exists on staging for auto-hold tagging
+    staging_cols = [row[1] for row in conn.execute("PRAGMA table_info(market_snapshot_staging)")]
+    if "hold_reason" not in staging_cols:
+        conn.execute("ALTER TABLE market_snapshot_staging ADD COLUMN hold_reason TEXT")
     return
 
 
@@ -477,7 +482,7 @@ def list_staging_rows(
         conn.row_factory = sqlite3.Row
         base = (
             "SELECT id, match_status, match_confidence, game_id, source, captured_at, "
-            "book, market_type, selection, line, odds, team_home_raw, team_away_raw, game_date, raw_text, image_path "
+            "book, market_type, selection, line, odds, team_home_raw, team_away_raw, game_date, raw_text, image_path, hold_reason "
             "FROM market_snapshot_staging"
         )
         params: list[Any] = []
@@ -491,7 +496,22 @@ def list_staging_rows(
             params.append(int(limit))
 
         rows = conn.execute(base, params).fetchall()
-        return [dict(r) for r in rows]
+        result = [dict(r) for r in rows]
+
+        # Auto-tag duplicates by image/market/selection to expose hold reasons even if not yet persisted
+        seen: set[tuple[str | None, str | None, str | None]] = set()
+        # Iterate from oldest to newest so the first occurrence is kept and later ones flagged
+        for row in reversed(result):
+            key = (
+                row.get("image_path"),
+                row.get("market_type"),
+                (row.get("selection") or "").lower() if row.get("selection") else None,
+            )
+            if key in seen and not row.get("hold_reason"):
+                row["hold_reason"] = "duplicate_in_image"
+            else:
+                seen.add(key)
+        return result
 
 
 def update_staging_match(
@@ -543,6 +563,37 @@ def update_staging_match(
         return dict(row)
 
 
+def tag_staging_hold(
+    db_path: str | Path,
+    *,
+    staging_id: int,
+    reason: str,
+) -> dict:
+    """Set hold_reason on a staging row for auto-hold tagging.
+
+    Returns updated row including hold_reason for logging/tests.
+    """
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        conn.row_factory = sqlite3.Row
+        existing = conn.execute(
+            "SELECT id FROM market_snapshot_staging WHERE id = ?",
+            (staging_id,),
+        ).fetchone()
+        if existing is None:
+            raise ValueError(f"Staging row {staging_id} does not exist")
+        conn.execute(
+            "UPDATE market_snapshot_staging SET hold_reason = ? WHERE id = ?",
+            (reason, staging_id),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT id, match_status, match_confidence, game_id, source, captured_at, book, market_type, selection, line, odds, team_home_raw, team_away_raw, game_date, hold_reason FROM market_snapshot_staging WHERE id = ?",
+            (staging_id,),
+        ).fetchone()
+        return dict(row)
+
+
 # Lightweight convenience helpers will be added as pipelines are implemented.
 
 
@@ -555,8 +606,13 @@ __all__ = [
     "export_needs_review",
     "list_staging_rows",
     "update_staging_match",
+    "tag_staging_hold",
     "resolve_staging_to_game",
     "get_opportunities_with_game_info",
+    "add_clv_snapshot",
+    "get_latest_clv",
+    "import_clv_csv",
+    "update_bets_with_clv",
 ]
 
 
@@ -814,3 +870,144 @@ def get_latest_clv(db_path: str | Path, *, game_id: str, market_type: str, selec
         if not row:
             return None
         return {"close_line": row[0], "close_odds": row[1], "captured_at": row[2]}
+
+
+def update_bets_with_clv(
+    db_path: str | Path,
+    *,
+    game_id: str | None = None,
+    market_type: str | None = None,
+    selection: str | None = None,
+) -> int:
+    """Apply latest CLV snapshots to bets for the given filters.
+
+    Filters are optional; when omitted the latest snapshot per key is applied
+    to all bets that have a matching game/market/selection.
+    Returns the number of bet rows updated.
+    """
+    init_db(db_path)
+    updated = 0
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        # Collect latest snapshot per key (ordered by captured_at then id for stability)
+        q = """
+            SELECT game_id, market_type, selection, close_line, close_odds
+            FROM (
+                SELECT game_id, market_type, selection, close_line, close_odds, captured_at, id,
+                       ROW_NUMBER() OVER(PARTITION BY game_id, market_type, selection ORDER BY datetime(captured_at) DESC, id DESC) AS rn
+                FROM clv_snapshots
+        """
+        params: list = []
+        clauses: list[str] = []
+        if game_id:
+            clauses.append("game_id = ?")
+            params.append(game_id)
+        if market_type:
+            clauses.append("market_type = ?")
+            params.append(market_type)
+        if selection:
+            clauses.append("selection = ?")
+            params.append(selection)
+        if clauses:
+            q += " WHERE " + " AND ".join(clauses)
+        q += """
+            ) WHERE rn = 1
+        """
+        latest = conn.execute(q, params).fetchall()
+        for gid, mtype, sel, cline, codds in latest:
+            res = conn.execute(
+                "UPDATE bets SET clv_close_line = ?, clv_close_odds = ? WHERE game_id = ? AND market_type = ? AND selection = ?",
+                (cline, codds, gid, mtype, sel),
+            )
+            if res.rowcount is not None and res.rowcount > 0:
+                updated += int(res.rowcount)
+        conn.commit()
+    return updated
+
+
+def import_clv_csv(
+    db_path: str | Path,
+    *,
+    csv_path: str | Path,
+    sport: str,
+    season: str,
+    default_market_type: str | None = None,
+    default_captured_at: str | None = None,
+    update_bets: bool = True,
+) -> dict:
+    """Import close-line snapshots from a CSV.
+
+    Expected columns (some optional):
+    - market_type (ML/spread/total) [optional if default_market_type provided]
+    - selection
+    - close_line (optional for ML)
+    - close_odds
+    - team_home/home_team (for match resolution when game_id absent)
+    - team_away/away_team
+    - game_date (YYYY-MM-DD)
+    - game_id (optional; skips resolution)
+    - captured_at (optional; defaults to current UTC)
+
+    Returns summary counts: {"snapshots": N, "bets_updated": M, "rejected": K}
+    """
+    import csv
+
+    init_db(db_path)
+    snapshots = 0
+    bets_updated = 0
+    rejected = 0
+    with open(csv_path, newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            market_type = row.get("market_type") or default_market_type
+            selection = row.get("selection")
+            close_line = _clean_line_field(row.get("close_line") or row.get("line"))
+            close_odds = _clean_odds_field(row.get("close_odds") or row.get("odds"))
+            captured_at = row.get("captured_at") or default_captured_at
+            game_id = row.get("game_id")
+            team_home_raw = row.get("team_home") or row.get("home_team")
+            team_away_raw = row.get("team_away") or row.get("away_team")
+            game_date = row.get("game_date")
+
+            # Basic validation
+            if not selection or not market_type:
+                rejected += 1
+                continue
+            if close_odds is None or close_odds == 0 or close_odds < -1000 or close_odds > 1000:
+                rejected += 1
+                continue
+
+            resolved_game_id = game_id
+            if not resolved_game_id:
+                res = resolve_staging_to_game(
+                    db_path,
+                    sport=sport,
+                    season=season,
+                    team_home_raw=team_home_raw,
+                    team_away_raw=team_away_raw,
+                    game_date=game_date,
+                )
+                if not res or res.get("match_status") != "matched" or not res.get("game_id"):
+                    rejected += 1
+                    continue
+                resolved_game_id = res.get("game_id")
+
+            add_clv_snapshot(
+                db_path,
+                game_id=resolved_game_id,
+                market_type=market_type,
+                selection=selection,
+                close_line=close_line,
+                close_odds=close_odds,
+                captured_at=captured_at,
+            )
+            snapshots += 1
+
+            if update_bets:
+                bets_updated += update_bets_with_clv(
+                    db_path,
+                    game_id=resolved_game_id,
+                    market_type=market_type,
+                    selection=selection,
+                )
+
+    return {"snapshots": snapshots, "bets_updated": bets_updated, "rejected": rejected}

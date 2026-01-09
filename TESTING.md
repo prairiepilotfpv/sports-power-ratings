@@ -15,6 +15,21 @@ pip install -r requirements.txt -r requirements-dev.txt
 python -m pytest -q
 ```
 
+## Calibration tests (optional dependency)
+
+The calibration unit and integration tests require `scikit-learn`. If you want to run
+these tests locally or in CI with full behavior, install scikit-learn:
+
+```powershell
+pip install scikit-learn
+```
+
+The test suite also includes a lightweight shim so tests will still run when
+`scikit-learn` is not installed; the shim provides minimal, deterministic
+behaviour for the calibration classes and is intended for CI environments
+where installing additional dependencies is undesirable.
+
+
 ## Run fast unit tests only
 
 ```bash

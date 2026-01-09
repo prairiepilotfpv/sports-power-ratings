@@ -130,10 +130,19 @@ def clv_summary(db_path: str | Path, *, sport: str, season: str) -> Dict[str, An
     try:
         cur = conn.cursor()
         q = """
-            SELECT AVG(clv_close_odds), AVG(clv_close_line)
+            WITH latest_clv AS (
+                SELECT game_id, market_type, selection, close_line, close_odds
+                FROM (
+                    SELECT game_id, market_type, selection, close_line, close_odds, captured_at, id,
+                           ROW_NUMBER() OVER(PARTITION BY game_id, market_type, selection ORDER BY datetime(captured_at) DESC, id DESC) AS rn
+                    FROM clv_snapshots
+                ) WHERE rn = 1
+            )
+            SELECT AVG(COALESCE(b.clv_close_odds, lc.close_odds)), AVG(COALESCE(b.clv_close_line, lc.close_line))
             FROM bets b
             LEFT JOIN games g ON b.game_id = g.game_id
-            WHERE g.sport = ? AND g.season = ? AND clv_close_odds IS NOT NULL
+            LEFT JOIN latest_clv lc ON lc.game_id = b.game_id AND lc.market_type = b.market_type AND lc.selection = b.selection
+            WHERE g.sport = ? AND g.season = ? AND COALESCE(b.clv_close_odds, lc.close_odds) IS NOT NULL
         """
         row = cur.execute(q, (sport, season)).fetchone()
         return {"avg_clv_close_odds": float(row[0]) if row and row[0] is not None else None, "avg_clv_close_line": float(row[1]) if row and row[1] is not None else None}
@@ -372,11 +381,22 @@ def _write_pnl_sheet(writer, *, db_path: str | Path, sport: str, season: str):
     try:
         cur = conn.cursor()
         q = """
-            SELECT b.id, b.stake, b.odds, b.line, b.book, b.clv_close_odds, b.clv_close_line,
+            WITH latest_clv AS (
+                SELECT game_id, market_type, selection, close_line, close_odds
+                FROM (
+                    SELECT game_id, market_type, selection, close_line, close_odds, captured_at, id,
+                           ROW_NUMBER() OVER(PARTITION BY game_id, market_type, selection ORDER BY datetime(captured_at) DESC, id DESC) AS rn
+                    FROM clv_snapshots
+                ) WHERE rn = 1
+            )
+            SELECT b.id, b.stake, b.odds, b.line, b.book,
+                   COALESCE(b.clv_close_odds, lc.close_odds) AS clv_close_odds,
+                   COALESCE(b.clv_close_line, lc.close_line) AS clv_close_line,
                    o.model_prob, o.edge, g.date, b.game_id, b.market_type, b.selection
             FROM bets b
             LEFT JOIN opportunities o ON b.source_opportunity_id = o.id
             LEFT JOIN games g ON b.game_id = g.game_id
+            LEFT JOIN latest_clv lc ON lc.game_id = b.game_id AND lc.market_type = b.market_type AND lc.selection = b.selection
             WHERE g.sport = ? AND g.season = ?
         """
         data = cur.execute(q, (sport, season)).fetchall()

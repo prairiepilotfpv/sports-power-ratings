@@ -216,6 +216,9 @@ def run_backtest(
     db_path: str | Path | None = None,
     sport: str | None = None,
     season: str | None = None,
+    calibrate: bool = False,
+    calib_dir: str | Path | None = None,
+    calibrator_override: str | None = None,
 ) -> BacktestOutputs:
     if window not in {"expanding", "rolling"}:
         raise ValueError("window must be 'expanding' or 'rolling'.")
@@ -241,6 +244,7 @@ def run_backtest(
         )
 
     prediction_frames: list[pd.DataFrame] = []
+    calibration_eval_rows: list[dict] = []
     model_identity: dict[str, str] | None = None
     for current_date in evaluation_dates:
         train_data = games[games["date"] < current_date]
@@ -278,8 +282,101 @@ def run_backtest(
         )
         merged["home_win"] = _home_win_flag(merged)
         merged["actual_margin"] = merged["home_score"] - merged["away_score"]
-        prediction_frames.append(merged)
 
+        # Optional calibration: use previously produced out-of-sample predictions
+        # (prediction_frames) as training data to fit a calibrator and transform
+        # today's predictions. This avoids leakage because training folds are
+        # previous test folds in the walk-forward loop.
+        if calibrate:
+            try:
+                from src.calibration.registry import get_calibrator
+                from src.calibration.platt import PlattScalingCalibrator
+                from src.calibration.isotonic import IsotonicCalibrator
+                from src.calibration.eval import brier_score, log_loss
+                import time
+
+                past = pd.concat(prediction_frames, ignore_index=True) if prediction_frames else pd.DataFrame()
+                # Build training set: past out-of-sample predictions with p_home_win and home_win
+                if not past.empty and "p_home_win" in past.columns and "home_win" in past.columns:
+                    train_df = past.dropna(subset=["p_home_win", "home_win"]).copy()
+                else:
+                    train_df = pd.DataFrame()
+
+                calib = None
+                method = None
+                calibration_id = None
+                if not train_df.empty:
+                    n_train = len(train_df)
+                    # Allow explicit override from CLI: 'platt', 'isotonic', or 'auto'
+                    override = (calibrator_override or "").strip().lower()
+                    if override in {"platt", "isotonic"}:
+                        if override == "isotonic":
+                            calib = IsotonicCalibrator()
+                            method = "isotonic"
+                        else:
+                            calib = PlattScalingCalibrator()
+                            method = "platt"
+                    else:
+                        # check registry for a registered calibrator for this sport/model
+                        try:
+                            reg = get_calibrator(sport or "", model_name or "", "ML")
+                        except Exception:
+                            reg = None
+                        if reg:
+                            # registry entries may be classes or factory callables
+                            if callable(reg):
+                                calib = reg() if isinstance(reg, type) else reg()
+                            else:
+                                calib = reg
+                            method = getattr(calib, "metadata", {}).get("method", "registered")
+                        else:
+                            # default threshold: use isotonic when n >= 500, else Platt
+                            N_THRESH = 500
+                            if n_train >= N_THRESH:
+                                calib = IsotonicCalibrator()
+                                method = "isotonic"
+                            else:
+                                calib = PlattScalingCalibrator()
+                                method = "platt"
+                    calib.fit(train_df.rename(columns={"p_home_win": "p_home_win", "home_win": "home_win"}))
+                    # generate id and persist if requested
+                    ts = int(time.time())
+                    model_name = model_name or "model"
+                    calibration_id = f"{model_name}-ML-{ts}"
+                    if calib_dir:
+                        p_out = Path(calib_dir) / model_name
+                        p_out.mkdir(parents=True, exist_ok=True)
+                        calib_path = p_out / f"{calibration_id}.joblib"
+                        calib.save(calib_path)
+
+                    # transform today's predictions if available
+                    if "p_home_win" in merged.columns:
+                        merged["p_home_win_calibrated"] = calib.transform(merged["p_home_win"]) if not merged["p_home_win"].isna().all() else pd.NA
+                        merged["calibration_id"] = calibration_id
+                        merged["calibration_method"] = method
+
+                        # evaluation on this day's test fold
+                        test_mask = merged["p_home_win"].notna() & merged["home_win"].notna()
+                        if test_mask.any():
+                            raw_brier = brier_score(merged.loc[test_mask, "p_home_win"], merged.loc[test_mask, "home_win"])
+                            cal_brier = brier_score(merged.loc[test_mask, "p_home_win_calibrated"], merged.loc[test_mask, "home_win"])
+                            raw_ll = log_loss(merged.loc[test_mask, "p_home_win"], merged.loc[test_mask, "home_win"])
+                            cal_ll = log_loss(merged.loc[test_mask, "p_home_win_calibrated"], merged.loc[test_mask, "home_win"])
+                            calibration_eval_rows.append({
+                                "date": current_date,
+                                "n_test": int(test_mask.sum()),
+                                "method": method,
+                                "calibration_id": calibration_id,
+                                "brier_raw": raw_brier,
+                                "brier_calibrated": cal_brier,
+                                "logloss_raw": raw_ll,
+                                "logloss_calibrated": cal_ll,
+                            })
+            except Exception:
+                # best-effort: if calibration fails, continue without it
+                pass
+
+        prediction_frames.append(merged)
     def _has_data(frame: pd.DataFrame) -> bool:
         """Return True when the frame has rows, columns, and at least one non-NA value."""
         return (
@@ -347,6 +444,25 @@ def run_backtest(
         calibration=calibration,
         output_dir=target_dir,
     )
+    # Persist per-fold calibration evaluation rows (if any) to outputs/calibrators
+    try:
+        if calibration_eval_rows:
+            calib_df = pd.DataFrame(calibration_eval_rows)
+            # Determine base path for calibrator eval outputs
+            if sport and season:
+                calib_out_dir = Path("outputs/calibrators") / sport / season / (model_name or "model")
+            elif sport:
+                calib_out_dir = Path("outputs/calibrators") / sport / (model_name or "model")
+            else:
+                calib_out_dir = Path("outputs/calibrators") / (model_name or "model")
+            calib_out_dir.mkdir(parents=True, exist_ok=True)
+            csv_path = calib_out_dir / f"calibration_eval_{run_id}.csv"
+            json_path = calib_out_dir / f"calibration_eval_{run_id}.json"
+            calib_df.to_csv(csv_path, index=False)
+            json_path.write_text(calib_df.to_json(orient="records", indent=2), encoding="utf-8")
+    except Exception:
+        # best-effort persistence; do not fail the backtest on I/O errors
+        pass
     export_backtest_outputs(outputs, run_id=run_id)
     _persist_backtest_metrics(
         outputs,

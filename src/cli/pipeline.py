@@ -272,6 +272,60 @@ def _parse_args() -> argparse.Namespace:
         help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db)",
     )
 
+    market_bets_parser = subparsers.add_parser(
+        "market-bets",
+        help="Pivot reviewed staging rows into bets with stake presets.",
+    )
+    market_bets_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
+    market_bets_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
+    market_bets_parser.add_argument(
+        "--status",
+        default="matched",
+        help="Comma-separated match_status filters (default: matched). Use 'all' for every status.",
+    )
+    market_bets_parser.add_argument(
+        "--limit",
+        type=int,
+        help="Limit number of staging rows when pivoting.",
+    )
+    market_bets_parser.add_argument(
+        "--review-run-id",
+        dest="review_run_id",
+        help="Optional review_run_id to attach to bets (defaults to staging-<timestamp>).",
+    )
+    market_bets_parser.add_argument(
+        "--stake-preset",
+        choices=["half", "unit", "double"],
+        default="unit",
+        help="Stake preset multiplier applied to unit stake (default: unit=1x).",
+    )
+    market_bets_parser.add_argument(
+        "--unit-stake",
+        dest="unit_stake",
+        type=float,
+        default=1.0,
+        help="Base unit stake applied with preset multiplier (default: 1.0).",
+    )
+    market_bets_parser.add_argument(
+        "--default-book",
+        dest="default_book",
+        help="Fallback book name when staging rows have no book.",
+    )
+    market_bets_parser.add_argument(
+        "--disable-auto-hold",
+        action="store_true",
+        help="Disable duplicate detection that auto-holds duplicate markets from the same image.",
+    )
+    market_bets_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Parse and summarize without writing bets.",
+    )
+    market_bets_parser.add_argument(
+        "--db",
+        help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db)",
+    )
+
     report_parser = subparsers.add_parser(
         "report",
         aliases=["excel", "excel_report"],
@@ -385,6 +439,21 @@ def _parse_args() -> argparse.Namespace:
     backtest_parser.add_argument(
         "--db",
         help="Optional SQLite DB path to persist backtest calibration metrics.",
+    )
+    backtest_parser.add_argument(
+        "--calibrate",
+        action="store_true",
+        help="Enable post-fit probability calibration (Platt/Isotonic) during backtest.",
+    )
+    backtest_parser.add_argument(
+        "--calib-dir",
+        help="Directory to persist fitted calibrators (default: outputs/calibrators/<model>).",
+    )
+    backtest_parser.add_argument(
+        "--calibrator",
+        choices=["auto", "platt", "isotonic"],
+        default="auto",
+        help="Override calibrator selection: 'platt', 'isotonic', or 'auto' (default).",
     )
 
     tune_parser = subparsers.add_parser(
@@ -768,8 +837,40 @@ def _run_market_review(args: argparse.Namespace) -> None:
             f"conf={r.get('match_confidence')} game={r.get('game_id') or '-'} "
             f"market={r.get('market_type') or '-'} sel={r.get('selection') or '-'} "
             f"line={r.get('line')} odds={r.get('odds')} teams={teams} "
-            f"captured={captured} book={r.get('book') or '-'}"
+            f"captured={captured} book={r.get('book') or '-'} "
+            f"hold={r.get('hold_reason') or '-'}"
         )
+
+
+def _run_market_bets(args: argparse.Namespace) -> None:
+    """Convert reviewed staging rows into bet entries."""
+    _ensure_src_on_path()
+    from data.paths import db_path_for
+    from pipelines import staging_bets as staging_bets_pipeline
+
+    db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
+    raw_status = getattr(args, "status", None)
+    statuses = None
+    if raw_status and raw_status.lower() != "all":
+        statuses = [s.strip() for s in raw_status.split(",") if s.strip()]
+
+    result = staging_bets_pipeline.pivot_staging_to_bets(
+        db_path,
+        review_run_id=getattr(args, "review_run_id", None),
+        match_statuses=statuses,
+        limit=getattr(args, "limit", None),
+        stake_preset=getattr(args, "stake_preset", "unit"),
+        unit_stake=getattr(args, "unit_stake", 1.0),
+        default_book=getattr(args, "default_book", None),
+        auto_hold_duplicates=not getattr(args, "disable_auto_hold", False),
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+    print(
+        "market-bets: "
+        f"review_run_id={result.get('review_run_id')} "
+        f"stake={result.get('stake')} "
+        f"inserted={result.get('inserted')} held={result.get('held')} skipped={result.get('skipped')}"
+    )
 
 
 def _run_report(args: argparse.Namespace) -> None:
@@ -828,6 +929,9 @@ def _run_backtest(args: argparse.Namespace) -> None:
         db_path=db_path,
         sport=args.sport,
         season=args.season,
+        calibrate=bool(getattr(args, "calibrate", False)),
+        calib_dir=Path(args.calib_dir) if getattr(args, "calib_dir", None) else None,
+        calibrator_override=(getattr(args, "calibrator", None) or None),
     )
     print(f"Saved backtest outputs to {outputs.output_dir}")
 
@@ -985,6 +1089,8 @@ def main() -> None:
         _run_schedule(args)
     elif args.command == "market-review":
         _run_market_review(args)
+    elif args.command == "market-bets":
+        _run_market_bets(args)
     elif args.command == "report":
         _run_report(args)
     elif args.command == "backtest":
@@ -1040,6 +1146,25 @@ def _run_betting(args: argparse.Namespace) -> None:
         # If force is not provided, commit will only commit matched rows; pass force flag accordingly
         committed = br.commit_market_snapshots(db_path, snapshot_run_id=snapshot_run_id, staging_ids=staging_ids, force=force)
         print(f"Committed {committed} market snapshots (snapshot_run_id={snapshot_run_id})")
+
+    elif cmd == "clv-csv":
+        if db_path is None:
+            raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
+        result = br.import_clv_csv(
+            db_path,
+            csv_path=args.csv_path,
+            sport=args.sport,
+            season=args.season,
+            default_market_type=getattr(args, "default_market_type", None),
+            default_captured_at=getattr(args, "captured_at", None),
+            update_bets=not getattr(args, "no_update_bets", False),
+        )
+        print(
+            "clv-csv: "
+            f"snapshots={result.get('snapshots')} "
+            f"bets_updated={result.get('bets_updated')} "
+            f"rejected={result.get('rejected')}"
+        )
 
     elif cmd == "review-generate":
         sport = args.sport

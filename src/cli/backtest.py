@@ -68,6 +68,21 @@ def main() -> None:
         help="Optional SQLite DB path to persist backtest calibration metrics.",
     )
     parser.add_argument(
+        "--calibrate",
+        action="store_true",
+        help="Enable post-fit probability calibration (Platt/Isotonic) during backtest.",
+    )
+    parser.add_argument(
+        "--calib-dir",
+        help="Directory to persist fitted calibrators (default: outputs/calibrators/<model>).",
+    )
+    parser.add_argument(
+        "--calibrator",
+        choices=["auto", "platt", "isotonic"],
+        default="auto",
+        help="Override calibrator selection: 'platt', 'isotonic', or 'auto' (default).",
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
         help="Raise errors on invalid BT predictions instead of warnings.",
@@ -104,6 +119,9 @@ def main() -> None:
         rolling_days=args.rolling_days,
         rolling_games=args.rolling_games,
         output_dir=args.output_dir,
+        calibrate=bool(getattr(args, "calibrate", False)),
+        calib_dir=Path(args.calib_dir) if getattr(args, "calib_dir", None) else None,
+        calibrator_override=(getattr(args, "calibrator", None) or None),
         model_name=args.model,
         db_path=db_path,
         sport=args.sport,

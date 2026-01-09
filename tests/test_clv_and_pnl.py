@@ -76,6 +76,77 @@ def test_clv_attached_to_bet():
             conn.close()
 
 
+def test_import_clv_csv_updates_existing_bet():
+    # ignore_cleanup_errors for Windows file locks
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        db_path = Path(td) / "test.db"
+        repo.init_db(db_path)
+        br.init_db(db_path)
+        # seed game
+        repo.save_games(
+            db_path,
+            [
+                repo.GameResult(
+                    date=date(2025, 11, 10),
+                    home_team="Los Angeles Lakers",
+                    away_team="LA Clippers",
+                    home_score=None,
+                    away_score=None,
+                    neutral=False,
+                    overtime=False,
+                    decision_type=None,
+                    game_id="2025-11-10-lakers-clippers",
+                    sport="nba",
+                    season="2025-26",
+                )
+            ],
+        )
+
+        # insert a bet without CLV values
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO bets (review_run_id, game_id, market_type, selection, line, odds, stake, book, logged_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 'pending')",
+                (
+                    "r1",
+                    "2025-11-10-lakers-clippers",
+                    "ML",
+                    "Los Angeles Lakers",
+                    0.0,
+                    110,
+                    5.0,
+                    "BookA",
+                ),
+            )
+            conn.commit()
+
+        csv_path = Path(td) / "clv.csv"
+        csv_path.write_text(
+            "\n".join(
+                [
+                    "market_type,selection,close_line,close_odds,team_home,team_away,game_date",
+                    "ML,Los Angeles Lakers,0,115,Los Angeles Lakers,LA Clippers,2025-11-10",
+                    "ML,Invalid,,0,Los Angeles Lakers,LA Clippers,2025-11-10",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = br.import_clv_csv(
+            db_path,
+            csv_path=csv_path,
+            sport="nba",
+            season="2025-26",
+        )
+        assert result["snapshots"] == 1
+        assert result["rejected"] == 1
+        assert result["bets_updated"] >= 1
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute("SELECT clv_close_odds, clv_close_line FROM bets WHERE game_id = ?", ("2025-11-10-lakers-clippers",)).fetchone()
+            assert row is not None
+            assert row[0] == 115
+            assert abs((row[1] or 0.0) - 0.0) < 1e-9
+
 def test_write_full_report_pnl_sheet():
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"

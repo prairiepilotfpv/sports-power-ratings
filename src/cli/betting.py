@@ -31,6 +31,15 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     market_commit.add_argument("--require-matched", action="store_true", help="Fail if any staging rows are needs_review")
     market_commit.add_argument("--force", action="store_true", help="Force commit rows even if needs_review")
 
+    clv_csv = sub.add_parser("clv-csv", help="Import closing lines/odds from a CSV and backfill bets")
+    clv_csv.add_argument("--sport", required=True)
+    clv_csv.add_argument("--season", required=True)
+    clv_csv.add_argument("--csv", dest="csv_path", required=True, help="CSV of closing lines (selection, odds, optional game_id)")
+    clv_csv.add_argument("--db", help="Optional DB path override")
+    clv_csv.add_argument("--default-market-type", dest="default_market_type", help="Fallback market_type when the CSV omits it")
+    clv_csv.add_argument("--captured-at", dest="captured_at", help="Override captured_at timestamp for all rows")
+    clv_csv.add_argument("--no-update-bets", action="store_true", help="Skip updating existing bets with CLV values")
+
     review_gen = sub.add_parser("review-generate", help="Generate a review workbook for a given sport/season")
     review_gen.add_argument("--sport", required=True)
     review_gen.add_argument("--season", required=True)
