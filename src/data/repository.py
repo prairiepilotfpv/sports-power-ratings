@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from contextlib import closing
 from datetime import date
@@ -310,6 +311,16 @@ def save_model_metrics(
 ) -> None:
     """Persist calibration metrics produced by the ranking step."""
     init_db(db_path)
+    # Coerce required numeric fields to sane defaults to avoid NOT NULL DB errors
+    if home_advantage is None or not math.isfinite(float(home_advantage)):
+        home_advantage = 0.0
+    if model_error is None or not math.isfinite(float(model_error)):
+        # Use a conservative default error when unknown
+        model_error = 1.0
+    if win_prob_k is None or not math.isfinite(float(win_prob_k)):
+        win_prob_k = DEFAULT_WIN_PROB_K
+    if base_total is None or not math.isfinite(float(base_total)):
+        base_total = 0.0
     with closing(sqlite3.connect(Path(db_path))) as conn:
         conn.execute(
             """

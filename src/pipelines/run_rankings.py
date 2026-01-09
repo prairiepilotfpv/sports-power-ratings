@@ -194,6 +194,22 @@ def _center_ratings(ratings: Dict[str, float]) -> Dict[str, float]:
     return {team: value - mean_rating for team, value in ratings.items()}
 
 
+def _safe_pstdev(values: list[float]) -> float | None:
+    """Compute population standard deviation using native Python floats.
+
+    This avoids mixing types (numpy floats, Fractions) which can trigger
+    unexpected code paths inside `statistics.pstdev` on some Python
+    versions (see RuntimeWarning / AttributeError from Fraction code).
+    Returns None when there are fewer than 2 samples to match previous
+    behaviour in this module.
+    """
+    if not values or len(values) < 2:
+        return None
+    vals = [float(v) for v in values]
+    mean = statistics.fmean(vals)
+    return math.sqrt(sum((x - mean) ** 2 for x in vals) / len(vals))
+
+
 def _resolve_models(model: str | None) -> list[str]:
     if model is None:
         return list_models()
@@ -355,12 +371,8 @@ def _store_model_metrics(
         model_error = 1.0
 
     win_prob_k = fit_win_prob_scale(win_prob_samples, default_k=DEFAULT_WIN_PROB_K)
-    margin_std = (
-        statistics.pstdev(margin_residuals) if len(margin_residuals) >= 2 else None
-    )
-    total_std = (
-        statistics.pstdev(total_residuals) if len(total_residuals) >= 2 else None
-    )
+    margin_std = _safe_pstdev(margin_residuals)
+    total_std = _safe_pstdev(total_residuals)
     conditional_sd_model = None
     if len(margin_residuals) >= MIN_CALIBRATION_SAMPLES:
         conditional_sd_model = fit_conditional_sd(

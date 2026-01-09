@@ -2,18 +2,35 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any, Callable
 
 import numpy as np
 
-from config import DEFAULT_MARGIN_SD_FALLBACK, DEFAULT_TOTAL_SD_FALLBACK, DEFAULT_WIN_PROB_K
-from models.calibration import ConditionalSDModel
+from config import (
+    DEFAULT_MARGIN_SD_FALLBACK,
+    DEFAULT_TOTAL_SD_FALLBACK,
+    DEFAULT_WIN_PROB_K,
+    LEAGUE_MARGIN_SD_DEFAULT,
+    MARGIN_SD_GUARDRAIL_MAX,
+    MARGIN_SD_GUARDRAIL_MIN,
+)
+from models.calibration import ConditionalSDModel, guardrail_margin_sd
 from models.base import _home_win_prob_from_margin
 from pipelines.projections import (
     matchup_total_from_averages,
     project_game,
     total_from_ratings,
 )
+
+_LOGGER = logging.getLogger(__name__)
+_DEBUG_ASSERT = os.getenv("TOOR_MARGIN_SD_ASSERT", "").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 ProjectionOutput = dict[str, float | None | str]
 ProjectionContext = dict[str, Any]
@@ -59,6 +76,16 @@ def _rating_projection_engine(
     ratings = context.get("ratings", {})
     home_rating = ratings.get(home_team)
     away_rating = ratings.get(away_team)
+    guardrail_context = {
+        "model_id": model_id,
+        "game_id": context.get("game_id"),
+        "date": context.get("game_date"),
+        "home_team": home_team,
+        "away_team": away_team,
+        "sd_sample_size": context.get("sd_sample_size"),
+        "residual_min": context.get("sd_residual_min"),
+        "residual_max": context.get("sd_residual_max"),
+    }
     if home_rating is None or away_rating is None:
         return {
             "projected_home_score": None,
@@ -103,17 +130,68 @@ def _rating_projection_engine(
         away_team=away_team,
     )
 
-    margin_sd = context.get("margin_std")
-    if margin_sd is None or margin_sd <= 0:
-        margin_sd = DEFAULT_MARGIN_SD_FALLBACK
+    raw_margin_sd = context.get("margin_std")
+    margin_sd_reason = None
+    if raw_margin_sd is None or raw_margin_sd <= 0:
+        raw_margin_sd = DEFAULT_MARGIN_SD_FALLBACK
+        margin_sd_reason = "missing_margin_std"
     conditional_sd_intercept = context.get("conditional_sd_intercept")
     conditional_sd_slope = context.get("conditional_sd_slope")
-    if projection.margin is not None and conditional_sd_intercept is not None:
-        if conditional_sd_slope is not None:
-            margin_sd = ConditionalSDModel(
-                intercept=float(conditional_sd_intercept),
-                slope=float(conditional_sd_slope),
-            ).predict(projection.margin)
+    if (
+        projection.margin is not None
+        and conditional_sd_intercept is not None
+        and conditional_sd_slope is not None
+    ):
+        margin_sd = ConditionalSDModel(
+            intercept=float(conditional_sd_intercept),
+            slope=float(conditional_sd_slope),
+        ).predict(
+            projection.margin,
+            guardrail_min=MARGIN_SD_GUARDRAIL_MIN,
+            guardrail_max=MARGIN_SD_GUARDRAIL_MAX,
+            fallback_sd=LEAGUE_MARGIN_SD_DEFAULT,
+            logger_override=_LOGGER,
+            log_context=guardrail_context,
+            debug_assert=_DEBUG_ASSERT,
+        )
+    else:
+        margin_sd, reason = guardrail_margin_sd(
+            raw_margin_sd,
+            fallback_sd=LEAGUE_MARGIN_SD_DEFAULT,
+            guardrail_min=MARGIN_SD_GUARDRAIL_MIN,
+            guardrail_max=MARGIN_SD_GUARDRAIL_MAX,
+        )
+        if reason is None:
+            reason = margin_sd_reason
+        if reason and _LOGGER.isEnabledFor(logging.DEBUG):
+            parts = [
+                f"reason={reason}",
+                f"raw_sd={raw_margin_sd}",
+                f"applied_sd={margin_sd}",
+                f"date={guardrail_context.get('date')}",
+                f"game_id={guardrail_context.get('game_id')}",
+                f"home={home_team}",
+                f"away={away_team}",
+                f"n={guardrail_context.get('sd_sample_size')}",
+                f"resid_min={guardrail_context.get('residual_min')}",
+                f"resid_max={guardrail_context.get('residual_max')}",
+            ]
+            message = "margin_sd guardrail applied; " + ", ".join(
+                str(part) for part in parts if part is not None
+            )
+            _LOGGER.debug(
+                message,
+                extra={
+                    **guardrail_context,
+                    "reason": reason,
+                    "raw_margin_sd": raw_margin_sd,
+                    "applied_margin_sd": margin_sd,
+                },
+            )
+        if _DEBUG_ASSERT and margin_sd < MARGIN_SD_GUARDRAIL_MIN:
+            raise AssertionError(
+                f"margin_sd guardrail violated: applied={margin_sd} raw={raw_margin_sd}"
+            )
 
     total_sd = context.get("total_std")
     if total_sd is None or total_sd <= 0:

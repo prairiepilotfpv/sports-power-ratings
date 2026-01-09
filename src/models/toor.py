@@ -2,18 +2,27 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass
 from math import log
 from typing import Any, Iterable, Mapping
 
 import numpy as np
 
-from config import DEFAULT_WIN_PROB_K
+from config import (
+    DEFAULT_MARGIN_SD_FALLBACK,
+    DEFAULT_WIN_PROB_K,
+    LEAGUE_MARGIN_SD_DEFAULT,
+    MARGIN_SD_GUARDRAIL_MIN,
+    MARGIN_SD_GUARDRAIL_MAX,
+)
 from models.base import BaseModel, GamePrediction, ModelMetadata, require_columns
 from models.bradley_terry import BradleyTerry
 from models.calibration import (
     ConditionalSDModel,
     align_spread_with_margin,
+    guardrail_margin_sd,
     fit_conditional_sd,
     fit_win_prob_bias,
     recency_weight,
@@ -43,6 +52,8 @@ DEFAULT_COEFFICIENTS = ToorCoefficients(
     away_coeff=-14.855,
     error_term=31.155,
 )
+
+_LOG = logging.getLogger(__name__)
 
 
 class TOORPowerRating:
@@ -149,7 +160,21 @@ class TOORPowerRating:
         team_coeffs = coeffs[: len(teams)]
         mean_coeff = float(np.mean(team_coeffs)) if team_coeffs.size else 0.0
         centered = team_coeffs - mean_coeff
-        self._ratings = {team: float(np.exp(centered[index[team]])) for team in teams}
+        # Stabilize exponentiation to avoid overflow for large coefficient magnitudes.
+        # Subtract the maximum centered value so the largest exponent is 0, then
+        # exponentiate and normalize to keep ratings on a reasonable scale.
+        if centered.size:
+            max_center = float(np.max(centered))
+            stabilized = centered - max_center
+            # clip to a safe range for exp to avoid any numerical issues
+            stabilized = np.clip(stabilized, -700.0, 700.0)
+            exp_vals = np.exp(stabilized)
+            # normalize so ratings have mean 1.0 (keeps scale comparable across fits)
+            mean_exp = float(np.mean(exp_vals)) if exp_vals.size else 1.0
+            normalized = exp_vals / mean_exp if mean_exp != 0.0 else exp_vals
+            self._ratings = {team: float(normalized[index[team]]) for team in teams}
+        else:
+            self._ratings = {}
 
     def rankings(self) -> list[tuple[str, float]]:
         return sorted(self._ratings.items(), key=lambda item: item[1], reverse=True)
@@ -186,6 +211,13 @@ class TOORModel(BaseModel):
         self._conditional_sd_model: ConditionalSDModel | None = None
         self._win_prob_bias = float(winprob_bias)
         self._learn_winprob_bias = learn_winprob_bias
+        self._sd_fit_stats: dict[str, Any] = {
+            "n": 0,
+            "residual_min": None,
+            "residual_max": None,
+        }
+        debug_flag = os.getenv("TOOR_MARGIN_SD_ASSERT", "").lower()
+        self._debug_assert = debug_flag in {"1", "true", "yes", "on"}
 
     def metadata(self) -> ModelMetadata:
         return ModelMetadata(
@@ -207,6 +239,20 @@ class TOORModel(BaseModel):
             ensemble_weight=1.0,
         )
 
+    def _capture_sd_stats(self, residuals: np.ndarray) -> None:
+        if residuals.size:
+            self._sd_fit_stats = {
+                "n": int(residuals.size),
+                "residual_min": float(np.min(residuals)),
+                "residual_max": float(np.max(residuals)),
+            }
+        else:
+            self._sd_fit_stats = {
+                "n": 0,
+                "residual_min": None,
+                "residual_max": None,
+            }
+
     def fit(self, games_df: Any) -> None:
         require_columns(
             games_df, ["home_team", "away_team", "home_score", "away_score"]
@@ -220,6 +266,7 @@ class TOORModel(BaseModel):
         win_prob_samples: list[tuple[float, int]] = []
         win_prob_spreads: list[float] = []
         win_prob_outcomes: list[int] = []
+        residuals_arr = np.array([], dtype=float)
 
         fit_end_date = resolve_fit_end_date(games_df)
         for game in games:
@@ -261,7 +308,8 @@ class TOORModel(BaseModel):
             coeffs = weighted_least_squares(matrix, target, weights=weight_arr)
             predictions = matrix @ coeffs
             residuals = predictions - target
-            error_term = weighted_rmse(residuals, weight_arr)
+            residuals_arr = np.asarray(residuals, dtype=float)
+            error_term = weighted_rmse(residuals_arr, weight_arr)
             self._coefficients = ToorCoefficients(
                 home_advantage=float(coeffs[0]),
                 home_coeff=float(coeffs[1]),
@@ -271,7 +319,7 @@ class TOORModel(BaseModel):
 
             if self._conditional_sd:
                 self._conditional_sd_model = fit_conditional_sd(
-                    predictions, residuals, weights=weight_arr
+                    predictions, residuals_arr, weights=weight_arr
                 )
             else:
                 self._conditional_sd_model = None
@@ -287,6 +335,8 @@ class TOORModel(BaseModel):
                 )
                 win_prob_spreads.append(projected_spread)
                 win_prob_outcomes.append(1 if actual_margin > 0 else 0)
+
+        self._capture_sd_stats(residuals_arr)
 
         self._win_prob_k = fit_win_prob_scale(
             win_prob_samples, default_k=DEFAULT_WIN_PROB_K
@@ -334,11 +384,65 @@ class TOORModel(BaseModel):
                 pred_margin, projected_spread - self._win_prob_bias
             )
             p_home_win = logistic_win_prob(adjusted_spread, win_prob_k)
-            margin_sd = (
-                self._conditional_sd_model.predict(pred_margin)
-                if self._conditional_sd_model is not None
-                else coefficients.error_term
-            )
+            guardrail_context = {
+                "model_id": self.model_id,
+                "game_id": row.get("game_id") or f"{row['date']}_{home}_{away}",
+                "date": str(row.get("date")),
+                "home_team": home,
+                "away_team": away,
+            }
+            if self._conditional_sd_model is not None:
+                margin_sd = self._conditional_sd_model.predict(
+                    pred_margin,
+                    guardrail_min=MARGIN_SD_GUARDRAIL_MIN,
+                    guardrail_max=MARGIN_SD_GUARDRAIL_MAX,
+                    fallback_sd=LEAGUE_MARGIN_SD_DEFAULT,
+                    logger_override=_LOG,
+                    log_context=guardrail_context,
+                    debug_assert=self._debug_assert,
+                )
+            else:
+                raw_sd = coefficients.error_term
+                margin_sd, reason = guardrail_margin_sd(
+                    raw_sd,
+                    fallback_sd=LEAGUE_MARGIN_SD_DEFAULT,
+                    guardrail_min=MARGIN_SD_GUARDRAIL_MIN,
+                    guardrail_max=MARGIN_SD_GUARDRAIL_MAX,
+                )
+                if reason and _LOG.isEnabledFor(logging.DEBUG):
+                    stats = self._sd_fit_stats or {}
+                    parts = [
+                        f"reason={reason}",
+                        f"raw_sd={raw_sd}",
+                        f"applied_sd={margin_sd}",
+                        f"date={guardrail_context.get('date')}",
+                        f"game_id={guardrail_context.get('game_id')}",
+                        f"home={home}",
+                        f"away={away}",
+                        f"n={stats.get('n')}",
+                        f"resid_min={stats.get('residual_min')}",
+                        f"resid_max={stats.get('residual_max')}",
+                    ]
+                    message = "margin_sd guardrail applied; " + ", ".join(
+                        str(part) for part in parts if part is not None
+                    )
+                    _LOG.debug(
+                        message,
+                        extra={
+                            **guardrail_context,
+                            "reason": reason,
+                            "raw_margin_sd": raw_sd,
+                            "applied_margin_sd": margin_sd,
+                            "sd_sample_size": stats.get("n"),
+                            "residual_min": stats.get("residual_min"),
+                            "residual_max": stats.get("residual_max"),
+                            "pred_margin": pred_margin,
+                        },
+                    )
+                if self._debug_assert and margin_sd < MARGIN_SD_GUARDRAIL_MIN:
+                    raise AssertionError(
+                        f"margin_sd guardrail violated: applied={margin_sd} raw={raw_sd}"
+                    )
             win_prob_dist = win_prob_distribution(
                 p_home_win,
                 win_prob_k=win_prob_k,

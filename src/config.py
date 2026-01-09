@@ -11,3 +11,16 @@ MIN_CALIBRATION_SAMPLES = 25
 # Safe global fallbacks when residual samples are insufficient to estimate spread/total variance.
 DEFAULT_MARGIN_SD_FALLBACK = 12.0
 DEFAULT_TOTAL_SD_FALLBACK = 20.0
+
+# League-level default margin spread (NBA-oriented) used when residuals are missing or unstable.
+# Chosen to be a conservative, realistic baseline rather than an artificially low variance.
+LEAGUE_MARGIN_SD_DEFAULT = 13.5
+
+# Prediction guardrails applied before EV/metrics calculations (NBA-specific but configurable).
+MARGIN_SD_GUARDRAIL_MIN = 5.0
+MARGIN_SD_GUARDRAIL_MAX = 30.0
+TOTAL_SD_GUARDRAIL_MIN = 8.0
+TOTAL_SD_GUARDRAIL_MAX = 35.0
+PROJECTED_SCORE_MIN = 50.0
+PROJECTED_SCORE_MAX = 170.0
+PROJECTED_TOTAL_TOLERANCE = 2.0

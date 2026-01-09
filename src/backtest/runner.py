@@ -12,6 +12,7 @@ import pandas as pd
 from contracts import validate_model_input, validate_predictions
 from data.validation import validate_dataset
 from models.base import BaseModel, GamePrediction, resolve_model_identity
+from pipelines.guardrails import apply_prediction_validation
 from pipelines.metadata import prediction_hash
 
 DEFAULT_BUCKET_EDGES = np.linspace(0.0, 1.0, 11)
@@ -421,9 +422,15 @@ def run_backtest(
         if column not in predictions_df.columns:
             predictions_df[column] = pd.NA
 
-    metrics_by_date = _aggregate_metrics_by_date(predictions_df)
-    metrics_overall = _aggregate_overall_metrics(predictions_df)
-    calibration = _calibration_table(predictions_df)
+    # Evaluation-only exclusion: drop invalid predictions before computing metrics.
+    try:
+        eval_df, _ = apply_prediction_validation(predictions_df, sport=sport)
+    except Exception:
+        eval_df = predictions_df
+
+    metrics_by_date = _aggregate_metrics_by_date(eval_df)
+    metrics_overall = _aggregate_overall_metrics(eval_df)
+    calibration = _calibration_table(eval_df)
     model_id = model_identity.get("model_id") if model_identity else None
     for frame in (metrics_by_date, metrics_overall, calibration):
         frame["model_id"] = model_id

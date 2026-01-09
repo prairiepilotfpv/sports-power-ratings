@@ -198,6 +198,36 @@ def predict_matchup(
     if margin_mean is None:
         raise ValueError("Projection engine did not return margin_mean.")
 
+    # Hard-exclude models that report implausible margin SDs which would
+    # otherwise produce near-certain covers or meaningless signals. Exclude
+    # predictions with margin_sd < 5 or margin_sd > 30 by returning a
+    # prediction with no win-prob or samples so eval/ensemble logic ignores it.
+    # Only apply the hard-exclude rule for NBA — do not exclude low-scoring
+    # sports like NHL where small SDs are expected.
+    if (
+        margin_sd_value is not None
+        and (margin_sd_value < 5.0 or margin_sd_value > 30.0)
+        and str(sport).lower() == "nba"
+    ):
+        return MatchupPrediction(
+            home_team=home_key,
+            away_team=away_key,
+            winner=winner,
+            loser=loser,
+            spread=-margin_mean,
+            total_points=projection.get("projected_total") or 0.0,
+            win_prob=None,
+            win_prob_samples=None,
+            model_win_prob=None,
+            logistic_home_win_prob=logistic_home_win_prob,
+            margin_mean=margin_mean,
+            margin_std=None,
+            total_mean=total_mean,
+            total_std=None,
+            params_source=resolution.params_source,
+            tuned_metric_used=resolution.tuned_metric_used,
+        )
+
     if margin_mean >= 0:
         winner, loser = home_key, away_key
     else:

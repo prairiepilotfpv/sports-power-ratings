@@ -15,7 +15,7 @@ from data.repository import load_games, load_model_metrics
 from pipelines.common import normalize_games, resolve_output_path
 from pipelines.model_params import resolve_model_params_with_metadata
 from pipelines.matchups import team_home_advantages
-from config import DEFAULT_WIN_PROB_K
+from config import CALIBRATION_RESIDUAL_GAMES, DEFAULT_WIN_PROB_K
 from pipelines.projection_engines import get_projection_engine
 from pipelines.projections import (
     average_total_points,
@@ -72,6 +72,44 @@ def _upcoming_games(df: pd.DataFrame) -> pd.DataFrame:
         return df
     mask = df["home_score"].isna() | df["away_score"].isna()
     return df[mask]
+
+
+def _margin_sd_fit_stats(
+    played: pd.DataFrame,
+    ratings: Dict[str, float],
+    *,
+    home_advantage: float,
+) -> tuple[int, float | None, float | None]:
+    """Return sample size and residual extrema for margin SD calibration."""
+    if played.empty:
+        return 0, None, None
+    calibration_games = (
+        played.sort_values("date").tail(CALIBRATION_RESIDUAL_GAMES)
+        if "date" in played.columns
+        else played
+    )
+    residuals: list[float] = []
+    for _, row in calibration_games.iterrows():
+        home = str(row.get("home_team", "")).strip()
+        away = str(row.get("away_team", "")).strip()
+        if not home or not away:
+            continue
+        if home not in ratings or away not in ratings:
+            continue
+        try:
+            margin = float(row.get("home_score")) - float(row.get("away_score"))
+        except Exception:
+            continue
+        neutral_raw = row.get("neutral", False)
+        neutral = False if pd.isna(neutral_raw) else bool(neutral_raw)
+        predicted_margin = (ratings[home] - ratings[away]) + (
+            0.0 if neutral else home_advantage
+        )
+        residuals.append(margin - predicted_margin)
+
+    if not residuals:
+        return 0, None, None
+    return len(residuals), float(min(residuals)), float(max(residuals))
 
 
 def _rating_lookup(rankings: pd.DataFrame) -> Dict[str, float]:
@@ -198,6 +236,8 @@ def _project_row(
                 **projection_context,
                 "home_advantage": applied_home_advantage,
                 "neutral": base["neutral"],
+                "game_id": base.get("game_id"),
+                "game_date": base.get("date"),
             },
         )
         projected_home_score = projection.get("projected_home_score")
@@ -378,6 +418,9 @@ def _build_schedule_dataframe(
     played_records = played.to_dict(orient="records")
     total_intercept, total_slope = fit_total_model(played_records, ratings)
     scoring_averages = team_scoring_averages(played_records)
+    sd_sample_size, sd_residual_min, sd_residual_max = _margin_sd_fit_stats(
+        played, ratings, home_advantage=fallback_home_advantage
+    )
     projection_context = {
         "ratings": ratings,
         "base_total": base_total,
@@ -389,6 +432,9 @@ def _build_schedule_dataframe(
         "conditional_sd_intercept": conditional_sd_intercept,
         "conditional_sd_slope": conditional_sd_slope,
         "win_prob_k": win_prob_k,
+        "sd_sample_size": sd_sample_size,
+        "sd_residual_min": sd_residual_min,
+        "sd_residual_max": sd_residual_max,
     }
     if model == "poisson" and model_params and "n_simulations" in model_params:
         projection_context["n_simulations"] = model_params["n_simulations"]

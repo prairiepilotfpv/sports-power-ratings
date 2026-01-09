@@ -331,10 +331,32 @@ class PoissonModel(BaseModel):
             margin_sd = float(np.std(margin_samples))
 
             # Approximate moneyline probability: split ties 50/50 for OT/SO outcomes.
-            p_home_win = float(
+            p_home_win_emp = float(
                 np.mean(margin_samples > 0)
                 + 0.5 * np.mean(margin_samples == 0)
             )
+
+            # In rare cases the empirical Monte-Carlo estimate can disagree
+            # with the sign of the mean margin (e.g. mean < 0 but p_home_win > 0.5).
+            # For contract consistency, if there's a sign mismatch for a
+            # non-trivial mean (thresholded), prefer a normal approximation
+            # based on the sample mean and sd which preserves sign.
+            margin_mean = float(np.mean(margin_samples))
+            margin_sd = float(np.std(margin_samples))
+            p_home_win = p_home_win_emp
+            try:
+                from math import erf, sqrt
+
+                if margin_sd > 0:
+                    z = margin_mean / (margin_sd * sqrt(2.0))
+                    p_home_win_norm = 0.5 * (1.0 + erf(z))
+                else:
+                    p_home_win_norm = 0.5 if abs(margin_mean) < 1e-12 else (1.0 if margin_mean > 0 else 0.0)
+
+                if (abs(margin_mean) > 0.1) and ((p_home_win_emp > 0.5) != (margin_mean > 0)):
+                    p_home_win = float(p_home_win_norm)
+            except Exception:
+                p_home_win = p_home_win_emp
 
             game_id = row.get("game_id") or f"{row['date']}_{home}_{away}"
             predictions.append(
