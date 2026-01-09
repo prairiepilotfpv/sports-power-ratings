@@ -29,7 +29,12 @@ def _normalize_enabled_sports(enabled_sports: Iterable[str] | None) -> set[str] 
 
 def _should_apply_guardrail(sport: str | None, enabled: set[str] | None) -> bool:
     if enabled is None:
-        return True
+        # Default behavior: when `sport` is None (global invocation), apply guardrail.
+        # When a specific sport is provided, only apply by default for NBA to avoid
+        # enforcing NBA-specific guardrails on other sports unless explicitly enabled.
+        if sport is None:
+            return True
+        return sport.strip().lower() == "nba"
     if sport is None:
         return False
     return sport.strip().lower() in enabled
@@ -90,14 +95,23 @@ def apply_prediction_validation(
     reasons_col: list[list[str]] = []
     validity: list[bool] = []
     exclusions: list[tuple[str | None, str | None, list[str]]] = []
+    # Try to infer sport from the predictions frame when one isn't explicitly passed in.
+    if sport is None and "sport" in predictions_df.columns:
+        non_null = predictions_df["sport"].dropna()
+        if not non_null.empty:
+            sport = str(non_null.iloc[0]).strip().lower()
+
     # Resolve a sport-specific config when one isn't explicitly passed in.
     config = validation_config if validation_config is not None else get_validation_config(sport)
     for _, row in predictions_df.iterrows():
-        ok, reasons = validate_prediction_row(row.to_dict(), config=config)
+        ok, reasons = validate_prediction_row(
+            row.to_dict(), config=config, require_score_bounds=(sport is not None)
+        )
         validity.append(ok)
         reasons_col.append(reasons)
         if not ok:
-            exclusions.append((row.get("model"), row.get("game_id"), reasons))
+            model_ref = row.get("model") or row.get("model_id")
+            exclusions.append((model_ref, row.get("game_id"), reasons))
 
     filtered = predictions_df.loc[validity].copy()
     if include_reasons:

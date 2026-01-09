@@ -179,6 +179,12 @@ class ConditionalSDModel:
         abs_resid = max(0.0, self.intercept + self.slope * abs_margin)
         sd = abs_resid * self.scale
         raw_sd = float(sd)
+        # If the caller did not request any guardrails (all three args None),
+        # return the raw SD so callers that expect the unconstrained model
+        # behavior (e.g., unit tests, internal calibration) receive it.
+        if guardrail_min is None and guardrail_max is None and fallback_sd is None:
+            return raw_sd
+
         applied, reason = guardrail_margin_sd(
             raw_sd,
             fallback_sd=fallback_sd or self.fallback_sd,

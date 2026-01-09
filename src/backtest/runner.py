@@ -14,6 +14,8 @@ from data.validation import validate_dataset
 from models.base import BaseModel, GamePrediction, resolve_model_identity
 from pipelines.guardrails import apply_prediction_validation
 from pipelines.metadata import prediction_hash
+from eval.validation import get_validation_config
+from models.calibration import guardrail_margin_sd
 
 DEFAULT_BUCKET_EDGES = np.linspace(0.0, 1.0, 11)
 REQUIRED_BACKTEST_PREDICTION_COLUMNS = [
@@ -274,6 +276,30 @@ def run_backtest(
         _attach_prediction_metadata(predictions, model=model, train_data=train_data)
         pred_df = _predictions_to_frame(predictions)
         pred_df["date"] = pd.to_datetime(pred_df["date"]).dt.normalize()
+
+        # Apply sport-specific guardrails to predicted SDs so downstream
+        # evaluation and calibration see clamped, sensible variances.
+        try:
+            cfg = get_validation_config(sport)
+            if "margin_sd" in pred_df.columns:
+                pred_df["margin_sd"] = pred_df["margin_sd"].apply(
+                    lambda v: guardrail_margin_sd(
+                        float(v) if v is not None and not pd.isna(v) else None,
+                        guardrail_min=cfg.margin_sd_min,
+                        guardrail_max=cfg.margin_sd_max,
+                    )[0]
+                )
+            if "total_mean" in pred_df.columns and "total_sd" in pred_df.columns:
+                pred_df["total_sd"] = pred_df["total_sd"].apply(
+                    lambda v: guardrail_margin_sd(
+                        float(v) if v is not None and not pd.isna(v) else None,
+                        guardrail_min=cfg.total_sd_min,
+                        guardrail_max=cfg.total_sd_max,
+                    )[0]
+                )
+        except Exception:
+            # Best-effort; do not fail backtests on guardrail application errors.
+            pass
 
         merged = day_games.merge(
             pred_df,

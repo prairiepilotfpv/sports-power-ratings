@@ -17,6 +17,7 @@ from config import (
     MARGIN_SD_GUARDRAIL_MIN,
 )
 from models.calibration import ConditionalSDModel, guardrail_margin_sd
+from eval.validation import get_validation_config
 from models.base import _home_win_prob_from_margin
 from pipelines.projections import (
     matchup_total_from_averages,
@@ -76,6 +77,9 @@ def _rating_projection_engine(
     ratings = context.get("ratings", {})
     home_rating = ratings.get(home_team)
     away_rating = ratings.get(away_team)
+    sport = context.get("sport")
+    cfg = get_validation_config(sport)
+
     guardrail_context = {
         "model_id": model_id,
         "game_id": context.get("game_id"),
@@ -147,8 +151,8 @@ def _rating_projection_engine(
             slope=float(conditional_sd_slope),
         ).predict(
             projection.margin,
-            guardrail_min=MARGIN_SD_GUARDRAIL_MIN,
-            guardrail_max=MARGIN_SD_GUARDRAIL_MAX,
+            guardrail_min=cfg.margin_sd_min,
+            guardrail_max=cfg.margin_sd_max,
             fallback_sd=LEAGUE_MARGIN_SD_DEFAULT,
             logger_override=_LOGGER,
             log_context=guardrail_context,
@@ -158,8 +162,8 @@ def _rating_projection_engine(
         margin_sd, reason = guardrail_margin_sd(
             raw_margin_sd,
             fallback_sd=LEAGUE_MARGIN_SD_DEFAULT,
-            guardrail_min=MARGIN_SD_GUARDRAIL_MIN,
-            guardrail_max=MARGIN_SD_GUARDRAIL_MAX,
+            guardrail_min=cfg.margin_sd_min,
+            guardrail_max=cfg.margin_sd_max,
         )
         if reason is None:
             reason = margin_sd_reason

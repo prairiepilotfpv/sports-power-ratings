@@ -31,6 +31,7 @@ from models.calibration import (
     weighted_least_squares,
     weighted_rmse,
 )
+from eval.validation import get_validation_config
 from pipelines.projections import (
     fit_win_prob_scale,
     logistic_win_prob,
@@ -392,10 +393,12 @@ class TOORModel(BaseModel):
                 "away_team": away,
             }
             if self._conditional_sd_model is not None:
+                sport = row.get("sport") if isinstance(row, dict) else None
+                cfg = get_validation_config(sport)
                 margin_sd = self._conditional_sd_model.predict(
                     pred_margin,
-                    guardrail_min=MARGIN_SD_GUARDRAIL_MIN,
-                    guardrail_max=MARGIN_SD_GUARDRAIL_MAX,
+                    guardrail_min=cfg.margin_sd_min,
+                    guardrail_max=cfg.margin_sd_max,
                     fallback_sd=LEAGUE_MARGIN_SD_DEFAULT,
                     logger_override=_LOG,
                     log_context=guardrail_context,
@@ -403,11 +406,13 @@ class TOORModel(BaseModel):
                 )
             else:
                 raw_sd = coefficients.error_term
+                sport = row.get("sport") if isinstance(row, dict) else None
+                cfg = get_validation_config(sport)
                 margin_sd, reason = guardrail_margin_sd(
                     raw_sd,
                     fallback_sd=LEAGUE_MARGIN_SD_DEFAULT,
-                    guardrail_min=MARGIN_SD_GUARDRAIL_MIN,
-                    guardrail_max=MARGIN_SD_GUARDRAIL_MAX,
+                    guardrail_min=cfg.margin_sd_min,
+                    guardrail_max=cfg.margin_sd_max,
                 )
                 if reason and _LOG.isEnabledFor(logging.DEBUG):
                     stats = self._sd_fit_stats or {}

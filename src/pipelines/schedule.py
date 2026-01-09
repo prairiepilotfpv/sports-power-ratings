@@ -432,6 +432,7 @@ def _build_schedule_dataframe(
         "conditional_sd_intercept": conditional_sd_intercept,
         "conditional_sd_slope": conditional_sd_slope,
         "win_prob_k": win_prob_k,
+        "sport": sport,
         "sd_sample_size": sd_sample_size,
         "sd_residual_min": sd_residual_min,
         "sd_residual_max": sd_residual_max,

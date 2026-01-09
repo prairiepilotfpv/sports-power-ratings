@@ -114,14 +114,16 @@ def _over_probability(line: float, total_mean: float, total_sd: float) -> float:
     return 1.0 - _normal_cdf(line, mean=total_mean, sd=total_sd)
 
 
-def _validation_frame(predictions: pd.DataFrame, config: ValidationConfig) -> pd.DataFrame:
+def _validation_frame(predictions: pd.DataFrame, config: ValidationConfig, *, require_score_bounds: bool = True) -> pd.DataFrame:
     if predictions.empty:
         return predictions
     results = predictions.copy(deep=True)
     validity: list[bool] = []
     reasons: list[list[str]] = []
     for _, row in results.iterrows():
-        ok, why = validate_prediction_row(row.to_dict(), config=config)
+        ok, why = validate_prediction_row(
+            row.to_dict(), config=config, require_score_bounds=require_score_bounds
+        )
         validity.append(ok)
         reasons.append(why)
     results["__is_valid"] = validity
@@ -173,14 +175,22 @@ def evaluate_market_rows(
             sport = str(non_null_m.iloc[0]).strip().lower()
 
     config = validation_config if validation_config is not None else get_validation_config(sport)
-    pred_df = _validation_frame(pred_df, config)
-    pred_df["__model"] = pred_df.get("model", pd.Series(dtype=str)).apply(_canonical_model_name)
+    pred_df = _validation_frame(pred_df, config, require_score_bounds=(sport is not None))
+    # Canonicalize model name from either `model` or `model_id` to support both fields.
+    model_series = pred_df.get("model", pd.Series(dtype=object))
+    if (model_series is None or getattr(model_series, "isna", lambda: True)().all()) and "model_id" in pred_df.columns:
+        model_series = pred_df.get("model_id", pd.Series(dtype=object))
+    # Ensure we have a Series to apply the canonicalizer
+    if model_series is None:
+        model_series = pd.Series([""] * len(pred_df))
+    pred_df["__model"] = model_series.apply(_canonical_model_name)
 
     invalid = pred_df[~pred_df["__is_valid"]]
     for _, row in invalid.iterrows():
+        model_ref = row.get("model") or row.get("model_id")
         logger.warning(
             "Excluding prediction model=%s game_id=%s reasons=%s",
-            row.get("model"),
+            model_ref,
             row.get("game_id"),
             row.get("__invalid_reasons"),
         )
