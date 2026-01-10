@@ -15,6 +15,7 @@ from config import (
     TOTAL_SD_GUARDRAIL_MAX,
     TOTAL_SD_GUARDRAIL_MIN,
 )
+import ast
 
 
 @dataclass(frozen=True)
@@ -119,6 +120,21 @@ def validate_prediction_row(
 
     home_score_raw = _first_present(row, ("projected_home_score", "home_score_pred", "home_score"))
     away_score_raw = _first_present(row, ("projected_away_score", "away_score_pred", "away_score"))
+    # Some pipelines serialize projection extras into an `extra` column (stringified dict).
+    # When present, prefer projected values embedded in `extra` (they represent the model
+    # projection) over recorded `home_score`/`away_score` which are actual results.
+    extra_raw = row.get("extra")
+    if extra_raw and isinstance(extra_raw, str) and extra_raw.strip().startswith("{"):
+        try:
+            extra = ast.literal_eval(extra_raw)
+            # Prefer explicit projected scores from the extras when available.
+            if extra.get("projected_home_score") is not None:
+                home_score_raw = extra.get("projected_home_score")
+            if extra.get("projected_away_score") is not None:
+                away_score_raw = extra.get("projected_away_score")
+        except Exception:
+            # best-effort: if parsing fails, fall back to top-level fields
+            pass
     home_score_val = _coerce_float(home_score_raw)
     away_score_val = _coerce_float(away_score_raw)
     if home_score_val is None or away_score_val is None:

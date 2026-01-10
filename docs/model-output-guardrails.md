@@ -25,6 +25,10 @@ from eval.evaluator import evaluate_market_rows
 opps_df, debug_df = evaluate_market_rows(predictions_df, markets_df, debug=True)
 ```
 - `predictions_df` should contain the schedule/export columns (margin_mean, margin_sd, total_mean, total_sd, model_p_home_win, projected_home_score/away_score, etc.).
+
+Projections & exporters
+- Recommendation: projection authors and exporter code should populate the canonical projection columns at the top level of the prediction row: `projected_home_score`, `projected_away_score`, `projected_total`, `margin_mean`, `margin_sd`, `total_mean`, `total_sd`, `model_p_home_win`, `normal_p_home_win`, `win_prob_source`, and `margin_dist_assumption`.
+- Rationale: downstream guardrails and tuning expect these top-level fields. Storing projections only inside `extra` (or a serialized blob) can lead to validation mismatches or accidental exclusion of model outputs. The test `tests/test_extra_projection_expansion.py` ensures `extra`-only projections are promoted and validated; prefer emitting top-level fields to avoid needing promotions.
 - `markets_df` should contain game_id, market_type (moneyline/spread/total), selection, line, odds, and home/away team labels for spread/ML routing.
 - Pass `include_excluded_reason=True` to stamp rows that could not be priced.
 

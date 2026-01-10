@@ -617,6 +617,28 @@ def _predictions_to_frame(predictions: Iterable[GamePrediction]) -> pd.DataFrame
         }
         if pred.extra:
             row["extra"] = pred.extra
+            # If the model placed projection fields inside `extra` (dict),
+            # promote common projection keys to top-level columns so downstream
+            # consumers and CSV exports have consistent fields.
+            if isinstance(pred.extra, dict):
+                for key in (
+                    "projected_home_score",
+                    "projected_away_score",
+                    "projected_total",
+                    "projected_spread",
+                    "model_p_home_win",
+                    "normal_p_home_win",
+                    "win_prob_source",
+                    "margin_dist_assumption",
+                    "margin_mean",
+                    "margin_sd",
+                    "total_mean",
+                    "total_sd",
+                ):
+                    if key not in row or row.get(key) is None:
+                        val = pred.extra.get(key)
+                        if val is not None:
+                            row[key] = val
         rows.append(row)
     return pd.DataFrame(rows)
 
