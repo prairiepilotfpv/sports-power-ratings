@@ -1,14 +1,24 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import warnings
 
 import pandas as pd
+import pytest
 
 from models.bradley_terry_hfa import BradleyTerryHFA
 
 
-DATA_PATH = Path(__file__).resolve().parents[2] / "data" / "raw" / "NHL-2025-26.csv"
+DATA_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "bt_hfa_test_games.csv"
+
+
+def _resolve_csv_path() -> Path:
+    override = os.getenv("BT_HFA_TEST_CSV_PATH")
+    csv_path = Path(override) if override else DATA_PATH
+    if not csv_path.exists():
+        pytest.skip(f"Missing BT HFA test CSV at {csv_path}")
+    return csv_path
 
 
 def _build_games_df(csv_path: Path) -> pd.DataFrame:
@@ -29,7 +39,8 @@ def _build_games_df(csv_path: Path) -> pd.DataFrame:
 
 
 def test_nhl_does_not_emit_small_sd_warnings() -> None:
-    games_df = _build_games_df(DATA_PATH)
+    csv_path = _resolve_csv_path()
+    games_df = _build_games_df(csv_path)
     # Use a modest number of iterations to keep the test fast
     model = BradleyTerryHFA(max_iter=200)
     model.fit(games_df)
