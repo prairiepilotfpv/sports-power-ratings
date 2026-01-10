@@ -121,6 +121,18 @@ Notes:
 - Betting report workbooks include three sheets: the main period sheet (`daily`, `weekly`, or `monthly`), an `edge_buckets` summary, and a `clv` summary.
 - `clv-csv` resolves games via `game_id` or `team_home`/`team_away` + `game_date`; invalid rows are skipped and counted. See [docs/market-clv.md](docs/market-clv.md) for the expected CSV schema and flags.
 
+Manual review workbook flow:
+1. Generate a blank review workbook (creates `EV`, `BETS`, and `META` sheets):
+   ```bash
+   python -m src.cli.pipeline betting review-generate --sport nba --season 2025-26 --model elo --output-dir outputs/review
+   ```
+2. Fill the `BETS` sheet with `stake`, `book`, and `price` (leave `stake` blank to pass).
+3. Log bets and write back `bet_id`/`logged_at` to the workbook:
+   ```bash
+   python -m src.cli.pipeline betting log-bets --workbook outputs/review/nba-2025-26-review.xlsx --db data/db/nba/2025-26.db --writeback
+   ```
+4. Run `betting settle-bets` and `betting report` to track results and summaries.
+
 ## market-ocr — OCR ingest quick reference
 
 ```bash
