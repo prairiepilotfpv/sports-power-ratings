@@ -1109,6 +1109,7 @@ def _run_betting(args: argparse.Namespace) -> None:
     from src.data import betting_repository as br
     from src.pipelines import review_runs as rr
     from src.pipelines import bets as bets_pipeline
+    from src.pipelines import opportunities as opportunities_pipeline
     from data.paths import db_path_for
     import sqlite3
 
@@ -1184,12 +1185,33 @@ def _run_betting(args: argparse.Namespace) -> None:
         season = args.season
         model = args.model
         review_id = getattr(args, "review_run_id", None)
+        snapshot_run_id = getattr(args, "snapshot_run_id", None)
+        snapshot_date = getattr(args, "snapshot_date", None)
         output_dir = getattr(args, "output_dir", None)
-        if review_id:
-            path = rr.build_review_workbook(db_path, review_run_id=review_id, sport=sport, season=season, output_path=output_dir)
-        else:
-            path = rr.create_and_build_review(db_path, sport=sport, season=season, model=model, notes=None)
-        print(f"Review workbook -> {path}")
+        if snapshot_run_id is None and snapshot_date is None:
+            raise ValueError("review-generate requires --snapshot-run-id or --snapshot-date")
+        review_run_id = br.create_review_run(
+            db_path,
+            sport=sport,
+            season=season,
+            model=model,
+            notes=None,
+            id=review_id,
+        )
+        summary = opportunities_pipeline.build_opportunities(
+            db_path,
+            review_run_id=review_run_id,
+            sport=sport,
+            season=season,
+            model=model,
+            snapshot_run_id=snapshot_run_id,
+            snapshot_date=snapshot_date,
+        )
+        path = rr.build_review_workbook(db_path, review_run_id=review_run_id, sport=sport, season=season, output_path=output_dir)
+        print(
+            "Review workbook -> "
+            f"{path} (review_run_id={review_run_id}, opportunities={summary.get('inserted')})"
+        )
 
     elif cmd == "log-bets":
         workbook = args.workbook
