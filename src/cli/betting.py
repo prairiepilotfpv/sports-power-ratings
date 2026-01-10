@@ -19,7 +19,13 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     market_ocr.add_argument("--season", required=True)
     market_ocr.add_argument("--images", required=True, help="File or directory of images")
     market_ocr.add_argument("--book", help="Book name for ingestion")
-    market_ocr.add_argument("--captured-at", help="Timestamp for captured images (ISO) if not embedded")
+    market_ocr.add_argument(
+        "--captured-at",
+        help=(
+            "Optional ISO timestamp for captured images. If omitted, the pipeline "
+            "records the current time when each image is read."
+        ),
+    )
     market_ocr.add_argument("--db", help="Optional DB path override")
     market_ocr.add_argument("--json-output", help="Optional JSON path to write parsed market lines (no DB writes)")
 

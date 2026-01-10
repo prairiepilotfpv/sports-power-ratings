@@ -27,7 +27,7 @@ Top-level pipeline supports both a top-level `market-ocr` command and a nested `
 
 ```powershell
 python -m src.cli.pipeline market-ocr --sport nba --season 2025-26 \
-  --images screenshots/ --book dn --captured-at 2024-12-01T14:30:00Z \
+  --images screenshots/ --book dn \
   --json-output tmp/lines.json
 ```
 
@@ -35,7 +35,7 @@ Or via the betting subcommand:
 
 ```powershell
 python -m src.cli.pipeline betting market-ocr --sport nba --season 2025-26 \
-  --images screenshots/ --book dn --captured-at 2024-12-01T14:30:00Z \
+  --images screenshots/ --book dn \
   --json-output tmp/lines.json
 ```
 

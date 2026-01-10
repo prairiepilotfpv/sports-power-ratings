@@ -37,6 +37,10 @@ JSON Schema (when json_output is set):
 
 Gap flags are populated when a team bundle has fewer than 3 ordered markets (ML, spread, total).
 Confidence scoring uses font row position, keyword heuristics, and field validity.
+
+Timestamping: when the `captured_at` parameter is omitted, the pipeline records
+a per-image ISO timestamp at the moment each image is read. This timestamp is
+used for JSON output and when persisting staging rows to the DB.
 """
 
 from __future__ import annotations
@@ -316,6 +320,9 @@ def ingest_screenshots(
             created += 1
             continue
 
+        # Per-image captured timestamp: use provided captured_at or record now
+        image_captured_at = captured_at or _utcnow_iso()
+
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
         
         # Detect team names from the OCR text top lines
@@ -348,7 +355,7 @@ def ingest_screenshots(
             bundle = _bundle_team_markets(parsed_with_indices, home_raw or "Unknown", away_raw or "Unknown")
             result_record = {
                 "image": img,
-                "captured_at": captured_at,
+                "captured_at": image_captured_at,
                 "book": book,
                 "team_home_raw": bundle["team_home_raw"],
                 "team_away_raw": bundle["team_away_raw"],
@@ -376,14 +383,14 @@ def ingest_screenshots(
                 match_status = "unmatched"
                 match_confidence = 0.0
             else:
-                # attempt to resolve to a game
+                # attempt to resolve to a game using the per-image captured timestamp
                 res = resolve_staging_to_game(
                     db_path,
                     sport=sport,
                     season=season,
                     team_home_raw=home_raw,
                     team_away_raw=away_raw,
-                    game_date=captured_at
+                    game_date=image_captured_at,
                 )
                 match_status = res.get("match_status")
                 match_confidence = res.get("match_confidence")
@@ -391,7 +398,7 @@ def ingest_screenshots(
             add_staging_row(
                 db_path,
                 source=source,
-                captured_at=captured_at or _utcnow_iso(),
+                captured_at=image_captured_at,
                 image_path=img,
                 raw_text=parsed.get("raw"),
                 book=book,
@@ -401,7 +408,7 @@ def ingest_screenshots(
                 odds=odds,
                 team_home_raw=home_raw,
                 team_away_raw=away_raw,
-                game_date=captured_at,
+                game_date=image_captured_at,
                 match_status=match_status,
                 match_confidence=match_confidence,
                 game_id=None if match_status != "matched" else res.get("game_id") if 'res' in locals() else None,

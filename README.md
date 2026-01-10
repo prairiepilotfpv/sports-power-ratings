@@ -137,12 +137,22 @@ The bet-tracking flow layers on top of the core pipelines and adds OCR ingestion
    python -m src.cli.pipeline market-ocr \
      --sport nba --season 2025-26 \
      --input screenshots/2024-12-01 \
-     --book dn \
-     --captured-at 2024-12-01T14:30:00Z
+     --book dn
    ```
-   - Accepts individual files or directories.
-   - When `--json-output path.json` is provided, no DB writes occur; instead a structured JSON file is emitted that contains every parsed moneyline/spread/total row (three rows per team when markets are detected).
-   - Without `--json-output`, rows are persisted into `market_snapshot_staging` for reconciliation against the schedule database.
+   - If `--json-output path.json` is provided, no DB writes occur; instead a
+     structured JSON file is emitted that contains every parsed moneyline/spread/total row.
+   - If `--captured-at` is omitted, the pipeline records a per-image ISO
+     timestamp when each image is read and uses that timestamp for JSON output
+     and DB staging rows.
+   
+   ```
+   # Example (JSON-only dry run)
+   python -m src.cli.pipeline market-ocr --sport nba --season 2025-26 \
+     --images screenshots/2024-12-01 --book dn --json-output tmp/lines.json
+   ```
+   - Accepts individual files or directories. Without `--json-output`, rows are
+     persisted into `market_snapshot_staging` for reconciliation against the
+     schedule database.
 
 2. **Match OCR rows to games.**
    - Staging rows automatically call `resolve_staging_to_game()` to attempt a fuzzy match against the ingested schedule.
