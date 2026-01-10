@@ -444,7 +444,7 @@ class TOORModel(BaseModel):
                             "pred_margin": pred_margin,
                         },
                     )
-                if self._debug_assert and margin_sd < MARGIN_SD_GUARDRAIL_MIN:
+                if self._debug_assert and margin_sd < cfg.margin_sd_min:
                     raise AssertionError(
                         f"margin_sd guardrail violated: applied={margin_sd} raw={raw_sd}"
                     )

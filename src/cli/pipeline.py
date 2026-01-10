@@ -1123,6 +1123,19 @@ def _run_betting(args: argparse.Namespace) -> None:
         json_out = getattr(args, "json_output", None)
         if db_path is None and not json_out:
             raise ValueError("DB path could not be resolved; pass --db or --sport/--season, or use --json-output")
+        # Interactive confirmation: if we're going to write to a DB (non-JSON mode),
+        # ask the user to confirm before performing writes.
+        if not json_out and db_path is not None:
+            try:
+                images_list = market_ocr_pipeline._gather_images([images])
+                img_count = len(images_list)
+            except Exception:
+                img_count = 1
+            resp = input(f"About to ingest {img_count} image(s) into DB {db_path}. Proceed? [y/N]: ").strip().lower()
+            if resp != "y":
+                print("market-ocr: aborted by user (no changes made)")
+                return
+
         created = market_ocr_pipeline.ingest_screenshots([images], db_path=db_path, sport=args.sport, season=args.season, source=book or "screenshot", book=book, captured_at=captured_at, json_output=json_out)
         print(f"market-ocr: ingested {created} staging rows")
 

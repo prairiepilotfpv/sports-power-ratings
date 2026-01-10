@@ -192,7 +192,7 @@ def _rating_projection_engine(
                     "applied_margin_sd": margin_sd,
                 },
             )
-        if _DEBUG_ASSERT and margin_sd < MARGIN_SD_GUARDRAIL_MIN:
+        if _DEBUG_ASSERT and margin_sd < cfg.margin_sd_min:
             raise AssertionError(
                 f"margin_sd guardrail violated: applied={margin_sd} raw={raw_margin_sd}"
             )
