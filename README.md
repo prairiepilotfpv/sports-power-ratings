@@ -169,6 +169,8 @@ The bet-tracking flow layers on top of the core pipelines and adds OCR ingestion
 
 The workflow is intentionally modular: you can pause after OCR (JSON only) when book lines need manual cleanup, then append finalized wagers into the DB, ingest closing lines later, and finally run settlement + reports.
 
+To generate a review workbook from committed market snapshots, run `python -m src.cli.pipeline betting review-generate --sport <sport> --season <season> --model <model> --snapshot-run-id <run_id>` (or use `--snapshot-date` to filter by capture date). The command creates a review run, evaluates opportunities, and writes the workbook.
+
 ## CLI reference (detailed)
 
 ### Common flags

@@ -47,6 +47,8 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     review_gen.add_argument("--db", help="Optional DB path override")
     review_gen.add_argument("--output-dir", help="Optional output directory")
     review_gen.add_argument("--review-run-id", help="Optional existing review_run_id to use")
+    review_gen.add_argument("--snapshot-run-id", help="Market snapshot run id to evaluate")
+    review_gen.add_argument("--snapshot-date", help="Filter market snapshots by captured date (YYYY-MM-DD)")
 
     log_bets = sub.add_parser("log-bets", help="Log bets from a workbook into the DB")
     log_bets.add_argument("--workbook", required=True)
