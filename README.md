@@ -425,6 +425,7 @@ python -m src.cli.pipeline tune --model elo --csv nba_results.csv --start 2024-1
 - Report: rankings-only Excel workbook.
 - Backtest: evaluate models on historical games.
 - Tune: grid-search hyperparameters via backtests.
+- Daily checklist: step-by-step runbook for ingest → bets → reports in [docs/daily-workflow.md](docs/daily-workflow.md).
 ```bash
 ## CLI Reference
 

@@ -1,52 +1,81 @@
-# Daily Workflow
+# Daily Workflow Checklist
 
-Concise daily checklist for schedule + market ingestion, OCR review, bet logging, and reporting.
+Use this daily checklist to go from fresh schedules and market data to logged bets and reports. Each step includes an example command you can paste and adjust.
 
-## Checklist
+## 1) Ingest the latest schedule/results
 
-1. Data ingest (schedule + market lines)
-
-```powershell
-# Schedule ingest
-python -m src.cli.pipeline import --sport <sport> --season <season> --input <schedule_csv_or_html>
-
-# Market lines via OCR (JSON-only dry run)
-python -m src.cli.pipeline market-ocr --sport <sport> --season <season> \
-  --input <screenshots_dir_or_file> --book <book> --json-output <lines_json>
-
-# Or import a market CSV
-python -m src.cli.pipeline betting market-csv --sport <sport> --season <season> \
-  --csv <market_csv> --snapshot-run-id <run_id> --default-book <book>
+```bash
+python -m src.cli.pipeline import --sport nba --season 2025-26 --input data/raw/nba_schedule.csv
 ```
 
-2. OCR review
+## 2) Build rankings (power ratings)
 
-```powershell
-python -m src.cli.pipeline market-review --sport <sport> --season <season>
+```bash
+python -m src.cli.pipeline rank --sport nba --season 2025-26
 ```
 
-3. Review workbook generation
+## 3) Generate schedule projections
 
-```powershell
-python -m src.cli.pipeline betting review-generate --sport <sport> --season <season> --model <model> \
-  --snapshot-run-id <run_id>
+```bash
+python -m src.cli.pipeline schedule --sport nba --season 2025-26 --output data/processed/nba/2025-26/schedule_with_projections.xlsx
 ```
 
-4. Manual entry in BETS sheet
+## 4) Capture market lines (OCR or CSV)
 
-```powershell
-start <review_workbook_path>
+**OCR screenshots:**
+
+```bash
+python -m src.cli.pipeline market-ocr --sport nba --season 2025-26 \
+  --images screenshots/2025-01-12 --book dn
 ```
 
-5. Log bets
+**CSV import (if you already have a lines file):**
 
-```powershell
-python -m src.cli.pipeline betting log-bets --workbook <review_workbook_path> --db <db_path> --writeback
+```bash
+python -m src.cli.pipeline betting market-csv --sport nba --season 2025-26 \
+  --csv data/raw/nba_markets.csv --snapshot-run-id snap-20250112 --default-book dn
 ```
 
-6. Settle and report
+## 5) Review OCR matches
 
-```powershell
-python -m src.cli.pipeline betting settle-bets --sport <sport> --season <season>
-python -m src.cli.pipeline betting report --sport <sport> --season <season> --type daily --output <report_path>
+```bash
+python -m src.cli.pipeline market-review --sport nba --season 2025-26
+```
+
+## 6) Commit matched staging rows into market snapshots (optional)
+
+```bash
+python -m src.cli.pipeline betting market-commit --sport nba --season 2025-26 \
+  --snapshot-run-id snap-20250112
+```
+
+## 7) Validate prerequisites (optional but recommended)
+
+```bash
+python -m src.cli.pipeline betting validate --sport nba --season 2025-26 --model elo \
+  --date 2025-01-12 --snapshot-run-id snap-20250112 --min-snapshots 10
+```
+
+## 8) Generate the daily workbook
+
+```bash
+python -m src.cli.pipeline betting daily-workbook --sport nba --season 2025-26 --date 2025-01-12
+```
+
+## 9) Log bets from the workbook
+
+```bash
+python -m src.cli.pipeline betting log-bets --workbook outputs/daily-nba-2025-01-12.xlsx \
+  --db data/db/nba/2025-26.db --writeback
+```
+
+## 10) Settle bets and report
+
+```bash
+python -m src.cli.pipeline betting settle-bets --sport nba --season 2025-26
+```
+
+```bash
+python -m src.cli.pipeline betting report --sport nba --season 2025-26 --type daily \
+  --output outputs/reports/nba-daily-2025-01-12.xlsx
 ```

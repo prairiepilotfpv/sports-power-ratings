@@ -8,6 +8,7 @@ For a concise daily checklist, see [docs/daily-workflow.md](docs/daily-workflow.
 - Key code: `src/data/betting_repository.py` (DB schema + helpers), `src/pipelines/staging_bets.py` (pivoting), `src/pipelines/bets.py` (log/settle), `src/cli/betting.py` (betting subcommands).
 
 **Daily checklist (step-by-step)**
+For the full daily runbook with copy/paste commands, see [docs/daily-workflow.md](docs/daily-workflow.md).
 1. Ingest schedule + market lines (OCR or CSV).
 2. Review OCR matches (`market-review`) and accept/reject as needed.
 3. Commit matched staging rows into `market_snapshots` (so snapshots are queryable).
