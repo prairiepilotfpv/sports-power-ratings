@@ -22,6 +22,15 @@ python -m src.cli.pipeline betting daily-workbook --sport <sport> --season <seas
 7. Open the workbook, decide stakes in `BETS`, and log bets with `log-bets`.
 8. Settle and run daily reports after results are in.
 
+**Daily workbook workflow (unified view)**
+- The daily workbook consolidates projections, raw snapshots, OCR staging rows, and EV/BETS into one Excel file.
+- Sheets included: `PROJECTIONS`, `MARKET_SNAPSHOTS`, `OCR_RAW`, `EV`, `BETS` (plus a hidden `META` sheet for run metadata).
+- Cross-links: `EV` and `BETS` include `game_id` and `source_market_snapshot_id`, and the workbook adds lookup columns that pull key fields from `PROJECTIONS` and `MARKET_SNAPSHOTS`.
+- Typical flow:
+  1. Run `betting daily-workbook` with the target date.
+  2. Review `EV` for candidates, then fill in stake/price/book in `BETS`.
+  3. Run `betting log-bets` to write wagers back to the DB.
+
 **Prerequisites**
 - Create and activate a virtualenv and install deps:
 
