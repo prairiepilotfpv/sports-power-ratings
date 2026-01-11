@@ -12,6 +12,7 @@ from typing import Iterable, List
 
 from config import DEFAULT_WIN_PROB_K
 from ingest.schema import GameResult
+from .migrations import apply_migrations
 
 
 # Schema is small and append-only; migrations are handled via helper checks.
@@ -84,67 +85,8 @@ def init_db(db_path: str | Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(path)) as conn:
         conn.executescript(SCHEMA)
-        _ensure_games_columns(conn)
-        _ensure_model_metrics_columns(conn)
+        apply_migrations(conn)
         conn.commit()
-
-
-def _ensure_games_columns(conn: sqlite3.Connection) -> None:
-    """Backfill columns for older databases that predate new game metadata."""
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(games)").fetchall()}
-    if "division" not in existing:
-        conn.execute("ALTER TABLE games ADD COLUMN division TEXT")
-    if "conference" not in existing:
-        conn.execute("ALTER TABLE games ADD COLUMN conference TEXT")
-    if "decision_type" not in existing:
-        conn.execute("ALTER TABLE games ADD COLUMN decision_type TEXT")
-
-
-def _ensure_model_metrics_columns(conn: sqlite3.Connection) -> None:
-    """Backfill columns for older databases that predate new metrics."""
-    existing = {
-        row[1] for row in conn.execute("PRAGMA table_info(model_metrics)").fetchall()
-    }
-    if "win_prob_k" not in existing:
-        conn.execute(
-            f"ALTER TABLE model_metrics ADD COLUMN win_prob_k REAL NOT NULL DEFAULT {DEFAULT_WIN_PROB_K}"
-        )
-    if "base_total" not in existing:
-        conn.execute(
-            "ALTER TABLE model_metrics ADD COLUMN base_total REAL NOT NULL DEFAULT 0.0"
-        )
-    if "backtest_log_loss" not in existing:
-        conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_log_loss REAL")
-    if "backtest_brier_score" not in existing:
-        conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_brier_score REAL")
-    if "backtest_mae_margin" not in existing:
-        conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_mae_margin REAL")
-    if "backtest_win_prob_k" not in existing:
-        conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_win_prob_k REAL")
-    if "margin_std" not in existing:
-        conn.execute("ALTER TABLE model_metrics ADD COLUMN margin_std REAL")
-    if "total_std" not in existing:
-        conn.execute("ALTER TABLE model_metrics ADD COLUMN total_std REAL")
-    if "conditional_sd_intercept" not in existing:
-        conn.execute(
-            "ALTER TABLE model_metrics ADD COLUMN conditional_sd_intercept REAL"
-        )
-    if "conditional_sd_slope" not in existing:
-        conn.execute("ALTER TABLE model_metrics ADD COLUMN conditional_sd_slope REAL")
-    if "margin_mean" not in existing:
-        conn.execute("ALTER TABLE model_metrics ADD COLUMN margin_mean REAL")
-    if "total_mean" not in existing:
-        conn.execute("ALTER TABLE model_metrics ADD COLUMN total_mean REAL")
-    if "backtest_run_id" not in existing:
-        conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_run_id TEXT")
-    if "backtest_updated_at" not in existing:
-        conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_updated_at TEXT")
-    if "tuned_params_json" not in existing:
-        conn.execute("ALTER TABLE model_metrics ADD COLUMN tuned_params_json TEXT")
-    if "tuned_params_metric" not in existing:
-        conn.execute("ALTER TABLE model_metrics ADD COLUMN tuned_params_metric TEXT")
-    if "tuned_params_updated_at" not in existing:
-        conn.execute("ALTER TABLE model_metrics ADD COLUMN tuned_params_updated_at TEXT")
 
 
 def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
