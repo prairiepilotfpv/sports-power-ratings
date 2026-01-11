@@ -24,6 +24,7 @@ def test_betting_review_generate_parsing(monkeypatch):
     assert args.command == "betting"
     assert args.betting_cmd == "review-generate"
     assert args.model == "elo"
+    assert args.include_ocr_raw is True
 
 
 def test_betting_market_ocr_json_output_parsing(monkeypatch):
@@ -100,3 +101,33 @@ def test_betting_clv_csv_parsing(monkeypatch):
     assert args.csv_path == "clv.csv"
     assert args.default_market_type == "ML"
     assert args.no_update_bets is True
+
+
+def test_betting_market_csv_parsing(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prog",
+            "betting",
+            "market-csv",
+            "--sport",
+            "nba",
+            "--season",
+            "2025-26",
+            "--csv",
+            "markets.csv",
+            "--snapshot-run-id",
+            "run-csv",
+            "--default-book",
+            "dn",
+            "--no-commit-matched",
+        ],
+    )
+    args = pl._parse_args()
+    assert args.command == "betting"
+    assert args.betting_cmd == "market-csv"
+    assert args.csv_path == "markets.csv"
+    assert args.snapshot_run_id == "run-csv"
+    assert args.default_book == "dn"
+    assert args.commit_matched is False

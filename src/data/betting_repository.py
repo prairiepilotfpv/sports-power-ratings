@@ -23,11 +23,15 @@ from contextlib import closing
 from pathlib import Path
 from typing import Iterable, Sequence, List, Dict, Any, Optional
 from datetime import datetime, timezone
+import logging
 import uuid
 
 from .paths import db_path_for
 from . import repository as base_repo
+from .migrations import apply_migrations
 
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS review_runs (
@@ -138,10 +142,27 @@ CREATE TABLE IF NOT EXISTS clv_snapshots (
     created_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS prediction_exclusions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    review_run_id TEXT,
+    game_id TEXT,
+    model TEXT,
+    excluded_reason TEXT,
+    created_at TEXT,
+    UNIQUE(review_run_id, game_id, model, excluded_reason)
+);
+
+CREATE TABLE IF NOT EXISTS schema_meta (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    schema_version INTEGER NOT NULL,
+    updated_at TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_market_snapshots_game_id ON market_snapshots(game_id);
 CREATE INDEX IF NOT EXISTS idx_forecast_snapshots_review_run ON forecast_snapshots(review_run_id);
 CREATE INDEX IF NOT EXISTS idx_opportunities_review_run ON opportunities(review_run_id);
 CREATE INDEX IF NOT EXISTS idx_bets_review_run ON bets(review_run_id);
+CREATE INDEX IF NOT EXISTS idx_prediction_exclusions_review_run ON prediction_exclusions(review_run_id);
 """
 
 
@@ -168,25 +189,7 @@ def _ensure_betting_columns(conn: sqlite3.Connection) -> None:
     This will inspect tables for missing columns/tables and add them when
     applicable. Keep migrations additive and idempotent.
     """
-    # Ensure CLV snapshots table exists (in case older DBs predate it)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS clv_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            game_id TEXT,
-            market_type TEXT,
-            selection TEXT,
-            close_line REAL,
-            close_odds INTEGER,
-            captured_at TEXT,
-            created_at TEXT
-        );
-        """
-    )
-    # Ensure hold_reason column exists on staging for auto-hold tagging
-    staging_cols = [row[1] for row in conn.execute("PRAGMA table_info(market_snapshot_staging)")]
-    if "hold_reason" not in staging_cols:
-        conn.execute("ALTER TABLE market_snapshot_staging ADD COLUMN hold_reason TEXT")
+    apply_migrations(conn)
     return
 
 
@@ -369,6 +372,7 @@ def add_staging_row(db_path: str | Path, **kwargs) -> int:
     ]
     if "created_at" not in kwargs or kwargs.get("created_at") is None:
         kwargs["created_at"] = _utcnow_iso()
+    _log_high_risk_staging(kwargs)
     vals = [kwargs.get(f) for f in fields]
     with closing(sqlite3.connect(Path(db_path))) as conn:
         cur = conn.execute(
@@ -377,6 +381,39 @@ def add_staging_row(db_path: str | Path, **kwargs) -> int:
         )
         conn.commit()
         return cur.lastrowid
+
+
+def _log_high_risk_staging(row: dict) -> None:
+    reasons: list[str] = []
+    odds = row.get("odds")
+    try:
+        odds_val = int(odds) if odds is not None else None
+    except Exception:
+        odds_val = None
+
+    if odds_val is not None:
+        if odds_val == 0:
+            reasons.append("odds_zero")
+        if abs(odds_val) > 400:
+            reasons.append("odds_outside_typical_range")
+
+    match_status = (row.get("match_status") or "").strip().lower()
+    game_id = row.get("game_id")
+    if match_status == "matched" and not game_id:
+        reasons.append("missing_game_id_for_matched")
+
+    if not reasons:
+        return
+    logger.warning(
+        "High-risk staging row: %s (source=%s market_type=%s selection=%s odds=%s line=%s match_status=%s)",
+        ",".join(reasons),
+        row.get("source"),
+        row.get("market_type"),
+        row.get("selection"),
+        odds,
+        row.get("line"),
+        match_status or None,
+    )
 
 
 def _get_staging_rows(conn: sqlite3.Connection, staging_ids: Sequence[int]) -> List[Dict[str, Any]]:
@@ -609,9 +646,11 @@ __all__ = [
     "tag_staging_hold",
     "resolve_staging_to_game",
     "get_opportunities_with_game_info",
+    "get_prediction_exclusions",
     "add_clv_snapshot",
     "get_latest_clv",
     "import_clv_csv",
+    "add_prediction_exclusions",
     "update_bets_with_clv",
 ]
 
@@ -830,6 +869,62 @@ def get_opportunities_with_game_info(db_path: str | Path, *, review_run_id: str)
                 "away_team": r[15],
             })
         return result
+
+
+def add_prediction_exclusions(
+    db_path: str | Path,
+    *,
+    review_run_id: str,
+    exclusions: Iterable[dict],
+    created_at: str | None = None,
+) -> int:
+    """Insert prediction exclusions for a review run. Returns inserted count."""
+    rows = list(exclusions)
+    if not rows:
+        return 0
+    init_db(db_path)
+    timestamp = created_at or _utcnow_iso()
+    inserted = 0
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        for row in rows:
+            conn.execute(
+                """
+                INSERT INTO prediction_exclusions (
+                    review_run_id, game_id, model, excluded_reason, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(review_run_id, game_id, model, excluded_reason) DO UPDATE SET
+                    created_at = excluded.created_at
+                """,
+                (
+                    review_run_id,
+                    row.get("game_id"),
+                    row.get("model"),
+                    row.get("excluded_reason"),
+                    timestamp,
+                ),
+            )
+            inserted += 1
+        conn.commit()
+    return inserted
+
+
+def get_prediction_exclusions(db_path: str | Path, *, review_run_id: str) -> list[dict]:
+    """Return prediction exclusions for the given review run."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        rows = conn.execute(
+            """
+            SELECT game_id, model, excluded_reason
+            FROM prediction_exclusions
+            WHERE review_run_id = ?
+            ORDER BY game_id, model, excluded_reason
+            """,
+            (review_run_id,),
+        ).fetchall()
+        return [
+            {"game_id": r[0], "model": r[1], "excluded_reason": r[2]}
+            for r in rows
+        ]
 
 
 def add_clv_snapshot(

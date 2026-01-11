@@ -46,6 +46,32 @@ def _clean_value(value: object) -> object | None:
     return value
 
 
+def _model_ref_from_row(row: pd.Series | dict, default_model: str | None = None) -> str | None:
+    if isinstance(row, pd.Series):
+        model_ref = row.get("model") or row.get("model_id")
+    else:
+        model_ref = row.get("model") or row.get("model_id")
+    return model_ref or default_model
+
+
+def _format_validation_exclusions(
+    exclusions: Iterable[tuple[str | None, str | None, list[str]]],
+    *,
+    default_model: str | None = None,
+) -> list[dict]:
+    rows: list[dict] = []
+    for model_ref, game_id, reasons in exclusions:
+        reason = ", ".join(reasons) if reasons else "validation_failed"
+        rows.append(
+            {
+                "game_id": game_id,
+                "model": model_ref or default_model,
+                "excluded_reason": reason,
+            }
+        )
+    return rows
+
+
 def load_market_snapshots(
     db_path: str | Path,
     *,
@@ -176,10 +202,50 @@ def build_opportunities(
         logger.warning("No predictions found for review_run_id=%s", review_run_id)
         return {"inserted": 0, "review_run_id": review_run_id}
 
+    exclusions: list[dict] = []
+    pre_guardrail = predictions.copy()
     predictions = guardrails.enforce_margin_sd_guardrail(predictions, sport=sport)
-    predictions, _ = guardrails.apply_prediction_validation(predictions, sport=sport)
+    if not pre_guardrail.empty:
+        dropped_idx = pre_guardrail.index.difference(predictions.index)
+        if len(dropped_idx) > 0:
+            dropped = pre_guardrail.loc[dropped_idx]
+            for _, row in dropped.iterrows():
+                exclusions.append(
+                    {
+                        "game_id": row.get("game_id"),
+                        "model": _model_ref_from_row(row, model),
+                        "excluded_reason": "margin_sd_guardrail",
+                    }
+                )
 
-    opportunities_df, _ = evaluate_market_rows(predictions, market_df)
+    predictions, validation_exclusions = guardrails.apply_prediction_validation(
+        predictions, sport=sport
+    )
+    exclusions.extend(
+        _format_validation_exclusions(validation_exclusions, default_model=model)
+    )
+
+    opportunities_df, _ = evaluate_market_rows(
+        predictions,
+        market_df,
+        include_excluded_reason=True,
+    )
+    if not opportunities_df.empty and "excluded_reason" in opportunities_df.columns:
+        excluded_markets = opportunities_df[opportunities_df["excluded_reason"].notna()]
+        for _, row in excluded_markets.iterrows():
+            exclusions.append(
+                {
+                    "game_id": row.get("game_id"),
+                    "model": model,
+                    "excluded_reason": row.get("excluded_reason"),
+                }
+            )
+    if exclusions:
+        br.add_prediction_exclusions(
+            db_path,
+            review_run_id=review_run_id,
+            exclusions=exclusions,
+        )
     if opportunities_df.empty:
         return {"inserted": 0, "review_run_id": review_run_id}
 

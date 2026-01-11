@@ -131,6 +131,7 @@ python -m src.cli.pipeline tune --model elo --csv nba_results.csv --start 2024-1
 ## Bet Tracking Suite
 
 The bet-tracking flow layers on top of the core pipelines and adds OCR ingestion, staging review, bet logging, closing-line (CLV) snapshots, settlement, and formatted reporting. Use these steps to turn screenshot dumps into structured logs and weekly/monthly summaries:
+See the daily checklist in [docs/daily-workflow.md](docs/daily-workflow.md).
 
 1. **Capture sportsbook boards via OCR.**
    ```bash

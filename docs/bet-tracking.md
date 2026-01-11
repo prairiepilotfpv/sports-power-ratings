@@ -1,10 +1,26 @@
 # Bet Tracking (Market OCR + Betting Reports)
 
 This document explains how to log a bet (from OCR/CSV -> review workbook -> DB) and how to exercise the behavior with the test suite.
+For a concise daily checklist, see [docs/daily-workflow.md](docs/daily-workflow.md).
 
 **Overview**
 - Purpose: ingest sportsbook screenshots/CSV, stage parsed market rows, resolve them to canonical games, generate a review workbook, and log bets from the workbook into `bets` table for later backtests/settlement.
 - Key code: `src/data/betting_repository.py` (DB schema + helpers), `src/pipelines/staging_bets.py` (pivoting), `src/pipelines/bets.py` (log/settle), `src/cli/betting.py` (betting subcommands).
+
+**Daily checklist (step-by-step)**
+1. Ingest schedule + market lines (OCR or CSV).
+2. Review OCR matches (`market-review`) and accept/reject as needed.
+3. Commit matched staging rows into `market_snapshots` (so snapshots are queryable).
+4. (Optional) Run pre-flight validation (DB integrity, predictions, snapshot counts).
+5. Generate a review run + opportunities for the day.
+6. Build the unified daily workbook (projections + snapshots + OCR + EV/BETS):
+
+```powershell
+python -m src.cli.pipeline betting daily-workbook --sport <sport> --season <season> --date <YYYY-MM-DD>
+```
+
+7. Open the workbook, decide stakes in `BETS`, and log bets with `log-bets`.
+8. Settle and run daily reports after results are in.
 
 **Prerequisites**
 - Create and activate a virtualenv and install deps:
@@ -41,6 +57,14 @@ python -m src.cli.pipeline betting market-ocr --sport nba --season 2025-26 \
 
 Note: `--json-output` writes parsed market lines to JSON without touching the DB (useful for dry-runs).
 
+If you already have a CSV of market lines, use the CSV import command instead of OCR:
+
+```powershell
+python -m src.cli.pipeline betting market-csv --sport nba --season 2025-26 \
+  --csv data/raw/nba_markets.csv --snapshot-run-id run_20251201 \
+  --default-book dn
+```
+
 2. Commit matched staging rows into `market_snapshots` (optional, used when snapshots are desired):
 
 ```powershell
@@ -51,15 +75,26 @@ python -m src.cli.pipeline betting market-commit --sport nba --season 2025-26 \
 3. Generate a review workbook for a model (this creates `META` + `BETS` sheets used by `log-bets`):
 
 ```powershell
-python -m src.cli.pipeline betting review-generate --sport nba --season 2025-26 --model elo
+python -m src.cli.pipeline betting review-generate --sport nba --season 2025-26 --model elo \
+  --snapshot-run-id snap-20250101T000000Z
 ```
 
+To generate a formula workbook (EV + BETS formulas for `implied_prob`, `edge`, `ev`), add `--formula-workbook` (or `--formula`).
+Note: guardrails can filter predictions before they reach the workbook; see `docs/bet-evaluation.md` for details.
+`review-generate` requires `--snapshot-run-id`; optionally add `--snapshot-date` to constrain snapshots to a specific captured date.
+
+**OCR_RAW sheet (audit trail)**
+- The review workbook now includes an `OCR_RAW` sheet by default. It joins `market_snapshots` to `market_snapshot_staging` so you can trace any EV/BETS row back to the OCR source.
+- Key columns: `source_market_snapshot_id`, `image_path`, `raw_text`, `team_home_raw`, `team_away_raw`, `match_status`, `match_confidence`, `hold_reason`, `captured_at`, `book`, `market_type`, `selection`, `line`, `odds`.
+- Use `source_market_snapshot_id` to link `EV.source_market_snapshot_id` or `BETS.source_market_snapshot_id` back to the OCR row for audit/review.
+- To disable the sheet, pass `--no-include-ocr-raw` to `review-generate`.
+
 4. Edit the `BETS` sheet in the produced workbook. Required and supported columns (case-sensitive names expected by the `log_bets` parser):
-- `game_id` (preferred) — canonical `game_id` from the DB. If missing, the row cannot be logged idempotently.
-- `market_type` — e.g., `ML`, `spread`, `total`.
-- `selection` — team name or `home`/`away` depending on workbook conventions.
-- `line` — numeric point spread or total (float) where applicable.
-- `odds` or `price` — American odds as integer (e.g., `+120`, `-150`). `price` is supported as alternative to `odds`.
+- `game_id` (preferred) - canonical `game_id` from the DB. If missing, the row cannot be logged idempotently.
+- `market_type` - e.g., `ML`, `spread`, `total`.
+- `selection` - team name or `home`/`away` depending on workbook conventions.
+- `line` - numeric point spread or total (float) where applicable.
+- `odds` or `price` - American odds as integer (e.g., `+120`, `-150`). `price` is supported as alternative to `odds`.
 - `stake` — stake amount; blank or zero means PASS (row skipped).
 - Optional: `book`, `opportunity_id` (to trace source opportunity), `log_status`, `bet_id`, `logged_at` (these may be written back by `--writeback`).
 
@@ -67,6 +102,7 @@ Important behavior:
 - Blank `stake` is treated as PASS and will be skipped by `log_bets`.
 - Idempotency is enforced by the UNIQUE key `(review_run_id, game_id, market_type, selection)`. Re-running `log_bets` will update an existing row rather than duplicating.
 - If `review_run_id` is not provided to `log_bets`, the function will attempt to read it from the `META` sheet where a row with `key == review_run_id` and `value == <id>` is expected.
+- Formula workbooks include formulas in `EV` and `BETS` for `implied_prob`, `edge`, and `ev`. Edit `selection`, `line`, `odds`, or `model_prob` in `BETS` to refresh the EV calculations.
 
 5. Log bets from the workbook into the DB (dry-run first):
 
@@ -112,6 +148,16 @@ pytest -q tests/test_cli_log_bets.py tests/test_cli_log_bets_integration.py -q
 ```
 
 **Troubleshooting & tips**
+- Pre-flight validation can catch missing predictions or snapshots before you generate a workbook:
+
+```powershell
+python -m src.cli.pipeline betting validate --sport nba --season 2025-26 --model elo \
+  --date 2025-12-01 --snapshot-run-id snap-20251201 --min-snapshots 10
+```
+
+- If validation reports "No predictions found", check that rankings exist for the date/model and rerun `python -m src.cli.pipeline rank` before `review-generate`.
+- If validation reports "Insufficient market snapshots", confirm you committed staging rows for the snapshot run id or pass the correct `--snapshot-date`.
+- High-risk staging rows (e.g., odds outside typical ranges or matched rows missing `game_id`) are logged as warnings when inserted. Resolve by reviewing OCR matches (`market-review`) and re-ingesting or correcting source data if needed.
 - If `log_bets` raises `ValueError: review_run_id not provided`, ensure the workbook has a `META` sheet with `key == review_run_id` or pass `--review-run-id` (the CLI currently reads `review_run_id` from `META` automatically when absent).
 - If DB path resolution fails, pass `--db data/db/<sport>/<season>.db` or call the CLI with `--sport` and `--season` so the CLI can infer the path.
 - Use `--dry-run` liberally to confirm parsing before writing.

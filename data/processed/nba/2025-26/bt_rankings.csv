@@ -1,31 +1,31 @@
 team,rating,points,games,params_source,tuned_metric_used
-Oklahoma City Thunder,4.448976665983474,9.99179683411367,39,db_active,log_loss
-Detroit Pistons,3.2369792394885275,7.269815363273763,37,db_active,log_loss
-San Antonio Spurs,2.7511286171116356,6.178660907995346,38,db_active,log_loss
-Los Angeles Lakers,1.9346439001448092,4.344947219976279,36,db_active,log_loss
-Boston Celtics,1.9254602096608544,4.32432189950547,37,db_active,log_loss
-Denver Nuggets,1.9124683173634387,4.295143875417594,38,db_active,log_loss
-Houston Rockets,1.8296979379263945,4.109252854333844,35,db_active,log_loss
-Minnesota Timberwolves,1.790051292087659,4.020211877022462,38,db_active,log_loss
-New York Knicks,1.7577010896550234,3.947557719782037,39,db_active,log_loss
-Phoenix Suns,1.6296039901316297,3.6598690467298365,38,db_active,log_loss
-Philadelphia 76ers,0.9465332188167072,2.1257849454388054,36,db_active,log_loss
-Toronto Raptors,0.7992926725479866,1.7951026932009748,39,db_active,log_loss
-Miami Heat,0.7371583635448647,1.655557481212322,37,db_active,log_loss
-Orlando Magic,0.670247226112639,1.5052841618950878,39,db_active,log_loss
-Golden State Warriors,0.5988305597638368,1.3448920370761612,39,db_active,log_loss
-Portland Trail Blazers,0.4019311518553405,0.9026827318169554,39,db_active,log_loss
-Cleveland Cavaliers,0.3134711457991093,0.7040135827480556,39,db_active,log_loss
-Atlanta Hawks,-0.04292810726445369,-0.09641069361838134,40,db_active,log_loss
-Memphis Grizzlies,-0.8200705408843109,-1.8417669611100136,38,db_active,log_loss
-Chicago Bulls,-0.891366828032324,-2.0018887306073374,37,db_active,log_loss
-Milwaukee Bucks,-1.0739144274667287,-2.411865824901792,38,db_active,log_loss
-Los Angeles Clippers,-1.1208229077018355,-2.517215895152748,37,db_active,log_loss
-Utah Jazz,-1.499803832063624,-3.3683555356863577,37,db_active,log_loss
-Dallas Mavericks,-1.8991318084723547,-4.265191889304715,38,db_active,log_loss
-Charlotte Hornets,-2.3569774308327602,-5.29345092131792,38,db_active,log_loss
-Brooklyn Nets,-2.5941222217864572,-5.826045886266765,35,db_active,log_loss
-Washington Wizards,-3.4193301943860535,-7.679350820668647,37,db_active,log_loss
-Sacramento Kings,-3.430157783189361,-7.703668113306561,38,db_active,log_loss
-New Orleans Pelicans,-3.671917055972622,-8.246626577189497,40,db_active,log_loss
-Indiana Pacers,-4.863632459941044,-10.923057382407931,38,db_active,log_loss
+Oklahoma City Thunder,4.458950145263185,10.151361839580927,39,db_active,log_loss
+San Antonio Spurs,2.9433467394015573,6.700899718010267,39,db_active,log_loss
+Detroit Pistons,2.8416439794532407,6.469360570299418,38,db_active,log_loss
+Los Angeles Lakers,1.9087372803419829,4.345480922237452,36,db_active,log_loss
+Denver Nuggets,1.8910074523267708,4.305116734777955,38,db_active,log_loss
+Houston Rockets,1.8126878518441474,4.12681229590121,35,db_active,log_loss
+New York Knicks,1.7339899541759345,3.9476466158155037,39,db_active,log_loss
+Boston Celtics,1.7139466904652947,3.9020156004992654,38,db_active,log_loss
+Phoenix Suns,1.6393461676315464,3.7321781104991167,38,db_active,log_loss
+Minnesota Timberwolves,1.575683032948905,3.587240962751007,39,db_active,log_loss
+Philadelphia 76ers,0.9251883981061815,2.1063079633073016,36,db_active,log_loss
+Toronto Raptors,0.8210371765927931,1.869194584334022,39,db_active,log_loss
+Orlando Magic,0.6498555344946498,1.4794780069737872,39,db_active,log_loss
+Golden State Warriors,0.6180723631184932,1.4071196126123868,39,db_active,log_loss
+Cleveland Cavaliers,0.5113617032153533,1.1641793496520583,40,db_active,log_loss
+Miami Heat,0.4476209911350007,1.0190655871831993,38,db_active,log_loss
+Portland Trail Blazers,0.3746801813436728,0.8530066430502607,39,db_active,log_loss
+Atlanta Hawks,-0.022319305850468627,-0.05081271203201773,40,db_active,log_loss
+Chicago Bulls,-0.752158171230339,-1.712382849776394,38,db_active,log_loss
+Memphis Grizzlies,-0.8229342012904471,-1.8735134000859686,38,db_active,log_loss
+Los Angeles Clippers,-0.8643558153541556,-1.9678149236826985,38,db_active,log_loss
+Milwaukee Bucks,-1.049059277295436,-2.388315627683849,38,db_active,log_loss
+Utah Jazz,-1.751245916022844,-3.9869319872350673,38,db_active,log_loss
+Dallas Mavericks,-2.0458455368642388,-4.65762514404044,39,db_active,log_loss
+Charlotte Hornets,-2.0902073858471484,-4.758620482904401,39,db_active,log_loss
+Brooklyn Nets,-2.57978920690612,-5.873215186532162,35,db_active,log_loss
+Washington Wizards,-3.369051846764459,-7.670071034354596,37,db_active,log_loss
+Sacramento Kings,-3.4659227359285567,-7.890609819402765,38,db_active,log_loss
+New Orleans Pelicans,-3.6457072268136854,-8.299911865997425,40,db_active,log_loss
+Indiana Pacers,-4.408559015690813,-10.036640083757357,39,db_active,log_loss

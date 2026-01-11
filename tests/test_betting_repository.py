@@ -12,6 +12,9 @@ EXPECTED_TABLES = {
     "forecast_snapshots",
     "opportunities",
     "bets",
+    "clv_snapshots",
+    "prediction_exclusions",
+    "schema_meta",
 }
 
 

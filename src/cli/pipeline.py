@@ -1106,6 +1106,7 @@ def main() -> None:
 def _run_betting(args: argparse.Namespace) -> None:
     from src.cli import betting as betting_cli
     from src.pipelines import market_ocr as market_ocr_pipeline
+    from src.pipelines import daily_workbook as daily_workbook_pipeline
     from src.data import betting_repository as br
     from src.pipelines import review_runs as rr
     from src.pipelines import bets as bets_pipeline
@@ -1161,6 +1162,25 @@ def _run_betting(args: argparse.Namespace) -> None:
         committed = br.commit_market_snapshots(db_path, snapshot_run_id=snapshot_run_id, staging_ids=staging_ids, force=force)
         print(f"Committed {committed} market snapshots (snapshot_run_id={snapshot_run_id})")
 
+    elif cmd == "market-csv":
+        if db_path is None:
+            raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
+        result = br.import_market_csv(
+            db_path,
+            csv_path=args.csv_path,
+            snapshot_run_id=args.snapshot_run_id,
+            sport=args.sport,
+            season=args.season,
+            default_book=getattr(args, "default_book", None),
+            commit_matched=bool(getattr(args, "commit_matched", True)),
+        )
+        print(
+            "market-csv: "
+            f"committed={result.get('committed')} "
+            f"staged={result.get('staged')} "
+            f"rejected={result.get('rejected')}"
+        )
+
     elif cmd == "clv-csv":
         if db_path is None:
             raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
@@ -1188,8 +1208,12 @@ def _run_betting(args: argparse.Namespace) -> None:
         snapshot_run_id = getattr(args, "snapshot_run_id", None)
         snapshot_date = getattr(args, "snapshot_date", None)
         output_dir = getattr(args, "output_dir", None)
-        if snapshot_run_id is None and snapshot_date is None:
-            raise ValueError("review-generate requires --snapshot-run-id or --snapshot-date")
+        use_formulas = bool(getattr(args, "formula_workbook", False))
+        include_ocr_raw = bool(getattr(args, "include_ocr_raw", True))
+        if snapshot_run_id is None:
+            raise ValueError("review-generate requires --snapshot-run-id")
+        if snapshot_date:
+            _require_iso_date(snapshot_date, field="--snapshot-date")
         review_run_id = br.create_review_run(
             db_path,
             sport=sport,
@@ -1207,11 +1231,44 @@ def _run_betting(args: argparse.Namespace) -> None:
             snapshot_run_id=snapshot_run_id,
             snapshot_date=snapshot_date,
         )
-        path = rr.build_review_workbook(db_path, review_run_id=review_run_id, sport=sport, season=season, output_path=output_dir)
+        if use_formulas:
+            path = rr.build_review_workbook_with_formulas(
+                db_path,
+                review_run_id=review_run_id,
+                sport=sport,
+                season=season,
+                output_path=output_dir,
+                include_ocr_raw=include_ocr_raw,
+            )
+        else:
+            path = rr.build_review_workbook(
+                db_path,
+                review_run_id=review_run_id,
+                sport=sport,
+                season=season,
+                output_path=output_dir,
+                include_ocr_raw=include_ocr_raw,
+            )
         print(
             "Review workbook -> "
             f"{path} (review_run_id={review_run_id}, opportunities={summary.get('inserted')})"
         )
+
+    elif cmd == "daily-workbook":
+        if db_path is None:
+            raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
+        _require_iso_date(args.date, field="--date")
+        out = daily_workbook_pipeline.build_daily_workbook(
+            db_path,
+            sport=args.sport,
+            season=args.season,
+            date=args.date,
+            model=getattr(args, "model", None),
+            review_run_id=getattr(args, "review_run_id", None),
+            snapshot_run_id=getattr(args, "snapshot_run_id", None),
+            output_path=getattr(args, "output", None),
+        )
+        print(f"Daily workbook -> {out}")
 
     elif cmd == "log-bets":
         workbook = args.workbook
@@ -1278,8 +1335,66 @@ def _run_betting(args: argparse.Namespace) -> None:
             for r in rows:
                 print(r)
 
+    elif cmd == "validate":
+        from src.pipelines import betting_validation as betting_validation_pipeline
+
+        if db_path is None:
+            raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
+        _require_iso_date(args.date, field="--date")
+        snapshot_run_id = getattr(args, "snapshot_run_id", None)
+        snapshot_date = getattr(args, "snapshot_date", None)
+        if snapshot_date:
+            _require_iso_date(snapshot_date, field="--snapshot-date")
+        if snapshot_run_id is None and snapshot_date is None:
+            raise ValueError("validate requires --snapshot-run-id or --snapshot-date")
+
+        results = betting_validation_pipeline.run_preflight_validation(
+            db_path,
+            sport=args.sport,
+            season=args.season,
+            model=args.model,
+            date=args.date,
+            snapshot_run_id=snapshot_run_id,
+            snapshot_date=snapshot_date,
+            min_snapshots=int(getattr(args, "min_snapshots", 1)),
+        )
+
+        integrity = results.get("integrity", {})
+        predictions = results.get("predictions", {})
+        snapshots = results.get("snapshots", {})
+        games = results.get("games", {})
+        print("Pre-flight validation:")
+        print(f"- integrity: {'ok' if integrity.get('ok') else 'fail'} ({integrity.get('detail')})")
+        print(f"- games: {games.get('count')} on {args.date}")
+        print(f"- predictions: {'ok' if predictions.get('ok') else 'fail'} (count={predictions.get('count')})")
+        print(
+            "- market_snapshots: "
+            f"{'ok' if snapshots.get('ok') else 'fail'} "
+            f"(count={snapshots.get('count')}, min_required={snapshots.get('min_required')})"
+        )
+
+        failures: list[str] = []
+        if not integrity.get("ok"):
+            failures.append(f"DB integrity_check failed: {integrity.get('detail')}")
+        if not predictions.get("ok"):
+            failures.append("No predictions found for the requested date/model")
+        if not snapshots.get("ok"):
+            failures.append("Insufficient market snapshots for the requested filter")
+        if failures:
+            raise ValueError("; ".join(failures))
+
     else:
         raise ValueError(f"Unknown betting command: {cmd}")
+
+
+def _require_iso_date(value: str, *, field: str) -> str:
+    from datetime import date as dt_date
+
+    try:
+        dt_date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{field} must be YYYY-MM-DD: {value}") from exc
+    return value
 
 
 def _parse_json_arg(raw: str | None) -> dict | None:

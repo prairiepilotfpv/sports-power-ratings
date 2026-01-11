@@ -37,6 +37,16 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     market_commit.add_argument("--require-matched", action="store_true", help="Fail if any staging rows are needs_review")
     market_commit.add_argument("--force", action="store_true", help="Force commit rows even if needs_review")
 
+    market_csv = sub.add_parser("market-csv", help="Import market lines from a CSV into snapshots/staging")
+    market_csv.add_argument("--sport", required=True)
+    market_csv.add_argument("--season", required=True)
+    market_csv.add_argument("--csv", dest="csv_path", required=True, help="CSV of market lines (selection, odds, line, teams)")
+    market_csv.add_argument("--snapshot-run-id", required=True, help="Snapshot run id to attach to imported rows")
+    market_csv.add_argument("--db", help="Optional DB path override")
+    market_csv.add_argument("--default-book", dest="default_book", help="Fallback book name when the CSV omits it")
+    market_csv.add_argument("--commit-matched", dest="commit_matched", action="store_true", default=True, help="Commit matched rows into market_snapshots (default)")
+    market_csv.add_argument("--no-commit-matched", dest="commit_matched", action="store_false", help="Leave matched rows in staging for review")
+
     clv_csv = sub.add_parser("clv-csv", help="Import closing lines/odds from a CSV and backfill bets")
     clv_csv.add_argument("--sport", required=True)
     clv_csv.add_argument("--season", required=True)
@@ -53,8 +63,52 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     review_gen.add_argument("--db", help="Optional DB path override")
     review_gen.add_argument("--output-dir", help="Optional output directory")
     review_gen.add_argument("--review-run-id", help="Optional existing review_run_id to use")
-    review_gen.add_argument("--snapshot-run-id", help="Market snapshot run id to evaluate")
+    review_gen.add_argument("--snapshot-run-id", required=True, help="Market snapshot run id to evaluate")
     review_gen.add_argument("--snapshot-date", help="Filter market snapshots by captured date (YYYY-MM-DD)")
+    review_gen.add_argument(
+        "--formula-workbook",
+        "--formula",
+        dest="formula_workbook",
+        action="store_true",
+        help="Generate a formula-based review workbook (implied_prob/edge/ev formulas).",
+    )
+    review_gen.set_defaults(include_ocr_raw=True)
+    ocr_group = review_gen.add_mutually_exclusive_group()
+    ocr_group.add_argument(
+        "--include-ocr-raw",
+        dest="include_ocr_raw",
+        action="store_true",
+        help="Include OCR_RAW sheet with source OCR staging rows (default).",
+    )
+    ocr_group.add_argument(
+        "--no-include-ocr-raw",
+        dest="include_ocr_raw",
+        action="store_false",
+        help="Skip the OCR_RAW sheet in the review workbook.",
+    )
+
+    daily_workbook = sub.add_parser(
+        "daily-workbook",
+        help="Build a unified daily workbook (projections, snapshots, OCR, EV, BETS).",
+    )
+    daily_workbook.add_argument("--sport", required=True)
+    daily_workbook.add_argument("--season", required=True)
+    daily_workbook.add_argument("--date", required=True, help="Target date (YYYY-MM-DD)")
+    daily_workbook.add_argument("--model", help="Optional model override for projections")
+    daily_workbook.add_argument("--review-run-id", help="Optional review_run_id override")
+    daily_workbook.add_argument("--snapshot-run-id", help="Optional snapshot_run_id override")
+    daily_workbook.add_argument("--output", help="Optional output workbook path")
+    daily_workbook.add_argument("--db", help="Optional DB path override")
+
+    validate = sub.add_parser("validate", help="Run pre-flight validation checks")
+    validate.add_argument("--sport", required=True)
+    validate.add_argument("--season", required=True)
+    validate.add_argument("--model", required=True)
+    validate.add_argument("--date", required=True, help="Prediction date (YYYY-MM-DD)")
+    validate.add_argument("--snapshot-run-id", help="Snapshot run id to validate")
+    validate.add_argument("--snapshot-date", help="Snapshot date (YYYY-MM-DD) to validate")
+    validate.add_argument("--min-snapshots", type=int, default=1, help="Minimum snapshot rows required (default: 1)")
+    validate.add_argument("--db", help="Optional DB path override")
 
     log_bets = sub.add_parser("log-bets", help="Log bets from a workbook into the DB")
     log_bets.add_argument("--workbook", required=True)
