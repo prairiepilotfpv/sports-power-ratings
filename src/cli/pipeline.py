@@ -326,6 +326,40 @@ def _parse_args() -> argparse.Namespace:
         help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db)",
     )
 
+    review_generate_parser = subparsers.add_parser(
+        "review-generate",
+        help="Generate a review workbook for a given sport/season.",
+    )
+    review_generate_parser.add_argument("--sport", required=True)
+    review_generate_parser.add_argument("--season", required=True)
+    review_generate_parser.add_argument("--model", required=True)
+    review_generate_parser.add_argument("--db", help="Optional DB path override")
+    review_generate_parser.add_argument("--output-dir", help="Optional output directory")
+    review_generate_parser.add_argument("--review-run-id", help="Optional existing review_run_id to use")
+    review_generate_parser.add_argument("--snapshot-run-id", required=True, help="Market snapshot run id to evaluate")
+    review_generate_parser.add_argument("--snapshot-date", help="Filter market snapshots by captured date (YYYY-MM-DD)")
+    review_generate_parser.add_argument(
+        "--formula-workbook",
+        "--formula",
+        dest="formula_workbook",
+        action="store_true",
+        help="Generate a formula-based review workbook (implied_prob/edge/ev formulas).",
+    )
+    review_generate_parser.set_defaults(include_ocr_raw=True)
+    review_ocr_group = review_generate_parser.add_mutually_exclusive_group()
+    review_ocr_group.add_argument(
+        "--include-ocr-raw",
+        dest="include_ocr_raw",
+        action="store_true",
+        help="Include OCR_RAW sheet with source OCR staging rows (default).",
+    )
+    review_ocr_group.add_argument(
+        "--no-include-ocr-raw",
+        dest="include_ocr_raw",
+        action="store_false",
+        help="Skip the OCR_RAW sheet in the review workbook.",
+    )
+
     report_parser = subparsers.add_parser(
         "report",
         aliases=["excel", "excel_report"],
@@ -1099,8 +1133,83 @@ def main() -> None:
         _run_tuning(args)
     elif args.command == "betting":
         _run_betting(args)
+    elif args.command == "review-generate":
+        _run_review_generate(args)
     else:
         raise ValueError(f"Unknown command: {args.command}")
+
+
+def _resolve_db_path(args: argparse.Namespace) -> str | None:
+    from data.paths import db_path_for
+
+    if hasattr(args, "db") and args.db:
+        return args.db
+    if hasattr(args, "sport") and hasattr(args, "season"):
+        return db_path_for(args.sport, args.season)
+    return None
+
+
+def _run_review_generate(args: argparse.Namespace) -> None:
+    from src.data import betting_repository as br
+    from src.pipelines import review_runs as rr
+    from src.pipelines import opportunities as opportunities_pipeline
+
+    db_path = _resolve_db_path(args)
+    if db_path is None:
+        raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
+
+    sport = args.sport
+    season = args.season
+    model = args.model
+    review_id = getattr(args, "review_run_id", None)
+    snapshot_run_id = getattr(args, "snapshot_run_id", None)
+    snapshot_date = getattr(args, "snapshot_date", None)
+    output_dir = getattr(args, "output_dir", None)
+    use_formulas = bool(getattr(args, "formula_workbook", False))
+    include_ocr_raw = bool(getattr(args, "include_ocr_raw", True))
+    if snapshot_run_id is None:
+        raise ValueError("review-generate requires --snapshot-run-id")
+    if snapshot_date:
+        _require_iso_date(snapshot_date, field="--snapshot-date")
+    review_run_id = br.create_review_run(
+        db_path,
+        sport=sport,
+        season=season,
+        model=model,
+        notes=None,
+        id=review_id,
+    )
+    summary = opportunities_pipeline.build_opportunities(
+        db_path,
+        review_run_id=review_run_id,
+        sport=sport,
+        season=season,
+        model=model,
+        snapshot_run_id=snapshot_run_id,
+        snapshot_date=snapshot_date,
+    )
+    if use_formulas:
+        path = rr.build_review_workbook_with_formulas(
+            db_path,
+            review_run_id=review_run_id,
+            sport=sport,
+            season=season,
+            output_path=output_dir,
+            include_ocr_raw=include_ocr_raw,
+        )
+    else:
+        path = rr.build_review_workbook(
+            db_path,
+            review_run_id=review_run_id,
+            sport=sport,
+            season=season,
+            output_path=output_dir,
+            include_ocr_raw=include_ocr_raw,
+        )
+    print(
+        "Review workbook -> "
+        f"{path} (review_run_id={review_run_id}, opportunities={summary.get('inserted')})"
+    )
 
 
 def _run_betting(args: argparse.Namespace) -> None:
@@ -1111,11 +1220,10 @@ def _run_betting(args: argparse.Namespace) -> None:
     from src.pipelines import review_runs as rr
     from src.pipelines import bets as bets_pipeline
     from src.pipelines import opportunities as opportunities_pipeline
-    from data.paths import db_path_for
     import sqlite3
 
     # Resolve DB
-    db_path = args.db if hasattr(args, "db") and args.db else db_path_for(args.sport, args.season) if (hasattr(args, "sport") and hasattr(args, "season")) else None
+    db_path = _resolve_db_path(args)
 
     cmd = getattr(args, "betting_cmd", None)
     if cmd == "market-ocr":
@@ -1201,58 +1309,7 @@ def _run_betting(args: argparse.Namespace) -> None:
         )
 
     elif cmd == "review-generate":
-        sport = args.sport
-        season = args.season
-        model = args.model
-        review_id = getattr(args, "review_run_id", None)
-        snapshot_run_id = getattr(args, "snapshot_run_id", None)
-        snapshot_date = getattr(args, "snapshot_date", None)
-        output_dir = getattr(args, "output_dir", None)
-        use_formulas = bool(getattr(args, "formula_workbook", False))
-        include_ocr_raw = bool(getattr(args, "include_ocr_raw", True))
-        if snapshot_run_id is None:
-            raise ValueError("review-generate requires --snapshot-run-id")
-        if snapshot_date:
-            _require_iso_date(snapshot_date, field="--snapshot-date")
-        review_run_id = br.create_review_run(
-            db_path,
-            sport=sport,
-            season=season,
-            model=model,
-            notes=None,
-            id=review_id,
-        )
-        summary = opportunities_pipeline.build_opportunities(
-            db_path,
-            review_run_id=review_run_id,
-            sport=sport,
-            season=season,
-            model=model,
-            snapshot_run_id=snapshot_run_id,
-            snapshot_date=snapshot_date,
-        )
-        if use_formulas:
-            path = rr.build_review_workbook_with_formulas(
-                db_path,
-                review_run_id=review_run_id,
-                sport=sport,
-                season=season,
-                output_path=output_dir,
-                include_ocr_raw=include_ocr_raw,
-            )
-        else:
-            path = rr.build_review_workbook(
-                db_path,
-                review_run_id=review_run_id,
-                sport=sport,
-                season=season,
-                output_path=output_dir,
-                include_ocr_raw=include_ocr_raw,
-            )
-        print(
-            "Review workbook -> "
-            f"{path} (review_run_id={review_run_id}, opportunities={summary.get('inserted')})"
-        )
+        _run_review_generate(args)
 
     elif cmd == "daily-workbook":
         if db_path is None:

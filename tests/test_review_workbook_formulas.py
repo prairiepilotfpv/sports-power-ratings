@@ -53,6 +53,7 @@ def test_review_workbook_formulas_exist():
                 ws = wb[sheet_name]
                 header = {cell.value: cell.column for cell in ws[1] if cell.value}
                 odds_cell = f"{get_column_letter(header['odds'])}2"
+                line_cell = f"{get_column_letter(header['line'])}2"
                 implied_cell = f"{get_column_letter(header['implied_prob'])}2"
                 model_cell = f"{get_column_letter(header['model_prob'])}2"
                 edge_cell = f"{get_column_letter(header['edge'])}2"
@@ -69,6 +70,9 @@ def test_review_workbook_formulas_exist():
                 assert ws[implied_cell].value == expected_implied
                 assert ws[edge_cell].value == expected_edge
                 assert ws[ev_cell].value == expected_ev
+                assert ws[odds_cell].value == 110
+                assert ws[model_cell].value == 0.55
+                assert ws[line_cell].value == 0.0
         finally:
             try:
                 wb.close()
