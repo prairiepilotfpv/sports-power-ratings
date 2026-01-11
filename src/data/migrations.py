@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import sqlite3
 from typing import Callable, Iterable
 
+from config import DEFAULT_WIN_PROB_K
+
 
 MigrationFn = Callable[[sqlite3.Connection], None]
 
@@ -94,10 +96,70 @@ def _add_prediction_exclusions_table(conn: sqlite3.Connection) -> None:
     )
 
 
+def _add_games_metadata_columns(conn: sqlite3.Connection) -> None:
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(games)")]
+    if not cols:
+        return
+    if "division" not in cols:
+        conn.execute("ALTER TABLE games ADD COLUMN division TEXT")
+    if "conference" not in cols:
+        conn.execute("ALTER TABLE games ADD COLUMN conference TEXT")
+    if "decision_type" not in cols:
+        conn.execute("ALTER TABLE games ADD COLUMN decision_type TEXT")
+
+
+def _add_model_metrics_columns(conn: sqlite3.Connection) -> None:
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(model_metrics)")]
+    if not cols:
+        return
+    if "win_prob_k" not in cols:
+        conn.execute(
+            f"ALTER TABLE model_metrics ADD COLUMN win_prob_k REAL NOT NULL DEFAULT {DEFAULT_WIN_PROB_K}"
+        )
+    if "base_total" not in cols:
+        conn.execute(
+            "ALTER TABLE model_metrics ADD COLUMN base_total REAL NOT NULL DEFAULT 0.0"
+        )
+    if "backtest_log_loss" not in cols:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_log_loss REAL")
+    if "backtest_brier_score" not in cols:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_brier_score REAL")
+    if "backtest_mae_margin" not in cols:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_mae_margin REAL")
+    if "backtest_win_prob_k" not in cols:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_win_prob_k REAL")
+    if "margin_std" not in cols:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN margin_std REAL")
+    if "total_std" not in cols:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN total_std REAL")
+    if "conditional_sd_intercept" not in cols:
+        conn.execute(
+            "ALTER TABLE model_metrics ADD COLUMN conditional_sd_intercept REAL"
+        )
+    if "conditional_sd_slope" not in cols:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN conditional_sd_slope REAL")
+    if "margin_mean" not in cols:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN margin_mean REAL")
+    if "total_mean" not in cols:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN total_mean REAL")
+    if "backtest_run_id" not in cols:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_run_id TEXT")
+    if "backtest_updated_at" not in cols:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_updated_at TEXT")
+    if "tuned_params_json" not in cols:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN tuned_params_json TEXT")
+    if "tuned_params_metric" not in cols:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN tuned_params_metric TEXT")
+    if "tuned_params_updated_at" not in cols:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN tuned_params_updated_at TEXT")
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "add_hold_reason_to_staging", _add_hold_reason_to_staging),
     Migration(2, "add_clv_snapshots_table", _add_clv_snapshots_table),
     Migration(3, "add_prediction_exclusions_table", _add_prediction_exclusions_table),
+    Migration(4, "add_games_metadata_columns", _add_games_metadata_columns),
+    Migration(5, "add_model_metrics_columns", _add_model_metrics_columns),
 ]
 
 LATEST_SCHEMA_VERSION = max((m.version for m in MIGRATIONS), default=0)

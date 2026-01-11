@@ -152,12 +152,6 @@ CREATE TABLE IF NOT EXISTS prediction_exclusions (
     UNIQUE(review_run_id, game_id, model, excluded_reason)
 );
 
-CREATE TABLE IF NOT EXISTS schema_meta (
-    id INTEGER PRIMARY KEY CHECK(id = 1),
-    schema_version INTEGER NOT NULL,
-    updated_at TEXT
-);
-
 CREATE INDEX IF NOT EXISTS idx_market_snapshots_game_id ON market_snapshots(game_id);
 CREATE INDEX IF NOT EXISTS idx_forecast_snapshots_review_run ON forecast_snapshots(review_run_id);
 CREATE INDEX IF NOT EXISTS idx_opportunities_review_run ON opportunities(review_run_id);
@@ -179,18 +173,8 @@ def init_db(db_path: str | Path) -> None:
     base_repo.init_db(path)
     with closing(sqlite3.connect(path)) as conn:
         conn.executescript(SCHEMA)
-        _ensure_betting_columns(conn)
+        apply_migrations(conn)
         conn.commit()
-
-
-def _ensure_betting_columns(conn: sqlite3.Connection) -> None:
-    """A place to add ALTER TABLE migrations for future schema changes.
-
-    This will inspect tables for missing columns/tables and add them when
-    applicable. Keep migrations additive and idempotent.
-    """
-    apply_migrations(conn)
-    return
 
 
 def connect_for(sport: str, season: str) -> sqlite3.Connection:

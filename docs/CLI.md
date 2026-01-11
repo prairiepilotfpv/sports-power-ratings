@@ -23,9 +23,12 @@ When multiple models run, outputs are prefixed with abbreviations (`bt`, `elo`, 
 
 ## Development notes
 
-- Betting schema changes use a simple migration runner in `src/data/migrations.py`.
-- The betting DB tracks the current version in `schema_meta` and `init_db` applies migrations in order.
-- Additive migrations should be idempotent (CREATE IF NOT EXISTS, check columns before ALTER) and appended to the list with a new version number.
+- SQLite schema changes are handled via the migration runner in `src/data/migrations.py`.
+- `schema_meta` tracks the current schema version; both `src/data/repository.py:init_db` and
+  `src/data/betting_repository.py:init_db` apply migrations in version order after creating base tables.
+- Legacy DB upgrades are additive: migrations check for missing columns/tables and backfill with `ALTER TABLE`
+  or `CREATE TABLE IF NOT EXISTS`.
+- When adding new migrations, append a new versioned entry in `MIGRATIONS` and keep it idempotent.
 
 ## import - ingest into SQLite
 
