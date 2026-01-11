@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 from openpyxl import load_workbook
+from openpyxl.styles import Protection
 from openpyxl.utils import get_column_letter
 
 from data.paths import processed_path_for
@@ -234,6 +235,16 @@ def _apply_formula_sheet(ws) -> None:
         )
 
 
+def _unlock_input_columns(ws, columns: list[str]) -> None:
+    header = {cell.value: cell.column for cell in ws[1] if cell.value}
+    target_cols = [header[col] for col in columns if col in header]
+    if not target_cols:
+        return
+    for row in range(2, ws.max_row + 1):
+        for col in target_cols:
+            ws.cell(row=row, column=col).protection = Protection(locked=False)
+
+
 def build_review_workbook_with_formulas(
     db_path: str | Path,
     *,
@@ -346,6 +357,7 @@ def build_review_workbook_with_formulas(
     if "EV" in wb.sheetnames:
         ws = wb["EV"]
         _apply_formula_sheet(ws)
+        _unlock_input_columns(ws, ["odds", "line", "model_prob"])
         ws.protection.sheet = True
         ws.protection.enable = True
     if "BETS" in wb.sheetnames:

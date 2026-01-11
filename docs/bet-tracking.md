@@ -82,6 +82,7 @@ python -m src.cli.pipeline betting review-generate --sport nba --season 2025-26 
 ```
 
 To generate a formula workbook (EV + BETS formulas for `implied_prob`, `edge`, `ev`), add `--formula-workbook` (or `--formula`).
+In formula workbooks, `implied_prob`, `edge`, and `ev` are formula-driven, while `odds`, `line`, and `model_prob` remain editable inputs.
 Note: guardrails can filter predictions before they reach the workbook; see `docs/bet-evaluation.md` for details.
 `review-generate` requires `--snapshot-run-id`; optionally add `--snapshot-date` to constrain snapshots to a specific captured date.
 
@@ -105,6 +106,8 @@ Important behavior:
 - Idempotency is enforced by the UNIQUE key `(review_run_id, game_id, market_type, selection)`. Re-running `log_bets` will update an existing row rather than duplicating.
 - If `review_run_id` is not provided to `log_bets`, the function will attempt to read it from the `META` sheet where a row with `key == review_run_id` and `value == <id>` is expected.
 - Formula workbooks include formulas in `EV` and `BETS` for `implied_prob`, `edge`, and `ev`. Edit `selection`, `line`, `odds`, or `model_prob` in `BETS` to refresh the EV calculations.
+  - Formula-driven columns: `implied_prob`, `edge`, `ev`.
+  - Editable inputs: `odds`, `line`, `model_prob` (plus other non-formula columns).
 
 5. Log bets from the workbook into the DB (dry-run first):
 

@@ -138,6 +138,8 @@ Notes:
 - `market-csv` ingests market lines into `market_snapshots`/`market_snapshot_staging` using `snapshot_run_id`, optionally leaving matched rows staged with `--no-commit-matched`.
 - `review-generate` requires `--snapshot-run-id`; optionally add `--snapshot-date` to constrain snapshots by captured date.
 - `review-generate --formula-workbook` (alias `--formula`) writes formulas in the `EV` and `BETS` sheets for `implied_prob`, `edge`, and `ev`.
+  - Formula-driven columns: `implied_prob`, `edge`, `ev`.
+  - Editable inputs that drive formulas: `odds`, `line`, `model_prob` (plus other non-formula fields like `selection`/`market_type`).
 
 Manual review workbook flow:
 1. Generate a review workbook from committed market snapshots (creates `EV`, `BETS`, and `META` sheets):
@@ -146,7 +148,7 @@ Manual review workbook flow:
    ```
    To generate a formula workbook, add `--formula-workbook` (or `--formula`).
 2. Fill the `BETS` sheet with `stake`, `book`, and `price` (leave `stake` blank to pass).
-   - In formula workbooks, editing `selection`, `line`, `odds`, or `model_prob` in `BETS` updates `implied_prob`, `edge`, and `ev` automatically.
+   - In formula workbooks, `implied_prob`, `edge`, and `ev` are formula-driven; edit `odds`, `line`, or `model_prob` in `BETS` to refresh the calculations.
 3. Log bets and write back `bet_id`/`logged_at` to the workbook:
    ```bash
    python -m src.cli.pipeline betting log-bets --workbook outputs/review/nba-2025-26-review.xlsx --db data/db/nba/2025-26.db --writeback
