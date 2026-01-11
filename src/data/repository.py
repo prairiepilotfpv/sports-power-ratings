@@ -10,6 +10,7 @@ from datetime import date
 from pathlib import Path
 from typing import Iterable, List
 
+from config import DEFAULT_WIN_PROB_K
 from ingest.schema import GameResult
 from .migrations import apply_migrations
 
