@@ -245,7 +245,7 @@ Flags:
 - `--default-book`: fallback book name when the CSV omits it.
 - `--no-commit-matched`: keep matched rows in staging for manual review instead of committing to `market_snapshots`.
 
-CSV expectations: `market_type`, `selection`, `line`, `odds`, `team_home`, `team_away`, `game_date` (YYYY-MM-DD). Optional: `game_id`, `book`, `source`, `captured_at`. Invalid rows are rejected and counted.
+CSV expectations: `market_type`, `selection`, `line`, `odds`, `team_home` (or `home_team`), `team_away` (or `away_team`), `game_date` (YYYY-MM-DD). Optional: `game_id`, `book`, `source`, `captured_at`. Invalid rows are rejected and counted.
 
 ## backtest — evaluate models on historical games
 

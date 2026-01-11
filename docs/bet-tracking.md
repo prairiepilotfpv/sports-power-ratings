@@ -65,6 +65,8 @@ python -m src.cli.pipeline betting market-csv --sport nba --season 2025-26 \
   --default-book dn
 ```
 
+Expected CSV columns: `market_type`, `selection`, `line`, `odds`, `team_home` (or `home_team`), `team_away` (or `away_team`), `game_date` (YYYY-MM-DD). Optional: `game_id`, `book`, `source`, `captured_at`. Invalid rows are rejected and counted.
+
 2. Commit matched staging rows into `market_snapshots` (optional, used when snapshots are desired):
 
 ```powershell
@@ -163,4 +165,3 @@ python -m src.cli.pipeline betting validate --sport nba --season 2025-26 --model
 - Use `--dry-run` liberally to confirm parsing before writing.
 
 If you'd like, I can add an example review workbook template (minimal `META` + `BETS` sheets) and a small helper to populate `game_id` values from `market_snapshot_staging` for easier logging.
-
