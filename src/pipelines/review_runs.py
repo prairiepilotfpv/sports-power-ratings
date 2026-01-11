@@ -211,7 +211,7 @@ def create_and_build_review(db_path: str | Path, *, sport: str, season: str, mod
 
 
 def _apply_formula_sheet(ws) -> None:
-    apply_ev_formulas(ws)
+    apply_ev_formulas(ws, use_price=False)
 
 
 def _unlock_input_columns(ws, columns: list[str]) -> None:

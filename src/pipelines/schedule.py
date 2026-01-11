@@ -1008,7 +1008,7 @@ def build_schedule_excel_report(
     wb = load_workbook(report_path)
     if "BETS" in wb.sheetnames:
         ws = wb["BETS"]
-        apply_ev_formulas(ws)
+        apply_ev_formulas(ws, use_price=True)
         apply_model_prob_formulas_for_bets_sheet(ws)
         ws.protection.sheet = False
     if "META" in wb.sheetnames:

@@ -15,14 +15,14 @@ def _cell_ref(col: int, row: int) -> str:
     return f"{get_column_letter(col)}{row}"
 
 
-def apply_ev_formulas(ws: Worksheet) -> None:
+def apply_ev_formulas(ws: Worksheet, *, use_price: bool = False) -> None:
     header = _header_index(ws)
     required = {"odds", "implied_prob", "model_prob", "edge", "ev"}
     if not required.issubset(header):
         return
 
     odds_col = header["odds"]
-    price_col = header.get("price")
+    price_col = header.get("price") if use_price else None
     implied_col = header["implied_prob"]
     model_col = header["model_prob"]
     edge_col = header["edge"]
