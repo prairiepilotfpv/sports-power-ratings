@@ -46,6 +46,7 @@ def test_daily_workbook_creates_sheets_and_rows():
             created_at="2025-11-10T08:00:00Z",
         )
 
+        snapshot_id = None
         staging_id = br.add_staging_row(
             db_path,
             source="screenshot",
@@ -128,6 +129,16 @@ def test_daily_workbook_creates_sheets_and_rows():
         assert not ocr.empty
         assert not ev.empty
         assert not bets.empty
+        assert "game_id" in ev.columns
+        assert "source_market_snapshot_id" in ev.columns
+        assert "game_id" in bets.columns
+        assert "source_market_snapshot_id" in bets.columns
+        assert "source_market_snapshot_id" in market.columns
+        assert ev.loc[0, "game_id"] == "2025-11-10-lakers-clippers"
+        assert bets.loc[0, "game_id"] == "2025-11-10-lakers-clippers"
+        assert int(ev.loc[0, "source_market_snapshot_id"]) == snapshot_id
+        assert int(bets.loc[0, "source_market_snapshot_id"]) == snapshot_id
+        assert int(market.loc[0, "source_market_snapshot_id"]) == snapshot_id
     finally:
         import shutil, errno
 
