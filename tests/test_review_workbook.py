@@ -316,6 +316,7 @@ def test_review_workbook_includes_exclusions_sheet_when_guardrails_filter_predic
         assert "game_id" in exclusions.columns
         assert "model" in exclusions.columns
         assert "excluded_reason" in exclusions.columns
+        assert "margin_sd_guardrail" in set(exclusions["excluded_reason"].dropna())
     finally:
         import shutil, errno
 

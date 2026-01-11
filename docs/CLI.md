@@ -150,6 +150,7 @@ Manual review workbook flow:
    python -m src.cli.pipeline betting review-generate --sport nba --season 2025-26 --model elo --snapshot-run-id run_20251201 --output-dir outputs/review
    ```
    To generate a formula workbook, add `--formula-workbook` (or `--formula`).
+   - Review workbooks also include an `EXCLUSIONS` sheet with guardrail reason codes; see [docs/bet-evaluation.md](docs/bet-evaluation.md) for context on why rows are filtered.
 2. Fill the `BETS` sheet with `stake`, `book`, and `price` (leave `stake` blank to pass).
    - In formula workbooks, `implied_prob`, `edge`, and `ev` are formula-driven; edit `odds`, `line`, or `model_prob` in `BETS` to refresh the calculations.
 3. Log bets and write back `bet_id`/`logged_at` to the workbook:
