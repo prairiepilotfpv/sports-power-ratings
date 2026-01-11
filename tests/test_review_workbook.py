@@ -195,10 +195,15 @@ def test_review_workbook_includes_ocr_raw_sheet_when_available():
         ocr = pd.read_excel(out, sheet_name="OCR_RAW")
         expected_cols = [
             "source_market_snapshot_id",
+            "snapshot_run_id",
+            "game_id",
+            "source_staging_id",
+            "staging_source",
             "image_path",
             "raw_text",
             "team_home_raw",
             "team_away_raw",
+            "game_date",
             "match_status",
             "match_confidence",
             "hold_reason",
@@ -213,7 +218,12 @@ def test_review_workbook_includes_ocr_raw_sheet_when_available():
             assert col in ocr.columns
         assert not ocr.empty
         assert int(ocr["source_market_snapshot_id"].iloc[0]) == snapshot_id
+        assert ocr["snapshot_run_id"].iloc[0] == "snap1"
+        assert ocr["game_id"].iloc[0] == "2025-11-10-lakers-clippers"
+        assert int(ocr["source_staging_id"].iloc[0]) == staging_id
+        assert ocr["staging_source"].iloc[0] == "screenshot"
         assert ocr["image_path"].iloc[0] == "img1.png"
+        assert ocr["game_date"].iloc[0] == "2025-11-10"
     finally:
         import shutil, errno
 
