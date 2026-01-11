@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import pandas as pd
+from openpyxl import load_workbook
 
 from contracts import SCHEDULE_EXPORT_COLUMNS, validate_schedule_export_frame
 from data.paths import processed_path_for
@@ -26,6 +27,10 @@ from models.registry import get_model, list_models, normalize_model_name
 from pipelines.run_rankings import build_rankings
 from models.base import resolve_model_identity
 from pipelines.metadata import prediction_hash
+from pipelines.excel_formulas import (
+    apply_ev_formulas,
+    apply_model_prob_formulas_for_bets_sheet,
+)
 
 
 DASHBOARD_COLUMNS: List[str] = [
@@ -563,6 +568,166 @@ def _dashboard_rows_for_today(
     return rows
 
 
+def _resolve_as_of_date(value: str | date | None) -> date:
+    if value is None:
+        return pd.Timestamp.today().date()
+    if isinstance(value, date):
+        return value
+    try:
+        return pd.to_datetime(value).date()
+    except Exception as exc:
+        raise ValueError(f"Invalid as_of_date: {value}") from exc
+
+
+def _resolve_bets_model(models: list[str], bets_model: str | None) -> str:
+    if bets_model:
+        normalized = normalize_model_name(bets_model)
+        if normalized not in models:
+            raise ValueError(
+                f"bets_model={bets_model!r} not in schedule models: {', '.join(models)}"
+            )
+        return normalized
+    if len(models) == 1:
+        return models[0]
+    return models[0]
+
+
+def _deterministic_review_run_id(
+    *, sport: str, season: str, as_of_date: date, bets_model: str
+) -> str:
+    return f"schedule-{sport}-{season}-{as_of_date.isoformat()}-{bets_model}"
+
+
+def _build_bets_dataframe(
+    schedule_df: pd.DataFrame,
+    *,
+    model_name: str,
+    as_of_date: date,
+    review_run_id: str,
+) -> pd.DataFrame:
+    bets_columns = [
+        "review_run_id",
+        "game_id",
+        "date",
+        "away_team",
+        "home_team",
+        "market_type",
+        "selection",
+        "line",
+        "odds",
+        "price",
+        "implied_prob",
+        "model_prob",
+        "edge",
+        "ev",
+        "stake",
+        "book",
+        "bet_id",
+        "logged_at",
+        "log_status",
+        "notes",
+        "source_market_snapshot_id",
+        "opportunity_id",
+        "home_win_prob",
+        "away_win_prob",
+        "margin_mean",
+        "margin_sd",
+        "total",
+        "total_sd",
+        "model",
+    ]
+
+    if schedule_df.empty:
+        return pd.DataFrame(columns=bets_columns)
+
+    df = schedule_df.assign(
+        _date=pd.to_datetime(schedule_df["date"], errors="coerce").dt.date
+    )
+    df = df[df["status"] == "scheduled"]
+    df = df[df["_date"] == as_of_date]
+    if df.empty:
+        return pd.DataFrame(columns=bets_columns)
+
+    rows: list[dict[str, Any]] = []
+    for _, row in df.iterrows():
+        projected_home_score = row.get("projected_home_score")
+        projected_away_score = row.get("projected_away_score")
+        projected_total = row.get("projected_total")
+        if projected_home_score is not None and projected_away_score is not None:
+            total = float(projected_home_score) + float(projected_away_score)
+        else:
+            total = projected_total
+
+        base = {
+            "review_run_id": review_run_id,
+            "game_id": row.get("game_id"),
+            "date": _safe_date(row.get("date")),
+            "away_team": row.get("away_team"),
+            "home_team": row.get("home_team"),
+            "line": "",
+            "odds": "",
+            "price": "",
+            "implied_prob": "",
+            "model_prob": "",
+            "edge": "",
+            "ev": "",
+            "stake": "",
+            "book": "",
+            "bet_id": "",
+            "logged_at": "",
+            "log_status": "",
+            "notes": "",
+            "source_market_snapshot_id": "",
+            "opportunity_id": "",
+            "home_win_prob": row.get("home_win_prob"),
+            "away_win_prob": row.get("away_win_prob"),
+            "margin_mean": row.get("margin_mean"),
+            "margin_sd": row.get("margin_sd"),
+            "total": total,
+            "total_sd": row.get("total_sd"),
+            "model": model_name,
+        }
+
+        home_team = row.get("home_team")
+        away_team = row.get("away_team")
+        rows.extend(
+            [
+                {
+                    **base,
+                    "market_type": "ML",
+                    "selection": home_team,
+                },
+                {
+                    **base,
+                    "market_type": "ML",
+                    "selection": away_team,
+                },
+                {
+                    **base,
+                    "market_type": "spread",
+                    "selection": home_team,
+                },
+                {
+                    **base,
+                    "market_type": "spread",
+                    "selection": away_team,
+                },
+                {
+                    **base,
+                    "market_type": "total",
+                    "selection": "Over",
+                },
+                {
+                    **base,
+                    "market_type": "total",
+                    "selection": "Under",
+                },
+            ]
+        )
+
+    return pd.DataFrame(rows, columns=bets_columns)
+
+
 def _training_date_range(df: pd.DataFrame) -> str:
     if df.empty or "date" not in df.columns:
         return ""
@@ -725,6 +890,8 @@ def build_schedule_excel_report(
     model_params: dict[str, float] | None = None,
     model_params_file: str | Path | None = None,
     tuned_metric: str | None = None,
+    as_of_date: str | date | None = None,
+    bets_model: str | None = None,
 ) -> Path:
     """Build an Excel workbook with schedule projections (one sheet per model)."""
     rows = load_games(
@@ -739,6 +906,14 @@ def build_schedule_excel_report(
         raise ValueError(f"No games found for sport={sport!r}, season={season!r}")
 
     models = _resolve_models(model)
+    bets_model_name = _resolve_bets_model(models, bets_model)
+    resolved_as_of_date = _resolve_as_of_date(as_of_date)
+    review_run_id = _deterministic_review_run_id(
+        sport=sport,
+        season=season,
+        as_of_date=resolved_as_of_date,
+        bets_model=bets_model_name,
+    )
     report_path = _resolve_workbook_path(
         output_path,
         sport=sport,
@@ -746,6 +921,7 @@ def build_schedule_excel_report(
         default_name="schedule_with_projections.xlsx",
     )
     dashboard_rows: list[Dict[str, Any]] = []
+    bets_schedule_df: pd.DataFrame | None = None
     with pd.ExcelWriter(report_path) as writer:
         for model_name in models:
             model_df = df.copy(deep=True)
@@ -790,9 +966,12 @@ def build_schedule_excel_report(
                 _dashboard_rows_for_today(
                     schedule_df,
                     model_name,
+                    resolved_as_of_date,
                     model_metadata=metadata,
                 )
             )
+            if model_name == bets_model_name:
+                bets_schedule_df = schedule_df
 
         dashboard_df = pd.DataFrame(dashboard_rows)
         if not dashboard_df.empty:
@@ -805,4 +984,35 @@ def build_schedule_excel_report(
             dashboard_df = dashboard_df.drop(columns=["_model_order"], errors="ignore")
         dashboard_df = dashboard_df.reindex(columns=DASHBOARD_COLUMNS)
         dashboard_df.to_excel(writer, sheet_name="dashboard", index=False)
+
+        bets_df = _build_bets_dataframe(
+            bets_schedule_df if bets_schedule_df is not None else pd.DataFrame(),
+            model_name=bets_model_name,
+            as_of_date=resolved_as_of_date,
+            review_run_id=review_run_id,
+        )
+        bets_df.to_excel(writer, sheet_name="BETS", index=False)
+
+        meta_rows = [
+            {"key": "review_run_id", "value": review_run_id},
+            {"key": "sport", "value": sport},
+            {"key": "season", "value": season},
+            {"key": "as_of_date", "value": resolved_as_of_date.isoformat()},
+            {"key": "bets_model", "value": bets_model_name},
+            {"key": "workbook_kind", "value": "schedule_with_bets"},
+            {"key": "created_at_utc", "value": datetime.now(timezone.utc).isoformat()},
+        ]
+        meta_df = pd.DataFrame(meta_rows)
+        meta_df.to_excel(writer, sheet_name="META", index=False)
+
+    wb = load_workbook(report_path)
+    if "BETS" in wb.sheetnames:
+        ws = wb["BETS"]
+        apply_ev_formulas(ws, use_price=True)
+        apply_model_prob_formulas_for_bets_sheet(ws)
+        ws.protection.sheet = False
+    if "META" in wb.sheetnames:
+        ws = wb["META"]
+        ws.sheet_state = "hidden"
+    wb.save(report_path)
     return report_path

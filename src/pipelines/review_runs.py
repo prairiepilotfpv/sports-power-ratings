@@ -15,8 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 from openpyxl import load_workbook
-from openpyxl.styles import Protection
-from openpyxl.utils import get_column_letter
+from pipelines.excel_formulas import apply_ev_formulas, unlock_input_columns
 
 from data.paths import processed_path_for
 from data.repository import load_games
@@ -212,44 +211,11 @@ def create_and_build_review(db_path: str | Path, *, sport: str, season: str, mod
 
 
 def _apply_formula_sheet(ws) -> None:
-    header = {cell.value: cell.column for cell in ws[1] if cell.value}
-    required = {"odds", "implied_prob", "model_prob", "edge", "ev"}
-    if not required.issubset(header):
-        return
-
-    def cell_ref(col: int, row: int) -> str:
-        return f"{get_column_letter(col)}{row}"
-
-    odds_col = header["odds"]
-    implied_col = header["implied_prob"]
-    model_col = header["model_prob"]
-    edge_col = header["edge"]
-    ev_col = header["ev"]
-
-    for row in range(2, ws.max_row + 1):
-        odds_cell = cell_ref(odds_col, row)
-        implied_cell = cell_ref(implied_col, row)
-        model_cell = cell_ref(model_col, row)
-        edge_cell = cell_ref(edge_col, row)
-        ev_cell = cell_ref(ev_col, row)
-
-        ws[implied_cell].value = (
-            f"=IF(OR({odds_cell}=\"\",{odds_cell}=0),\"\",IF({odds_cell}>0,100/({odds_cell}+100),-{odds_cell}/(-{odds_cell}+100)))"
-        )
-        ws[edge_cell].value = f"=IF(OR({model_cell}=\"\",{implied_cell}=\"\"),\"\",{model_cell}-{implied_cell})"
-        ws[ev_cell].value = (
-            f"=IF(OR({model_cell}=\"\",{odds_cell}=\"\",{odds_cell}=0),\"\",({model_cell}*IF({odds_cell}>0,{odds_cell}/100,100/ABS({odds_cell})))-(1-{model_cell}))"
-        )
+    apply_ev_formulas(ws, use_price=False)
 
 
 def _unlock_input_columns(ws, columns: list[str]) -> None:
-    header = {cell.value: cell.column for cell in ws[1] if cell.value}
-    target_cols = [header[col] for col in columns if col in header]
-    if not target_cols:
-        return
-    for row in range(2, ws.max_row + 1):
-        for col in target_cols:
-            ws.cell(row=row, column=col).protection = Protection(locked=False)
+    unlock_input_columns(ws, columns)
 
 
 def build_review_workbook_with_formulas(
