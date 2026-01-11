@@ -15,6 +15,17 @@ def _cell_ref(col: int, row: int) -> str:
     return f"{get_column_letter(col)}{row}"
 
 
+def _column_has_values(ws: Worksheet, col: int) -> bool:
+    for row in range(2, ws.max_row + 1):
+        value = ws.cell(row=row, column=col).value
+        if value is None:
+            continue
+        if str(value).strip() == "":
+            continue
+        return True
+    return False
+
+
 def apply_ev_formulas(ws: Worksheet, *, use_price: bool = False) -> None:
     header = _header_index(ws)
     required = {"odds", "implied_prob", "model_prob", "edge", "ev"}
@@ -71,8 +82,6 @@ def apply_model_prob_formulas_for_bets_sheet(ws: Worksheet) -> None:
         "model_prob",
         "home_team",
         "away_team",
-        "home_win_prob",
-        "away_win_prob",
         "margin_mean",
         "margin_sd",
         "total",
@@ -81,14 +90,27 @@ def apply_model_prob_formulas_for_bets_sheet(ws: Worksheet) -> None:
     if not required.issubset(header):
         return
 
+    home_win_col = None
+    away_win_col = None
+    if "home_win_prob_calibrated" in header and "away_win_prob_calibrated" in header:
+        calibrated_has_values = _column_has_values(
+            ws, header["home_win_prob_calibrated"]
+        ) or _column_has_values(ws, header["away_win_prob_calibrated"])
+        if calibrated_has_values:
+            home_win_col = header["home_win_prob_calibrated"]
+            away_win_col = header["away_win_prob_calibrated"]
+    if home_win_col is None or away_win_col is None:
+        if "home_win_prob" not in header or "away_win_prob" not in header:
+            return
+        home_win_col = header["home_win_prob"]
+        away_win_col = header["away_win_prob"]
+
     market_col = header["market_type"]
     selection_col = header["selection"]
     line_col = header["line"]
     model_col = header["model_prob"]
     home_team_col = header["home_team"]
     away_team_col = header["away_team"]
-    home_win_col = header["home_win_prob"]
-    away_win_col = header["away_win_prob"]
     margin_mean_col = header["margin_mean"]
     margin_sd_col = header["margin_sd"]
     total_col = header["total"]

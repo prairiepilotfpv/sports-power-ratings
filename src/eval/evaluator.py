@@ -70,7 +70,15 @@ def _coerce_float(value: Any) -> float | None:
 
 
 def _home_win_prob(row: Mapping[str, Any]) -> float | None:
-    for key in ("model_p_home_win", "home_win_prob", "normal_p_home_win", "logistic_home_win_prob"):
+    for key in (
+        "p_home_win_calibrated",
+        "home_win_prob_calibrated",
+        "model_p_home_win_calibrated",
+        "model_p_home_win",
+        "home_win_prob",
+        "normal_p_home_win",
+        "logistic_home_win_prob",
+    ):
         val = _coerce_float(row.get(key))
         if val is not None:
             return val

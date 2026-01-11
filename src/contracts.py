@@ -46,6 +46,10 @@ SCHEDULE_EXPORT_COLUMNS: list[str] = [
     "normal_p_home_win",
     "home_win_prob",
     "away_win_prob",
+    "home_win_prob_raw",
+    "away_win_prob_raw",
+    "home_win_prob_calibrated",
+    "away_win_prob_calibrated",
     "winner_win_prob",
     "logistic_home_win_prob",
     "win_prob_source",
@@ -127,6 +131,10 @@ class ScheduleExportRow:
     normal_p_home_win: float | None
     home_win_prob: float | None
     away_win_prob: float | None
+    home_win_prob_raw: float | None
+    away_win_prob_raw: float | None
+    home_win_prob_calibrated: float | None
+    away_win_prob_calibrated: float | None
     winner_win_prob: float | None
     logistic_home_win_prob: float | None
     win_prob_source: str | None

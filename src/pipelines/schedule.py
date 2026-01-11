@@ -32,6 +32,7 @@ from pipelines.excel_formulas import (
     apply_ev_formulas,
     apply_model_prob_formulas_for_bets_sheet,
 )
+from calibration.io import load_latest_calibrator
 
 
 DASHBOARD_COLUMNS: List[str] = [
@@ -488,8 +489,86 @@ def _build_schedule_dataframe(
             .drop(columns=["_dt"], errors="ignore")
         )
 
+    for col in (
+        "home_win_prob_raw",
+        "away_win_prob_raw",
+        "home_win_prob_calibrated",
+        "away_win_prob_calibrated",
+    ):
+        if col not in schedule_df.columns:
+            schedule_df[col] = pd.NA
+
     schedule_df = _order_schedule_export(schedule_df)
     return schedule_df
+
+
+def _apply_calibration_to_schedule_df(
+    schedule_df: pd.DataFrame,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+) -> pd.DataFrame:
+    """Apply the latest ML calibrator, if available, to schedule win probabilities."""
+    if schedule_df.empty or "home_win_prob" not in schedule_df.columns:
+        return schedule_df
+
+    calibrator = load_latest_calibrator(
+        sport=sport,
+        season=season,
+        model=model,
+        market="ML",
+    )
+    if calibrator is None:
+        return schedule_df
+
+    df = schedule_df.copy()
+    raw_probs = pd.to_numeric(df["home_win_prob"], errors="coerce")
+    valid_mask = raw_probs.notna()
+    if not valid_mask.any():
+        return df
+
+    # Calibrators should be stored under outputs/calibrators/<sport>/<season>/<model>.
+    df["home_win_prob_raw"] = df["home_win_prob"]
+    df["away_win_prob_raw"] = df["away_win_prob"]
+
+    try:
+        calibrated = pd.Series(pd.NA, index=df.index, dtype="float")
+        calibrated_values = calibrator.transform(raw_probs.loc[valid_mask].astype(float))
+        calibrated.loc[valid_mask] = pd.to_numeric(calibrated_values, errors="coerce")
+        df["home_win_prob_calibrated"] = calibrated
+        df["away_win_prob_calibrated"] = 1.0 - calibrated
+    except Exception:
+        return df
+
+    calibrated_mask = df["home_win_prob_calibrated"].notna()
+    df.loc[calibrated_mask, "home_win_prob"] = df.loc[
+        calibrated_mask, "home_win_prob_calibrated"
+    ]
+    df.loc[calibrated_mask, "away_win_prob"] = df.loc[
+        calibrated_mask, "away_win_prob_calibrated"
+    ]
+
+    if "projected_winner" in df.columns:
+        home_wins = df["projected_winner"] == df["home_team"]
+        away_wins = df["projected_winner"] == df["away_team"]
+        df.loc[home_wins, "winner_win_prob"] = df.loc[home_wins, "home_win_prob"]
+        df.loc[away_wins, "winner_win_prob"] = df.loc[away_wins, "away_win_prob"]
+
+    if "win_prob_source" in df.columns:
+        def _append_calibrated(value: Any) -> str:
+            if value is None:
+                return "calibrated"
+            text = str(value).strip()
+            if not text:
+                return "calibrated"
+            if "calibrated" in text.lower():
+                return text
+            return f"{text}+calibrated"
+
+        df["win_prob_source"] = df["win_prob_source"].apply(_append_calibrated)
+
+    return df
 
 
 def _format_game_name(away_team: Any, home_team: Any) -> str:
@@ -606,6 +685,10 @@ def _build_bets_dataframe(
     as_of_date: date,
     review_run_id: str,
 ) -> pd.DataFrame:
+    include_calibrated = (
+        "home_win_prob_calibrated" in schedule_df.columns
+        and schedule_df["home_win_prob_calibrated"].notna().any()
+    )
     bets_columns = [
         "review_run_id",
         "game_id",
@@ -631,12 +714,25 @@ def _build_bets_dataframe(
         "opportunity_id",
         "home_win_prob",
         "away_win_prob",
+    ]
+    if include_calibrated:
+        bets_columns.extend(
+            [
+                "home_win_prob_raw",
+                "away_win_prob_raw",
+                "home_win_prob_calibrated",
+                "away_win_prob_calibrated",
+            ]
+        )
+    bets_columns.extend(
+        [
         "margin_mean",
         "margin_sd",
         "total",
         "total_sd",
         "model",
-    ]
+        ]
+    )
 
     if schedule_df.empty:
         return pd.DataFrame(columns=bets_columns)
@@ -682,12 +778,24 @@ def _build_bets_dataframe(
             "opportunity_id": "",
             "home_win_prob": row.get("home_win_prob"),
             "away_win_prob": row.get("away_win_prob"),
+            "home_win_prob_raw": row.get("home_win_prob_raw"),
+            "away_win_prob_raw": row.get("away_win_prob_raw"),
+            "home_win_prob_calibrated": row.get("home_win_prob_calibrated"),
+            "away_win_prob_calibrated": row.get("away_win_prob_calibrated"),
             "margin_mean": row.get("margin_mean"),
             "margin_sd": row.get("margin_sd"),
             "total": total,
             "total_sd": row.get("total_sd"),
             "model": model_name,
         }
+        if not include_calibrated:
+            for key in (
+                "home_win_prob_raw",
+                "away_win_prob_raw",
+                "home_win_prob_calibrated",
+                "away_win_prob_calibrated",
+            ):
+                base.pop(key, None)
 
         home_team = row.get("home_team")
         away_team = row.get("away_team")
@@ -819,6 +927,13 @@ def _build_schedule_for_model(
         params_source=resolution.params_source,
         tuned_metric_used=resolution.tuned_metric_used,
     )
+    schedule_df = _apply_calibration_to_schedule_df(
+        schedule_df,
+        sport=sport,
+        season=season,
+        model=model,
+    )
+    schedule_df = _order_schedule_export(schedule_df)
     default_path = processed_path_for(sport, season, "schedule_with_projections.csv")
     resolved_output = resolve_output_path(
         output_path,
@@ -949,6 +1064,13 @@ def build_schedule_excel_report(
                 params_source=params_source,
                 tuned_metric_used=tuned_metric_used,
             )
+            schedule_df = _apply_calibration_to_schedule_df(
+                schedule_df,
+                sport=sport,
+                season=season,
+                model=model_name,
+            )
+            schedule_df = _order_schedule_export(schedule_df)
             metadata = _build_model_metadata(
                 model_name=model_name,
                 played=_completed_games(model_df),
