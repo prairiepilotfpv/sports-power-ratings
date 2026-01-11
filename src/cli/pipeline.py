@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 import sys
 
 
@@ -224,6 +225,16 @@ def _parse_args() -> argparse.Namespace:
         help="Only include games without scores (future games).",
     )
     schedule_parser.add_argument(
+        "--as-of-date",
+        dest="as_of_date",
+        help="Optional target date for dashboard/BETS (YYYY-MM-DD or YYYYMMDD).",
+    )
+    schedule_parser.add_argument(
+        "--bets-model",
+        dest="bets_model",
+        help="Model to populate BETS when multiple models are requested.",
+    )
+    schedule_parser.add_argument(
         "--db",
         help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db)",
     )
@@ -236,8 +247,11 @@ def _parse_args() -> argparse.Namespace:
     market_review_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
     market_review_parser.add_argument(
         "--status",
-        default="needs_review",
-        help="Comma-separated match_status filters (default: needs_review). Use 'all' for every status.",
+        default="unmatched,needs_review",
+        help=(
+            "Comma-separated match_status filters (default: unmatched,needs_review). "
+            "Use 'all' for every status."
+        ),
     )
     market_review_parser.add_argument(
         "--limit",
@@ -644,6 +658,7 @@ def _import_games(args: argparse.Namespace) -> None:
             conference=conference,
         )
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
+    _echo_db_path(db_path)
     saved = save_games(db_path, games)
     print(f"Saved {saved} games to {db_path}")
 
@@ -663,6 +678,7 @@ def _run_rankings(args: argparse.Namespace) -> None:
         )
 
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
+    _echo_db_path(db_path)
     result_path = run_rankings(
         db_path,
         sport=args.sport,
@@ -739,6 +755,7 @@ def _run_matchup(args: argparse.Namespace) -> None:
 
     model_params = _parse_json_arg(args.model_params)
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
+    _echo_db_path(db_path)
     models = list_models() if args.model is None else [args.model]
     for model in models:
         prediction = predict_matchup(
@@ -775,7 +792,10 @@ def _run_schedule(args: argparse.Namespace) -> None:
 
     model_params = _parse_json_arg(args.model_params)
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
+    _echo_db_path(db_path)
     output_path = Path(args.output) if args.output else None
+    if getattr(args, "as_of_date", None):
+        args.as_of_date = _require_iso_date(args.as_of_date, field="--as-of-date")
     if output_path is not None and output_path.suffix.lower() == ".csv":
         result_path = build_schedule_with_projections(
             db_path,
@@ -809,6 +829,8 @@ def _run_schedule(args: argparse.Namespace) -> None:
         model_params=model_params,
         model_params_file=args.model_params_file,
         tuned_metric=args.tuned_metric,
+        as_of_date=getattr(args, "as_of_date", None),
+        bets_model=getattr(args, "bets_model", None),
     )
     print(f"Saved schedule workbook -> {result_path}")
 
@@ -820,6 +842,7 @@ def _run_market_review(args: argparse.Namespace) -> None:
     from pipelines import market_review as review_pipeline
 
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
+    _echo_db_path(db_path)
     raw_status = getattr(args, "status", None)
     statuses = None
     if raw_status and raw_status.lower() != "all":
@@ -883,6 +906,7 @@ def _run_market_bets(args: argparse.Namespace) -> None:
     from pipelines import staging_bets as staging_bets_pipeline
 
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
+    _echo_db_path(db_path)
     raw_status = getattr(args, "status", None)
     statuses = None
     if raw_status and raw_status.lower() != "all":
@@ -915,6 +939,7 @@ def _run_report(args: argparse.Namespace) -> None:
 
     model_params = _parse_json_arg(args.model_params)
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
+    _echo_db_path(db_path)
     output_path = Path(args.output) if args.output else None
     models = None
     if args.models:
@@ -950,6 +975,8 @@ def _run_backtest(args: argparse.Namespace) -> None:
         db_path = Path(args.db)
     elif args.sport and args.season:
         db_path = db_path_for(args.sport, args.season)
+    if db_path is not None:
+        _echo_db_path(db_path)
     outputs = run_backtest_pipeline(
         csv_path=Path(args.csv),
         model=args.model,
@@ -988,6 +1015,8 @@ def _run_tuning(args: argparse.Namespace) -> None:
         db_path = Path(args.db)
     elif args.sport and args.season:
         db_path = db_path_for(args.sport, args.season)
+    if db_path is not None:
+        _echo_db_path(db_path)
     all_forecast_models = ["bradley-terry", "toor", "gssd", "elo", "poisson"]
     models_to_run = (
         all_forecast_models if args.model == "all" else [args.model]
@@ -1113,6 +1142,8 @@ def _run_tuning(args: argparse.Namespace) -> None:
 def main() -> None:
     """CLI entry point: route subcommands to their handlers."""
     args = _parse_args()
+    if hasattr(args, "season") and args.season:
+        args.season = _require_season_format(args.season)
     if args.command == "import":
         _import_games(args)
     elif args.command == "rank":
@@ -1145,6 +1176,8 @@ def _resolve_db_path(args: argparse.Namespace) -> str | None:
     if hasattr(args, "db") and args.db:
         return args.db
     if hasattr(args, "sport") and hasattr(args, "season"):
+        if args.season:
+            args.season = _require_season_format(args.season)
         return db_path_for(args.sport, args.season)
     return None
 
@@ -1157,6 +1190,7 @@ def _run_review_generate(args: argparse.Namespace) -> None:
     db_path = _resolve_db_path(args)
     if db_path is None:
         raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
+    _echo_db_path(Path(db_path))
 
     sport = args.sport
     season = args.season
@@ -1169,8 +1203,10 @@ def _run_review_generate(args: argparse.Namespace) -> None:
     include_ocr_raw = bool(getattr(args, "include_ocr_raw", True))
     if snapshot_run_id is None:
         raise ValueError("review-generate requires --snapshot-run-id")
+    _require_snapshot_run_id_format(snapshot_run_id)
+    print(f"snapshot_run_id: {snapshot_run_id}")
     if snapshot_date:
-        _require_iso_date(snapshot_date, field="--snapshot-date")
+        snapshot_date = _require_iso_date(snapshot_date, field="--snapshot-date")
     review_run_id = br.create_review_run(
         db_path,
         sport=sport,
@@ -1236,6 +1272,7 @@ def _run_betting(args: argparse.Namespace) -> None:
         # Interactive confirmation: if we're going to write to a DB (non-JSON mode),
         # ask the user to confirm before performing writes.
         if not json_out and db_path is not None:
+            _echo_db_path(Path(db_path))
             try:
                 images_list = market_ocr_pipeline._gather_images([images])
                 img_count = len(images_list)
@@ -1251,10 +1288,13 @@ def _run_betting(args: argparse.Namespace) -> None:
 
     elif cmd == "market-commit":
         snapshot_run_id = args.snapshot_run_id
+        _require_snapshot_run_id_format(snapshot_run_id)
+        print(f"snapshot_run_id: {snapshot_run_id}")
         require_matched = bool(getattr(args, "require_matched", False))
         force = bool(getattr(args, "force", False))
         if db_path is None:
             raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
+        _echo_db_path(Path(db_path))
         conn = sqlite3.connect(db_path)
         try:
             cur = conn.execute("SELECT id, match_status FROM market_snapshot_staging WHERE match_status IN ('matched','needs_review')")
@@ -1273,6 +1313,9 @@ def _run_betting(args: argparse.Namespace) -> None:
     elif cmd == "market-csv":
         if db_path is None:
             raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
+        _require_snapshot_run_id_format(args.snapshot_run_id)
+        print(f"snapshot_run_id: {args.snapshot_run_id}")
+        _echo_db_path(Path(db_path))
         result = br.import_market_csv(
             db_path,
             csv_path=args.csv_path,
@@ -1292,6 +1335,7 @@ def _run_betting(args: argparse.Namespace) -> None:
     elif cmd == "clv-csv":
         if db_path is None:
             raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
+        _echo_db_path(Path(db_path))
         result = br.import_clv_csv(
             db_path,
             csv_path=args.csv_path,
@@ -1314,7 +1358,12 @@ def _run_betting(args: argparse.Namespace) -> None:
     elif cmd == "daily-workbook":
         if db_path is None:
             raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
-        _require_iso_date(args.date, field="--date")
+        _echo_db_path(Path(db_path))
+        args.date = _require_iso_date(args.date, field="--date")
+        snapshot_run_id = getattr(args, "snapshot_run_id", None)
+        if snapshot_run_id:
+            _require_snapshot_run_id_format(snapshot_run_id)
+            print(f"snapshot_run_id: {snapshot_run_id}")
         out = daily_workbook_pipeline.build_daily_workbook(
             db_path,
             sport=args.sport,
@@ -1322,7 +1371,7 @@ def _run_betting(args: argparse.Namespace) -> None:
             date=args.date,
             model=getattr(args, "model", None),
             review_run_id=getattr(args, "review_run_id", None),
-            snapshot_run_id=getattr(args, "snapshot_run_id", None),
+            snapshot_run_id=snapshot_run_id,
             output_path=getattr(args, "output", None),
         )
         print(f"Daily workbook -> {out}")
@@ -1333,6 +1382,7 @@ def _run_betting(args: argparse.Namespace) -> None:
         writeback = bool(getattr(args, "writeback", False))
         if db_path is None:
             raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
+        _echo_db_path(Path(db_path))
         if dry_run:
             print("log_bets dry-run: parsing workbook (no writes)")
             updated = bets_pipeline.log_bets(workbook, review_run_id=None, db_path=db_path, dry_run=True, writeback=False)
@@ -1344,6 +1394,8 @@ def _run_betting(args: argparse.Namespace) -> None:
     elif cmd == "settle-bets":
         sport = args.sport
         season = args.season
+        if db_path is not None:
+            _echo_db_path(Path(db_path))
         settled = bets_pipeline.settle_bets(sport=sport, season=season)
         print(f"Settled {settled} bets")
 
@@ -1354,6 +1406,7 @@ def _run_betting(args: argparse.Namespace) -> None:
 
         if db_path is None:
             raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
+        _echo_db_path(Path(db_path))
         output = getattr(args, "output", None)
         start = getattr(args, "start", None)
         end = getattr(args, "end", None)
@@ -1397,11 +1450,15 @@ def _run_betting(args: argparse.Namespace) -> None:
 
         if db_path is None:
             raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
-        _require_iso_date(args.date, field="--date")
+        _echo_db_path(Path(db_path))
+        args.date = _require_iso_date(args.date, field="--date")
         snapshot_run_id = getattr(args, "snapshot_run_id", None)
         snapshot_date = getattr(args, "snapshot_date", None)
         if snapshot_date:
-            _require_iso_date(snapshot_date, field="--snapshot-date")
+            snapshot_date = _require_iso_date(snapshot_date, field="--snapshot-date")
+        if snapshot_run_id:
+            _require_snapshot_run_id_format(snapshot_run_id)
+            print(f"snapshot_run_id: {snapshot_run_id}")
         if snapshot_run_id is None and snapshot_date is None:
             raise ValueError("validate requires --snapshot-run-id or --snapshot-date")
 
@@ -1447,11 +1504,50 @@ def _run_betting(args: argparse.Namespace) -> None:
 def _require_iso_date(value: str, *, field: str) -> str:
     from datetime import date as dt_date
 
+    normalized = _normalize_date_str(value, field=field)
     try:
-        dt_date.fromisoformat(value)
+        dt_date.fromisoformat(normalized)
     except ValueError as exc:
         raise ValueError(f"{field} must be YYYY-MM-DD: {value}") from exc
+    if normalized != value:
+        print(f"Normalized {field} to {normalized}")
+    return normalized
+
+
+def _normalize_date_str(value: str, *, field: str) -> str:
+    if re.match(r"^\d{8}$", value):
+        return f"{value[:4]}-{value[4:6]}-{value[6:]}"
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", value):
+        return value
+    raise ValueError(f"{field} must be YYYY-MM-DD or YYYYMMDD: {value}")
+
+
+def _require_season_format(season: str) -> str:
+    if not re.match(r"^\d{4}-\d{2}$", season):
+        raise ValueError(
+            f"--season must be in YYYY-YY format (e.g., 2025-26): {season}"
+        )
+    start_year = int(season[:4])
+    end_year = int(season[-2:])
+    expected_end = (start_year + 1) % 100
+    if end_year != expected_end:
+        raise ValueError(
+            f"--season end year must be {expected_end:02d} for {start_year}: {season}"
+        )
+    return season
+
+
+def _require_snapshot_run_id_format(value: str) -> str:
+    if not (value.startswith("snap-") or value.startswith("schedule-")):
+        raise ValueError(
+            "snapshot_run_id must start with 'snap-' or 'schedule-' "
+            f"(got {value!r})"
+        )
     return value
+
+
+def _echo_db_path(db_path: Path) -> None:
+    print(f"DB: {db_path}")
 
 
 def _parse_json_arg(raw: str | None) -> dict | None:

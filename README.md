@@ -221,6 +221,9 @@ python -m src.cli.pipeline schedule --sport nba --season 2025-26 --output data/p
 ```
 
 - Default output: Excel workbook at `data/processed/<sport>/<season>/schedule_with_projections.xlsx` with one sheet per model plus a `dashboard` sheet for today’s games.
+- The schedule workbook also includes a `BETS` sheet for manual bet entry plus a hidden `META` sheet so you can log bets without OCR:
+  - `import -> rank -> schedule -> fill BETS -> betting log-bets -> settle-bets`
+  - Optional filters: `--as-of-date YYYY-MM-DD` and `--bets-model <model>` for multi-model runs.
 - If `--output` ends with `.csv`, a CSV is written for each model (prefixed when multiple models run).
 - `--upcoming-only` limits the export to games without scores.
 - Each row includes schedule fields (`date`, `home_team`, `away_team`, `neutral`, `overtime`, `game_id`), projections (ratings, spreads, totals, win probabilities), calibration info (home advantage, uncertainty), and results when scores exist.

@@ -249,7 +249,7 @@ def test_betting_market_csv_ingestion_counts_and_placement(tmp_path, monkeypatch
             "--csv",
             str(csv_path),
             "--snapshot-run-id",
-            "run-csv",
+            "snap-csv",
             "--db",
             str(db_path),
             "--default-book",
@@ -278,5 +278,5 @@ def test_betting_market_csv_ingestion_counts_and_placement(tmp_path, monkeypatch
 
     assert committed == 1
     assert staged == 1
-    assert snapshot == ("run-csv", "2025-01-02-lal-bos")
+    assert snapshot == ("snap-csv", "2025-01-02-lal-bos")
     assert staged_status == "unmatched"
