@@ -169,10 +169,15 @@ def _build_ocr_frame(
     rows = _load_ocr_raw_rows(db_path, review_run_id)
     columns = [
         "source_market_snapshot_id",
+        "snapshot_run_id",
+        "game_id",
+        "source_staging_id",
+        "staging_source",
         "image_path",
         "raw_text",
         "team_home_raw",
         "team_away_raw",
+        "game_date",
         "match_status",
         "match_confidence",
         "hold_reason",

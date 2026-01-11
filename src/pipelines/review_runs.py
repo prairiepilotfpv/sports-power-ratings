@@ -41,19 +41,24 @@ def _load_ocr_raw_rows(db_path: str | Path, review_run_id: str) -> list[dict]:
         q = """
             SELECT DISTINCT
                 ms.id AS source_market_snapshot_id,
+                ms.snapshot_run_id AS snapshot_run_id,
+                COALESCE(st.game_id, ms.game_id) AS game_id,
+                ms.source_staging_id AS source_staging_id,
+                st.source AS staging_source,
                 st.image_path AS image_path,
                 st.raw_text AS raw_text,
                 st.team_home_raw AS team_home_raw,
                 st.team_away_raw AS team_away_raw,
+                st.game_date AS game_date,
                 st.match_status AS match_status,
                 st.match_confidence AS match_confidence,
                 st.hold_reason AS hold_reason,
                 COALESCE(st.captured_at, ms.captured_at) AS captured_at,
-                ms.book AS book,
-                ms.market_type AS market_type,
-                ms.selection AS selection,
-                ms.line AS line,
-                ms.odds AS odds
+                COALESCE(st.book, ms.book) AS book,
+                COALESCE(st.market_type, ms.market_type) AS market_type,
+                COALESCE(st.selection, ms.selection) AS selection,
+                COALESCE(st.line, ms.line) AS line,
+                COALESCE(st.odds, ms.odds) AS odds
             FROM opportunities o
             JOIN market_snapshots ms ON o.source_market_snapshot_id = ms.id
             LEFT JOIN market_snapshot_staging st ON ms.source_staging_id = st.id
@@ -145,10 +150,15 @@ def build_review_workbook(
 
     ocr_cols = [
         "source_market_snapshot_id",
+        "snapshot_run_id",
+        "game_id",
+        "source_staging_id",
+        "staging_source",
         "image_path",
         "raw_text",
         "team_home_raw",
         "team_away_raw",
+        "game_date",
         "match_status",
         "match_confidence",
         "hold_reason",
@@ -318,10 +328,15 @@ def build_review_workbook_with_formulas(
 
     ocr_cols = [
         "source_market_snapshot_id",
+        "snapshot_run_id",
+        "game_id",
+        "source_staging_id",
+        "staging_source",
         "image_path",
         "raw_text",
         "team_home_raw",
         "team_away_raw",
+        "game_date",
         "match_status",
         "match_confidence",
         "hold_reason",
