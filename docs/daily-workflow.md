@@ -25,10 +25,11 @@ python -m src.cli.pipeline schedule --sport nba --season 2025-26 --output data/p
 **OCR screenshots:**
 
 ```bash
-python -m src.cli.pipeline market-ocr --sport nba --season 2025-26 \
+python -m src.cli.pipeline betting market-ocr --sport nba --season 2025-26 \
   --images screenshots/2025-01-12 --book dn
 ```
 
+Note: `market-ocr` is a subcommand of the `betting` group — include `betting` before the action.
 **CSV import (if you already have a lines file):**
 
 ```bash
