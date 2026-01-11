@@ -14,6 +14,7 @@ import pandas as pd
 from data import betting_repository as br
 from data.repository import load_games
 from eval.evaluator import evaluate_market_rows
+from eval.validation import get_validation_config
 from pipelines import guardrails
 from pipelines import schedule as schedule_pipeline
 from pipelines.model_params import resolve_model_params_with_metadata
@@ -204,6 +205,7 @@ def build_opportunities(
 
     exclusions: list[dict] = []
     pre_guardrail = predictions.copy()
+    validation_config = get_validation_config(sport)
     predictions = guardrails.enforce_margin_sd_guardrail(predictions, sport=sport)
     if not pre_guardrail.empty:
         dropped_idx = pre_guardrail.index.difference(predictions.index)
@@ -219,7 +221,7 @@ def build_opportunities(
                 )
 
     predictions, validation_exclusions = guardrails.apply_prediction_validation(
-        predictions, sport=sport
+        predictions, sport=sport, validation_config=validation_config
     )
     exclusions.extend(
         _format_validation_exclusions(validation_exclusions, default_model=model)
@@ -229,6 +231,7 @@ def build_opportunities(
         predictions,
         market_df,
         include_excluded_reason=True,
+        validation_config=validation_config,
     )
     if not opportunities_df.empty and "excluded_reason" in opportunities_df.columns:
         excluded_markets = opportunities_df[opportunities_df["excluded_reason"].notna()]

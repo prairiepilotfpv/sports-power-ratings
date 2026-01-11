@@ -175,11 +175,9 @@ def build_review_workbook(
         ocr_df = pd.DataFrame(ocr_rows, columns=ocr_cols)
 
     exclusions = get_prediction_exclusions(db_path, review_run_id=review_run_id)
-    exclusions_df = None
-    if exclusions:
-        exclusions_df = pd.DataFrame(
-            exclusions, columns=["game_id", "model", "excluded_reason"]
-        )
+    exclusions_df = pd.DataFrame(
+        exclusions, columns=["game_id", "model", "excluded_reason"]
+    )
 
     # Write via pandas then post-process with openpyxl
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
@@ -187,8 +185,7 @@ def build_review_workbook(
         bets_df.to_excel(writer, sheet_name="BETS", index=False)
         if ocr_df is not None:
             ocr_df.to_excel(writer, sheet_name="OCR_RAW", index=False)
-        if exclusions_df is not None:
-            exclusions_df.to_excel(writer, sheet_name="EXCLUSIONS", index=False)
+        exclusions_df.to_excel(writer, sheet_name="EXCLUSIONS", index=False)
         meta_df.to_excel(writer, sheet_name="META", index=False)
 
     # Post-process protection and hidden META
@@ -353,19 +350,16 @@ def build_review_workbook_with_formulas(
         ocr_df = pd.DataFrame(ocr_rows, columns=ocr_cols)
 
     exclusions = get_prediction_exclusions(db_path, review_run_id=review_run_id)
-    exclusions_df = None
-    if exclusions:
-        exclusions_df = pd.DataFrame(
-            exclusions, columns=["game_id", "model", "excluded_reason"]
-        )
+    exclusions_df = pd.DataFrame(
+        exclusions, columns=["game_id", "model", "excluded_reason"]
+    )
 
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         ev_df.to_excel(writer, sheet_name="EV", index=False)
         bets_df.to_excel(writer, sheet_name="BETS", index=False)
         if ocr_df is not None:
             ocr_df.to_excel(writer, sheet_name="OCR_RAW", index=False)
-        if exclusions_df is not None:
-            exclusions_df.to_excel(writer, sheet_name="EXCLUSIONS", index=False)
+        exclusions_df.to_excel(writer, sheet_name="EXCLUSIONS", index=False)
         meta_df.to_excel(writer, sheet_name="META", index=False)
 
     wb = load_workbook(out)
