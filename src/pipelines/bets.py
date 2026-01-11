@@ -56,6 +56,13 @@ def log_bets(
 
     df = pd.read_excel(wb_path, sheet_name="BETS")
 
+    # Ensure writeback columns exist with an object dtype so assigning
+    # strings/timestamps does not trigger pandas' incompatible-dtype FutureWarning.
+    for _col in ("bet_id", "logged_at", "log_status"):
+        if _col not in df.columns:
+            df[_col] = pd.NA
+        df[_col] = df[_col].astype(object)
+
     # load review_run_id from META if missing
     if review_run_id is None:
         try:

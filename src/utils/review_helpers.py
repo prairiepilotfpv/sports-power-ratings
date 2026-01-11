@@ -21,6 +21,13 @@ def populate_game_ids(workbook_path: str, db_path: str) -> int:
 
     df = pd.read_excel(wb, sheet_name="BETS")
 
+    # Ensure target columns exist with object dtype so assigning string values
+    # does not trigger pandas' incompatible-dtype FutureWarning in newer pandas.
+    for _col in ("game_id", "log_status"):
+        if _col not in df.columns:
+            df[_col] = pd.NA
+        df[_col] = df[_col].astype(object)
+
     conn = sqlite3.connect(Path(db_path))
     cur = conn.cursor()
 

@@ -9,6 +9,17 @@ sys.path.insert(0, str(ROOT))
 # Also add the inner `src` directory so modules that import top-level names (e.g., `config`) work.
 sys.path.insert(0, str(ROOT / "src"))
 
+# Suppress a pandas FutureWarning about concatenating empty/all-NA DataFrames
+# which appears in some tests that intentionally concat into an initially-empty
+# sheet. This is safe to silence for now; the underlying concat behavior is
+# exercised by the tests and we're not changing functional outcomes.
+import warnings
+warnings.filterwarnings(
+	"ignore",
+	message=".*DataFrame concatenation with empty or all-NA entries is deprecated.*",
+	category=FutureWarning,
+)
+
 # Provide a lightweight sklearn shim when scikit-learn isn't installed so
 # calibration-related tests can run (or skip) reliably in CI without adding
 # a hard dependency. The shim implements only the minimal surface area used

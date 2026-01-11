@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 
 import pandas as pd
 from openpyxl import load_workbook
+from openpyxl.styles.numbers import FORMAT_CURRENCY_USD_SIMPLE
 
 from contracts import SCHEDULE_EXPORT_COLUMNS, validate_schedule_export_frame
 from data.paths import processed_path_for
@@ -1010,6 +1011,22 @@ def build_schedule_excel_report(
         ws = wb["BETS"]
         apply_ev_formulas(ws, use_price=True)
         apply_model_prob_formulas_for_bets_sheet(ws)
+        # Format the `stake` column as US dollars (column header: "stake").
+        try:
+            header = next(ws.iter_rows(min_row=1, max_row=1))
+            stake_col = None
+            for cell in header:
+                if cell.value is not None and str(cell.value).strip().lower() == "stake":
+                    stake_col = cell.column_letter
+                    break
+            if stake_col:
+                for r in range(2, ws.max_row + 1):
+                    cell = ws[f"{stake_col}{r}"]
+                    cell.number_format = FORMAT_CURRENCY_USD_SIMPLE
+        except Exception:
+            # Best-effort formatting; do not fail the report generation on errors.
+            pass
+
         ws.protection.sheet = False
     if "META" in wb.sheetnames:
         ws = wb["META"]

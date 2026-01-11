@@ -108,21 +108,26 @@ def apply_model_prob_formulas_for_bets_sheet(ws: Worksheet) -> None:
         total_cell = _cell_ref(total_col, row)
         total_sd_cell = _cell_ref(total_sd_col, row)
 
+        spread_cdf = (
+            f"(0.5*(1+ERF((ABS({line_cell})-{margin_mean_cell})/({margin_sd_cell}*SQRT(2)))))"
+        )
+        total_cdf = f"(0.5*(1+ERF(({line_cell}-{total_cell})/({total_sd_cell}*SQRT(2)))))"
+
         ws[model_cell].value = (
-            f"=IF({market_cell}=\"ML\","
+            f"=@IF({market_cell}=\"ML\","
             f"IF({selection_cell}={home_team_cell},{home_win_cell},"
             f"IF({selection_cell}={away_team_cell},{away_win_cell},\"\")),"
             f"IF({market_cell}=\"spread\","
-            f"IF(OR({line_cell}=\"\",{margin_sd_cell}=\"\"),\"\","
+            f"IF(OR({line_cell}=\"\",{margin_sd_cell}=\"\"),\"\"," 
             f"IF({selection_cell}={home_team_cell},"
-            f"1-NORM.DIST(ABS({line_cell}),{margin_mean_cell},{margin_sd_cell},TRUE),"
+            f"1-{spread_cdf},"
             f"IF({selection_cell}={away_team_cell},"
-            f"NORM.DIST(ABS({line_cell}),{margin_mean_cell},{margin_sd_cell},TRUE),\"\"))),"
+            f"{spread_cdf},\"\"))),"
             f"IF({market_cell}=\"total\","
-            f"IF(OR({line_cell}=\"\",{total_sd_cell}=\"\"),\"\","
+            f"IF(OR({line_cell}=\"\",{total_sd_cell}=\"\"),\"\"," 
             f"IF({selection_cell}=\"Over\","
-            f"1-NORM.DIST({line_cell},{total_cell},{total_sd_cell},TRUE),"
+            f"1-{total_cdf},"
             f"IF({selection_cell}=\"Under\","
-            f"NORM.DIST({line_cell},{total_cell},{total_sd_cell},TRUE),\"\"))),"
+            f"{total_cdf},\"\"))),"
             "\"\")))"
         )

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 
@@ -390,7 +390,7 @@ def build_daily_workbook(
         {"key": "date", "value": as_of_date},
         {"key": "model", "value": model_name},
         {"key": "snapshot_run_id", "value": snapshot_run_id or ""},
-        {"key": "created_at", "value": datetime.utcnow().isoformat()},
+        {"key": "created_at", "value": datetime.now(timezone.utc).isoformat()},
     ]
     meta_df = pd.DataFrame(meta_rows)
 

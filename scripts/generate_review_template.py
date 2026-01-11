@@ -23,7 +23,23 @@ def generate(path: str | Path = "outputs/review-template.xlsx") -> str:
         "bet_id",
         "logged_at",
     ]
-    bets = pd.DataFrame(columns=bets_cols)
+    # Create empty BETS frame with explicit dtypes to avoid pandas concat
+    # warnings when later concatenating rows into an all-NA dataframe.
+    bets = pd.DataFrame(
+        {
+            "game_id": pd.Series(dtype=object),
+            "market_type": pd.Series(dtype=object),
+            "selection": pd.Series(dtype=object),
+            "line": pd.Series(dtype=float),
+            "odds": pd.Series(dtype=float),
+            "stake": pd.Series(dtype=float),
+            "book": pd.Series(dtype=object),
+            "opportunity_id": pd.Series(dtype=object),
+            "log_status": pd.Series(dtype=object),
+            "bet_id": pd.Series(dtype=object),
+            "logged_at": pd.Series(dtype=object),
+        }
+    )
 
     with pd.ExcelWriter(p, engine="openpyxl") as writer:
         meta.to_excel(writer, sheet_name="META", index=False)
