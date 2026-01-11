@@ -33,6 +33,7 @@ from pipelines.excel_formulas import (
     apply_model_prob_formulas_for_bets_sheet,
 )
 from calibration.io import load_latest_calibrator
+from ensemble.ml_v1 import MLWeightedAverageEnsemble
 
 
 DASHBOARD_COLUMNS: List[str] = [
@@ -731,6 +732,7 @@ def _build_bets_dataframe(
         "total",
         "total_sd",
         "model",
+        "ml_ensemble_components_json",
         ]
     )
 
@@ -787,6 +789,7 @@ def _build_bets_dataframe(
             "total": total,
             "total_sd": row.get("total_sd"),
             "model": model_name,
+            "ml_ensemble_components_json": row.get("ml_ensemble_components_json"),
         }
         if not include_calibrated:
             for key in (
@@ -1038,6 +1041,8 @@ def build_schedule_excel_report(
     )
     dashboard_rows: list[Dict[str, Any]] = []
     bets_schedule_df: pd.DataFrame | None = None
+    # Collected per-model forecasts for scheduled games on `as_of_date`.
+    forecast_set_rows: list[dict[str, Any]] = []
     with pd.ExcelWriter(report_path) as writer:
         for model_name in models:
             model_df = df.copy(deep=True)
@@ -1071,6 +1076,26 @@ def build_schedule_excel_report(
                 model=model_name,
             )
             schedule_df = _order_schedule_export(schedule_df)
+            # Collect ML forecast rows for scheduled games on the as_of_date.
+            try:
+                if not schedule_df.empty and "date" in schedule_df.columns and "status" in schedule_df.columns:
+                    _dt = pd.to_datetime(schedule_df["date"], errors="coerce").dt.date
+                    mask = (schedule_df["status"] == "scheduled") & (_dt == resolved_as_of_date)
+                    for _, r in schedule_df.loc[mask].iterrows():
+                        # Prefer explicit raw column when present, fall back to model samples or final prob.
+                        p_raw = None
+                        if "home_win_prob_raw" in schedule_df.columns and pd.notna(r.get("home_win_prob_raw")):
+                            p_raw = r.get("home_win_prob_raw")
+                        elif pd.notna(r.get("model_p_home_win")):
+                            p_raw = r.get("model_p_home_win")
+                        else:
+                            p_raw = r.get("home_win_prob")
+                        forecast_set_rows.append(
+                            {"game_id": r.get("game_id"), "model_name": model_name, "p_home_win": p_raw}
+                        )
+            except Exception:
+                # Best-effort collection; do not fail schedule generation on ensemble errors.
+                pass
             metadata = _build_model_metadata(
                 model_name=model_name,
                 played=_completed_games(model_df),
@@ -1107,6 +1132,69 @@ def build_schedule_excel_report(
             dashboard_df = dashboard_df.drop(columns=["_model_order"], errors="ignore")
         dashboard_df = dashboard_df.reindex(columns=DASHBOARD_COLUMNS)
         dashboard_df.to_excel(writer, sheet_name="dashboard", index=False)
+
+        # If multiple models were produced, try to build an ML ensemble and apply
+        # the combined probabilities to the bets_schedule_df (best-effort).
+        try:
+            if bets_schedule_df is not None and len(models) > 1 and forecast_set_rows:
+                forecast_df = pd.DataFrame(forecast_set_rows)
+                if not forecast_df.empty:
+                    ensemble = MLWeightedAverageEnsemble(sport, season, ensemble_id="ensemble_ml_v1")
+                    # Load calibrator for the ensemble source, if present
+                    try:
+                        ensemble_cal = load_latest_calibrator(sport=sport, season=season, model=ensemble.ensemble_id, market="ML")
+                    except Exception:
+                        ensemble_cal = None
+
+                    # Apply per-game ensemble
+                    for gid in pd.unique(bets_schedule_df["game_id"]):
+                        try:
+                            subset = forecast_df[forecast_df["game_id"] == gid]
+                            if subset.empty:
+                                continue
+                            raw_p, components_json = ensemble.combine(subset)
+                            if raw_p is None:
+                                continue
+                            final_p = raw_p
+                            if ensemble_cal is not None:
+                                try:
+                                    transformed = ensemble_cal.transform([raw_p])
+                                    if transformed is not None and len(transformed) > 0:
+                                        final_p = float(transformed[0])
+                                except Exception:
+                                    pass
+
+                            mask = bets_schedule_df["game_id"] == gid
+                            bets_schedule_df.loc[mask, "home_win_prob"] = final_p
+                            bets_schedule_df.loc[mask, "away_win_prob"] = 1.0 - final_p
+
+                            def _append_ens(val: Any) -> str:
+                                try:
+                                    if val is None or (isinstance(val, float) and pd.isna(val)):
+                                        return ensemble.ensemble_id
+                                    text = str(val).strip()
+                                    if not text:
+                                        return ensemble.ensemble_id
+                                    if ensemble.ensemble_id in text.lower():
+                                        return text
+                                    return f"{text}+{ensemble.ensemble_id}"
+                                except Exception:
+                                    return ensemble.ensemble_id
+
+                            if "win_prob_source" in bets_schedule_df.columns:
+                                bets_schedule_df.loc[mask, "win_prob_source"] = (
+                                    bets_schedule_df.loc[mask, "win_prob_source"].apply(_append_ens)
+                                )
+                            else:
+                                bets_schedule_df.loc[mask, "win_prob_source"] = ensemble.ensemble_id
+
+                            bets_schedule_df.loc[mask, "ml_ensemble_components_json"] = components_json
+                        except Exception:
+                            # Best-effort per-game; continue on errors.
+                            continue
+        except Exception:
+            # Do not fail report generation for ensemble errors.
+            pass
 
         bets_df = _build_bets_dataframe(
             bets_schedule_df if bets_schedule_df is not None else pd.DataFrame(),
