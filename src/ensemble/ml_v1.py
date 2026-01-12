@@ -8,7 +8,8 @@ from typing import Any
 import pandas as pd
 
 from .io import load_ml_weights
-from .base import BaseEnsemble, Market
+from .base import BaseEnsemble
+from markets.base import Market
 
 
 class MLWeightedAverageEnsemble:
@@ -58,22 +59,36 @@ class MLWeightedAverageEnsemble:
             except Exception:
                 probs.append(float("nan"))
 
-        # Build weights (default 1.0 when not specified)
+        # Build raw weights (default 1.0 when not specified)
         raw_weights: list[float] = [float(self._weights.get(m, 1.0)) for m in models]
-        total = sum(raw_weights)
-        if total <= 0 or any(pd.isna(w) for w in raw_weights):
-            norm_weights = [1.0 / len(raw_weights)] * len(raw_weights)
-        else:
-            norm_weights = [w / total for w in raw_weights]
+
+        # Identify which model probs are valid and renormalize weights over them.
+        is_valid_prob = [not pd.isna(p) for p in probs]
+        # Sum weights only for models with valid probs
+        total_valid = sum(w for w, v in zip(raw_weights, is_valid_prob) if v)
 
         components: list[dict[str, Any]] = []
         combined = 0.0
         valid_any = False
-        for m, p, w in zip(models, probs, norm_weights):
-            comp = {"model": m, "prob": None if pd.isna(p) else float(p), "weight": float(w)}
+
+        if total_valid <= 0:
+            # No valid probabilities or no positive weight to distribute.
+            # Return components JSON (weights set to 0 for invalid/unused) and None for combined.
+            for m, p, w in zip(models, probs, raw_weights):
+                comp = {"model": m, "prob": None if pd.isna(p) else float(p), "weight": 0.0}
+                components.append(comp)
+            return None, json.dumps(components, sort_keys=True)
+
+        # Compute adjusted weights for valid models; invalid models get weight 0.
+        for m, p, w in zip(models, probs, raw_weights):
+            if pd.isna(p):
+                adj_w = 0.0
+            else:
+                adj_w = float(w) / float(total_valid)
+            comp = {"model": m, "prob": None if pd.isna(p) else float(p), "weight": float(adj_w)}
             components.append(comp)
             if comp["prob"] is not None:
-                combined += comp["prob"] * w
+                combined += comp["prob"] * comp["weight"]
                 valid_any = True
 
         if not valid_any:

@@ -34,6 +34,7 @@ from pipelines.excel_formulas import (
 )
 from calibration.io import load_latest_calibrator
 from ensemble.ml_v1 import MLWeightedAverageEnsemble
+from markets.base import Market
 
 
 DASHBOARD_COLUMNS: List[str] = [
@@ -518,7 +519,7 @@ def _apply_calibration_to_schedule_df(
         sport=sport,
         season=season,
         model=model,
-        market="ML",
+        market=Market.ML,
     )
     if calibrator is None:
         return schedule_df
@@ -715,6 +716,7 @@ def _build_bets_dataframe(
         "opportunity_id",
         "home_win_prob",
         "away_win_prob",
+        "win_prob_source",
     ]
     if include_calibrated:
         bets_columns.extend(
@@ -780,6 +782,7 @@ def _build_bets_dataframe(
             "opportunity_id": "",
             "home_win_prob": row.get("home_win_prob"),
             "away_win_prob": row.get("away_win_prob"),
+            "win_prob_source": row.get("win_prob_source", ""),
             "home_win_prob_raw": row.get("home_win_prob_raw"),
             "away_win_prob_raw": row.get("away_win_prob_raw"),
             "home_win_prob_calibrated": row.get("home_win_prob_calibrated"),
@@ -1135,6 +1138,7 @@ def build_schedule_excel_report(
 
         # If multiple models were produced, try to build an ML ensemble and apply
         # the combined probabilities to the bets_schedule_df (best-effort).
+        ensemble_applied = False
         try:
             if bets_schedule_df is not None and len(models) > 1 and forecast_set_rows:
                 forecast_df = pd.DataFrame(forecast_set_rows)
@@ -1142,7 +1146,12 @@ def build_schedule_excel_report(
                     ensemble = MLWeightedAverageEnsemble(sport, season, ensemble_id="ensemble_ml_v1")
                     # Load calibrator for the ensemble source, if present
                     try:
-                        ensemble_cal = load_latest_calibrator(sport=sport, season=season, model=ensemble.ensemble_id, market="ML")
+                        ensemble_cal = load_latest_calibrator(
+                            sport=sport,
+                            season=season,
+                            model=ensemble.ensemble_id,
+                            market=Market.ML,
+                        )
                     except Exception:
                         ensemble_cal = None
 
@@ -1187,14 +1196,24 @@ def build_schedule_excel_report(
                                 )
                             else:
                                 bets_schedule_df.loc[mask, "win_prob_source"] = ensemble.ensemble_id
-
                             bets_schedule_df.loc[mask, "ml_ensemble_components_json"] = components_json
+                            ensemble_applied = True
                         except Exception:
                             # Best-effort per-game; continue on errors.
                             continue
         except Exception:
             # Do not fail report generation for ensemble errors.
             pass
+
+        # If the ensemble was applied successfully to any games, set the BETS model label
+        # and ensure META reflects the ensemble as the bets model.
+        if ensemble_applied and bets_schedule_df is not None:
+            try:
+                bets_schedule_df["model"] = ensemble.ensemble_id
+                bets_model_name = ensemble.ensemble_id
+            except Exception:
+                # Best-effort assignment; ignore failures.
+                pass
 
         bets_df = _build_bets_dataframe(
             bets_schedule_df if bets_schedule_df is not None else pd.DataFrame(),

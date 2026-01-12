@@ -2,14 +2,9 @@
 
 from __future__ import annotations
 
-from enum import Enum
 from typing import Protocol
 
-
-class Market(str, Enum):
-    ML = "ML"
-    SPREAD = "spread"
-    TOTAL = "total"
+from markets.base import Market
 
 
 class BaseEnsemble(Protocol):

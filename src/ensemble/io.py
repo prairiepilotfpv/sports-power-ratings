@@ -6,14 +6,23 @@ import json
 from pathlib import Path
 from typing import Dict
 
+from markets.registry import get_market_spec
 
-def load_ml_weights(sport: str, season: str, ensemble_id: str = "ensemble_ml_v1") -> dict[str, float] | None:
-    """Load ML ensemble weights from outputs/ensembles/<sport>/<season>/<ensemble_id>.json.
+
+def load_ml_weights(
+    sport: str, season: str, ensemble_id: str = "ensemble_ml_v1", market: str | None = "ML"
+) -> dict[str, float] | None:
+    """Load ML ensemble weights from the MarketSpec ensemble path.
 
     File format: {"model_name": weight, ...}
     If missing, return None to signal equal-weight fallback.
     """
-    path = Path("outputs") / "ensembles" / sport / season / f"{ensemble_id}.json"
+    try:
+        spec = get_market_spec(market or "ML")
+        path = spec.ensemble_weights_path(sport, season, ensemble_id)
+    except Exception:
+        path = Path("outputs") / "ensembles" / sport / season / f"{ensemble_id}.json"
+
     if not path.exists():
         return None
     try:
