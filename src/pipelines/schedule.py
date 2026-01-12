@@ -815,6 +815,7 @@ def _build_bets_dataframe(
             "spread_source",
             "spread_ensemble_components_json",
             "total_source",
+            "total_ensemble_components_json",
         ]
     )
 
@@ -834,10 +835,15 @@ def _build_bets_dataframe(
         projected_home_score = row.get("projected_home_score")
         projected_away_score = row.get("projected_away_score")
         projected_total = row.get("projected_total")
-        if projected_home_score is not None and projected_away_score is not None:
-            total = float(projected_home_score) + float(projected_away_score)
-        else:
-            total = projected_total
+        total = row.get("total")
+        total_mean = row.get("total_mean")
+        if _is_missing(total):
+            if not _is_missing(total_mean):
+                total = total_mean
+            elif projected_home_score is not None and projected_away_score is not None:
+                total = float(projected_home_score) + float(projected_away_score)
+            else:
+                total = projected_total
 
         base = {
             "review_run_id": review_run_id,
@@ -875,6 +881,7 @@ def _build_bets_dataframe(
             "spread_source": "",
             "spread_ensemble_components_json": "",
             "total_source": "",
+            "total_ensemble_components_json": "",
         }
         ml_source_label = _normalize_source_label(
             row.get("win_prob_source") or row.get("ml_source")
@@ -910,6 +917,7 @@ def _build_bets_dataframe(
             "total": total,
             "total_sd": row.get("total_sd"),
             "total_source": total_source,
+            "total_ensemble_components_json": row.get("total_ensemble_components_json"),
         }
         if not include_calibrated:
             for key in (
@@ -1253,8 +1261,8 @@ def build_schedule_excel_report(
                                 "margin_mean": r.get("margin_mean"),
                                 "margin_sd": r.get("margin_sd"),
                                 "total_mean": (
-                                    r.get("projected_total")
-                                    if _is_missing(r.get("total_mean"))
+                                    r.get("total")
+                                    if not _is_missing(r.get("total"))
                                     else r.get("total_mean")
                                 ),
                                 "total_sd": r.get("total_sd"),
@@ -1429,16 +1437,15 @@ def build_schedule_excel_report(
                             if total_mean_raw is None:
                                 continue
                             mask = bets_schedule_df["game_id"] == gid
-                            bets_schedule_df.loc[mask, "total_mean"] = total_mean_raw
+                            bets_schedule_df.loc[mask, "total"] = total_mean_raw
                             if total_sd_raw is not None:
                                 bets_schedule_df.loc[mask, "total_sd"] = total_sd_raw
                             bets_schedule_df.loc[
                                 mask, "total_source"
                             ] = total_ensemble.ensemble_id
-                            if "total_ensemble_components_json" in bets_schedule_df.columns:
-                                bets_schedule_df.loc[
-                                    mask, "total_ensemble_components_json"
-                                ] = components_json
+                            bets_schedule_df.loc[
+                                mask, "total_ensemble_components_json"
+                            ] = components_json
                             total_ensemble_applied = True
                         except Exception:
                             continue

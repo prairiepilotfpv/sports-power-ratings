@@ -1,4 +1,4 @@
-"""Total ensemble implementation: weighted-average of total forecasts."""
+"""Total ensemble implementation: weighted-average of model total forecasts."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ class TotalWeightedAverageEnsemble:
     ) -> tuple[float | None, float | None, str]:
         """Combine forecasts for a single game.
 
-        `game_rows` must contain columns: `model_name`, `total_mean`, `total_sd`.
+        `game_rows` must contain columns: `model_name`, `total_mean`/`total`, `total_sd`.
         Returns (total_mean_raw, total_sd_raw, components_json).
         """
         if game_rows is None or game_rows.empty:
@@ -47,19 +47,21 @@ class TotalWeightedAverageEnsemble:
         for r in rows:
             try:
                 model = getattr(r, "model_name")
-                total_mean = getattr(r, "total_mean")
-                total_sd = getattr(r, "total_sd")
+                total = getattr(r, "total_mean")
+                if total is None:
+                    total = getattr(r, "total")
+                sd = getattr(r, "total_sd")
             except Exception:
                 model = r[0]
-                total_mean = r[1]
-                total_sd = r[2] if len(r) > 2 else None
+                total = r[1] if len(r) > 1 else None
+                sd = r[2] if len(r) > 2 else None
             models.append(str(model))
             try:
-                totals.append(float(total_mean))
+                totals.append(float(total))
             except Exception:
                 totals.append(float("nan"))
             try:
-                sds.append(float(total_sd))
+                sds.append(float(sd))
             except Exception:
                 sds.append(float("nan"))
 
