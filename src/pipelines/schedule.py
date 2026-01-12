@@ -34,6 +34,7 @@ from pipelines.excel_formulas import (
 )
 from calibration.io import load_latest_calibrator
 from ensemble.ml_v1 import MLWeightedAverageEnsemble
+from ensemble.spread_v1 import SpreadWeightedAverageEnsemble
 from markets.base import Market
 
 
@@ -729,12 +730,14 @@ def _build_bets_dataframe(
         )
     bets_columns.extend(
         [
-        "margin_mean",
-        "margin_sd",
-        "total",
-        "total_sd",
-        "model",
-        "ml_ensemble_components_json",
+            "margin_mean",
+            "margin_sd",
+            "total",
+            "total_sd",
+            "model",
+            "ml_ensemble_components_json",
+            "spread_source",
+            "spread_ensemble_components_json",
         ]
     )
 
@@ -793,6 +796,8 @@ def _build_bets_dataframe(
             "total_sd": row.get("total_sd"),
             "model": model_name,
             "ml_ensemble_components_json": row.get("ml_ensemble_components_json"),
+            "spread_source": row.get("spread_source", ""),
+            "spread_ensemble_components_json": row.get("spread_ensemble_components_json"),
         }
         if not include_calibrated:
             for key in (
@@ -1094,7 +1099,13 @@ def build_schedule_excel_report(
                         else:
                             p_raw = r.get("home_win_prob")
                         forecast_set_rows.append(
-                            {"game_id": r.get("game_id"), "model_name": model_name, "p_home_win": p_raw}
+                            {
+                                "game_id": r.get("game_id"),
+                                "model_name": model_name,
+                                "p_home_win": p_raw,
+                                "margin_mean": r.get("margin_mean"),
+                                "margin_sd": r.get("margin_sd"),
+                            }
                         )
             except Exception:
                 # Best-effort collection; do not fail schedule generation on ensemble errors.
@@ -1203,6 +1214,39 @@ def build_schedule_excel_report(
                             continue
         except Exception:
             # Do not fail report generation for ensemble errors.
+            pass
+
+        # Apply a spread ensemble to margin fields (best-effort).
+        try:
+            if bets_schedule_df is not None and len(models) > 1 and forecast_set_rows:
+                forecast_df = pd.DataFrame(forecast_set_rows)
+                if not forecast_df.empty:
+                    spread_ensemble = SpreadWeightedAverageEnsemble(
+                        sport, season, ensemble_id="ensemble_spread_v1"
+                    )
+                    for gid in pd.unique(bets_schedule_df["game_id"]):
+                        try:
+                            subset = forecast_df[forecast_df["game_id"] == gid]
+                            if subset.empty:
+                                continue
+                            margin_mean_raw, margin_sd_raw, components_json = (
+                                spread_ensemble.combine(subset)
+                            )
+                            if margin_mean_raw is None:
+                                continue
+                            mask = bets_schedule_df["game_id"] == gid
+                            bets_schedule_df.loc[mask, "margin_mean"] = margin_mean_raw
+                            if margin_sd_raw is not None:
+                                bets_schedule_df.loc[mask, "margin_sd"] = margin_sd_raw
+                            bets_schedule_df.loc[
+                                mask, "spread_source"
+                            ] = spread_ensemble.ensemble_id
+                            bets_schedule_df.loc[
+                                mask, "spread_ensemble_components_json"
+                            ] = components_json
+                        except Exception:
+                            continue
+        except Exception:
             pass
 
         # If the ensemble was applied successfully to any games, set the BETS model label
