@@ -783,21 +783,35 @@ def _build_bets_dataframe(
             "notes": "",
             "source_market_snapshot_id": "",
             "opportunity_id": "",
+            "model": model_name,
+        }
+        forecast_blanks = {
+            "home_win_prob": "",
+            "away_win_prob": "",
+            "win_prob_source": "",
+            "margin_mean": "",
+            "margin_sd": "",
+            "total": "",
+            "total_sd": "",
+            "ml_ensemble_components_json": "",
+            "spread_source": "",
+            "spread_ensemble_components_json": "",
+        }
+        ml_fields = {
             "home_win_prob": row.get("home_win_prob"),
             "away_win_prob": row.get("away_win_prob"),
             "win_prob_source": row.get("win_prob_source", ""),
-            "home_win_prob_raw": row.get("home_win_prob_raw"),
-            "away_win_prob_raw": row.get("away_win_prob_raw"),
-            "home_win_prob_calibrated": row.get("home_win_prob_calibrated"),
-            "away_win_prob_calibrated": row.get("away_win_prob_calibrated"),
+            "ml_ensemble_components_json": row.get("ml_ensemble_components_json"),
+        }
+        spread_fields = {
             "margin_mean": row.get("margin_mean"),
             "margin_sd": row.get("margin_sd"),
-            "total": total,
-            "total_sd": row.get("total_sd"),
-            "model": model_name,
-            "ml_ensemble_components_json": row.get("ml_ensemble_components_json"),
             "spread_source": row.get("spread_source", ""),
             "spread_ensemble_components_json": row.get("spread_ensemble_components_json"),
+        }
+        total_fields = {
+            "total": total,
+            "total_sd": row.get("total_sd"),
         }
         if not include_calibrated:
             for key in (
@@ -807,6 +821,23 @@ def _build_bets_dataframe(
                 "away_win_prob_calibrated",
             ):
                 base.pop(key, None)
+        else:
+            forecast_blanks.update(
+                {
+                    "home_win_prob_raw": "",
+                    "away_win_prob_raw": "",
+                    "home_win_prob_calibrated": "",
+                    "away_win_prob_calibrated": "",
+                }
+            )
+            ml_fields.update(
+                {
+                    "home_win_prob_raw": row.get("home_win_prob_raw"),
+                    "away_win_prob_raw": row.get("away_win_prob_raw"),
+                    "home_win_prob_calibrated": row.get("home_win_prob_calibrated"),
+                    "away_win_prob_calibrated": row.get("away_win_prob_calibrated"),
+                }
+            )
 
         home_team = row.get("home_team")
         away_team = row.get("away_team")
@@ -814,31 +845,43 @@ def _build_bets_dataframe(
             [
                 {
                     **base,
+                    **forecast_blanks,
+                    **ml_fields,
                     "market_type": "ML",
                     "selection": home_team,
                 },
                 {
                     **base,
+                    **forecast_blanks,
+                    **ml_fields,
                     "market_type": "ML",
                     "selection": away_team,
                 },
                 {
                     **base,
+                    **forecast_blanks,
+                    **spread_fields,
                     "market_type": "spread",
                     "selection": home_team,
                 },
                 {
                     **base,
+                    **forecast_blanks,
+                    **spread_fields,
                     "market_type": "spread",
                     "selection": away_team,
                 },
                 {
                     **base,
+                    **forecast_blanks,
+                    **total_fields,
                     "market_type": "total",
                     "selection": "Over",
                 },
                 {
                     **base,
+                    **forecast_blanks,
+                    **total_fields,
                     "market_type": "total",
                     "selection": "Under",
                 },
