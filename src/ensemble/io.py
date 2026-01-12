@@ -17,12 +17,18 @@ def load_ml_weights(
     File format: {"model_name": weight, ...}
     If missing, return None to signal equal-weight fallback.
     """
+    legacy_path = Path("outputs") / "ensembles" / sport / season / f"{ensemble_id}.json"
     try:
         spec = get_market_spec(market or "ML")
         path = spec.ensemble_weights_path(sport, season, ensemble_id)
     except Exception:
-        path = Path("outputs") / "ensembles" / sport / season / f"{ensemble_id}.json"
+        path = legacy_path
 
+    if not path.exists():
+        if legacy_path.exists():
+            path = legacy_path
+        else:
+            return None
     if not path.exists():
         return None
     try:
@@ -30,8 +36,9 @@ def load_ml_weights(
             data = json.load(fh)
         if not isinstance(data, dict):
             return None
+        raw_weights = data.get("weights") if isinstance(data.get("weights"), dict) else data
         weights: dict[str, float] = {}
-        for k, v in data.items():
+        for k, v in raw_weights.items():
             try:
                 weights[str(k)] = float(v)
             except Exception:

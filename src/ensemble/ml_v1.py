@@ -15,7 +15,8 @@ from markets.base import Market
 class MLWeightedAverageEnsemble:
     """Combine multiple model ML probabilities using weighted average.
 
-    Weights are loaded from `outputs/ensembles/<sport>/<season>/ensemble_ml_v1.json`.
+    Weights are loaded from `outputs/ensembles/<sport>/<season>/ML/ensemble_ml_v1.json`
+    (with legacy fallback to the pre-market path).
     If missing, equal weights are used and re-normalized for the available models.
     """
 

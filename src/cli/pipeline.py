@@ -589,6 +589,63 @@ def _parse_args() -> argparse.Namespace:
         help="Optional SQLite DB path to persist best backtest metrics.",
     )
 
+    tune_ensemble_parser = subparsers.add_parser(
+        "tune-ensemble",
+        aliases=["tune_ensemble"],
+        help="Tune ML ensemble weights using backtest predictions.",
+    )
+    tune_ensemble_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
+    tune_ensemble_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
+    tune_ensemble_parser.add_argument("--start-date", required=True, help="Training start date (YYYY-MM-DD).")
+    tune_ensemble_parser.add_argument("--end-date", required=True, help="Training end date (YYYY-MM-DD).")
+    tune_ensemble_parser.add_argument("--market", default="ML", help="Market identifier (default: ML).")
+    tune_ensemble_parser.add_argument(
+        "--ensemble",
+        default="ensemble_ml_v1",
+        help="Ensemble id to tune (default: ensemble_ml_v1).",
+    )
+    tune_ensemble_parser.add_argument(
+        "--models",
+        help="Comma-separated list of base models to include (default: ML-capable models).",
+    )
+    tune_ensemble_parser.add_argument(
+        "--csv",
+        help="Optional CSV path of historical games (defaults to DB for sport/season).",
+    )
+    tune_ensemble_parser.add_argument(
+        "--db",
+        help="Optional SQLite DB path override for historical games.",
+    )
+
+    calibrate_parser = subparsers.add_parser(
+        "calibrate",
+        help="Fit a probability calibrator for an ML source (e.g., ensemble_ml_v1).",
+    )
+    calibrate_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
+    calibrate_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
+    calibrate_parser.add_argument("--start-date", required=True, help="Training start date (YYYY-MM-DD).")
+    calibrate_parser.add_argument("--end-date", required=True, help="Training end date (YYYY-MM-DD).")
+    calibrate_parser.add_argument("--market", default="ML", help="Market identifier (default: ML).")
+    calibrate_parser.add_argument("--source", required=True, help="Prediction source id to calibrate.")
+    calibrate_parser.add_argument(
+        "--models",
+        help="Comma-separated list of base models to include (default: ML-capable models).",
+    )
+    calibrate_parser.add_argument(
+        "--method",
+        choices=["auto", "platt", "isotonic"],
+        default="auto",
+        help="Calibrator method (default: auto).",
+    )
+    calibrate_parser.add_argument(
+        "--csv",
+        help="Optional CSV path of historical games (defaults to DB for sport/season).",
+    )
+    calibrate_parser.add_argument(
+        "--db",
+        help="Optional SQLite DB path override for historical games.",
+    )
+
     return parser.parse_args()
 
 
@@ -1139,6 +1196,56 @@ def _run_tuning(args: argparse.Namespace) -> None:
             print(f"- {error}")
 
 
+def _run_tune_ensemble(args: argparse.Namespace) -> None:
+    _ensure_src_on_path()
+    from pipelines.ensemble_tuning import tune_ml_ensemble
+
+    if args.market.strip().upper() != "ML":
+        raise ValueError("Only ML ensemble tuning is supported for now.")
+    start_date = _require_iso_date(args.start_date, field="--start-date")
+    end_date = _require_iso_date(args.end_date, field="--end-date")
+    model_list = None
+    if args.models:
+        model_list = [m.strip() for m in args.models.split(",") if m.strip()]
+    result = tune_ml_ensemble(
+        sport=args.sport,
+        season=args.season,
+        start_date=start_date,
+        end_date=end_date,
+        ensemble_id=args.ensemble,
+        models=model_list,
+        csv_path=args.csv,
+        db_path=args.db,
+    )
+    print(f"Ensemble tuned on {result.games} games.")
+    print(f"Saved weights -> {result.artifact_path}")
+
+
+def _run_calibrate_ensemble(args: argparse.Namespace) -> None:
+    _ensure_src_on_path()
+    from pipelines.ensemble_tuning import calibrate_ml_ensemble
+
+    if args.market.strip().upper() != "ML":
+        raise ValueError("Only ML calibration is supported for now.")
+    start_date = _require_iso_date(args.start_date, field="--start-date")
+    end_date = _require_iso_date(args.end_date, field="--end-date")
+    model_list = None
+    if args.models:
+        model_list = [m.strip() for m in args.models.split(",") if m.strip()]
+    out_path = calibrate_ml_ensemble(
+        sport=args.sport,
+        season=args.season,
+        start_date=start_date,
+        end_date=end_date,
+        ensemble_id=args.source,
+        models=model_list,
+        csv_path=args.csv,
+        db_path=args.db,
+        method=args.method,
+    )
+    print(f"Saved calibrator -> {out_path}")
+
+
 def main() -> None:
     """CLI entry point: route subcommands to their handlers."""
     args = _parse_args()
@@ -1162,6 +1269,10 @@ def main() -> None:
         _run_backtest(args)
     elif args.command == "tune":
         _run_tuning(args)
+    elif args.command == "tune-ensemble":
+        _run_tune_ensemble(args)
+    elif args.command == "calibrate":
+        _run_calibrate_ensemble(args)
     elif args.command == "betting":
         _run_betting(args)
     elif args.command == "review-generate":

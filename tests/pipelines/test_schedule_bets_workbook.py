@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 import sqlite3
 
 import openpyxl
 import pandas as pd
+import pytest
 
 from ingest.schema import GameResult
-from pipelines.schedule import DASHBOARD_COLUMNS, build_schedule_excel_report
+from pipelines import schedule as schedule_pipeline
 from src.data import repository as repo
 from src.data import betting_repository as br
 from src.pipelines import bets as bets_pipeline
@@ -57,7 +59,7 @@ def test_schedule_workbook_includes_bets_and_meta(tmp_path: Path) -> None:
     scheduled_date = date(2024, 1, 5)
     _seed_schedule_db(db_path, scheduled_date)
 
-    workbook_path = build_schedule_excel_report(
+    workbook_path = schedule_pipeline.build_schedule_excel_report(
         db_path,
         sport="nba",
         season="2024-25",
@@ -72,7 +74,7 @@ def test_schedule_workbook_includes_bets_and_meta(tmp_path: Path) -> None:
     assert wb["META"].sheet_state == "hidden"
 
     dashboard_df = pd.read_excel(workbook_path, sheet_name="dashboard")
-    assert list(dashboard_df.columns) == DASHBOARD_COLUMNS
+    assert list(dashboard_df.columns) == schedule_pipeline.DASHBOARD_COLUMNS
 
     meta_df = pd.read_excel(workbook_path, sheet_name="META")
     meta = dict(zip(meta_df["key"], meta_df["value"]))
@@ -86,7 +88,7 @@ def test_schedule_bets_rows_and_log_bets(tmp_path: Path) -> None:
     scheduled_date = date(2024, 1, 5)
     _seed_schedule_db(db_path, scheduled_date)
 
-    workbook_path = build_schedule_excel_report(
+    workbook_path = schedule_pipeline.build_schedule_excel_report(
         db_path,
         sport="nba",
         season="2024-25",
@@ -122,3 +124,65 @@ def test_schedule_bets_rows_and_log_bets(tmp_path: Path) -> None:
     updated_df = pd.read_excel(workbook_path, sheet_name="BETS")
     staked = updated_df[updated_df["stake"].notna() & (updated_df["stake"] != "")]
     assert not staked["bet_id"].isna().all()
+
+
+def test_schedule_ensemble_uses_tuned_weights(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        schedule_pipeline,
+        "list_models",
+        lambda: ["bradley-terry", "elo"],
+    )
+
+    db_path = tmp_path / "games.db"
+    repo.init_db(db_path)
+    br.init_db(db_path)
+    scheduled_date = date(2024, 1, 5)
+    _seed_schedule_db(db_path, scheduled_date)
+
+    weights_payload = {
+        "ensemble_id": "ensemble_ml_v1",
+        "market": "ML",
+        "objective": "log_loss",
+        "train_window": {"start": "2024-01-01", "end": "2024-01-04"},
+        "models": ["bradley-terry", "elo"],
+        "weights": {"bradley-terry": 0.9, "elo": 0.1},
+        "created_at": "2024-01-05T00:00:00Z",
+    }
+    weights_path = (
+        Path("outputs")
+        / "ensembles"
+        / "nba"
+        / "2024-25"
+        / "ML"
+        / "ensemble_ml_v1.json"
+    )
+    weights_path.parent.mkdir(parents=True, exist_ok=True)
+    weights_path.write_text(json.dumps(weights_payload), encoding="utf-8")
+    from ensemble.io import load_ml_weights
+
+    assert load_ml_weights("nba", "2024-25", "ensemble_ml_v1") == {
+        "bradley-terry": 0.9,
+        "elo": 0.1,
+    }
+
+    workbook_path = schedule_pipeline.build_schedule_excel_report(
+        db_path,
+        sport="nba",
+        season="2024-25",
+        model=None,
+        output_path=tmp_path / "schedule.xlsx",
+        as_of_date=scheduled_date,
+    )
+
+    bets_df = pd.read_excel(workbook_path, sheet_name="BETS")
+    ml_rows = bets_df[bets_df["market_type"] == "ML"]
+    home_row = ml_rows[ml_rows["selection"] == "Team B"].iloc[0]
+    components = json.loads(home_row["ml_ensemble_components_json"])
+    weights = {comp["model"]: comp["weight"] for comp in components}
+    assert weights["bradley-terry"] == pytest.approx(0.9, rel=1e-6)
+    assert weights["elo"] == pytest.approx(0.1, rel=1e-6)
+    combined = sum(comp["prob"] * comp["weight"] for comp in components if comp["prob"] is not None)
+    assert home_row["home_win_prob"] == pytest.approx(combined, rel=1e-6)
+    assert "ensemble_ml_v1" in str(home_row["win_prob_source"])
+    assert "ml_ensemble_components_json" in ml_rows.columns
