@@ -32,10 +32,13 @@ from pipelines.metadata import prediction_hash
 from pipelines.excel_formulas import (
     apply_ev_formulas,
     apply_model_prob_formulas_for_bets_sheet,
+    validate_bets_formulas,
+    validate_no_ellipsis_formulas,
 )
 from calibration.io import load_latest_calibrator
 from ensemble.ml_v1 import MLWeightedAverageEnsemble
 from ensemble.spread_v1 import SpreadWeightedAverageEnsemble
+from ensemble.total_v1 import TotalWeightedAverageEnsemble
 from markets.base import Market
 
 
@@ -617,7 +620,10 @@ def _dashboard_rows_for_today(
         projected_home_score = row.get("projected_home_score")
         projected_away_score = row.get("projected_away_score")
         projected_total = row.get("projected_total")
-        if projected_home_score is not None and projected_away_score is not None:
+        total_mean = row.get("total_mean")
+        if not _is_missing(total_mean):
+            total = total_mean
+        elif projected_home_score is not None and projected_away_score is not None:
             total = float(projected_home_score) + float(projected_away_score)
         else:
             total = projected_total
@@ -1246,6 +1252,12 @@ def build_schedule_excel_report(
                                 "p_home_win": p_raw,
                                 "margin_mean": r.get("margin_mean"),
                                 "margin_sd": r.get("margin_sd"),
+                                "total_mean": (
+                                    r.get("projected_total")
+                                    if _is_missing(r.get("total_mean"))
+                                    else r.get("total_mean")
+                                ),
+                                "total_sd": r.get("total_sd"),
                             }
                         )
             except Exception:
@@ -1293,6 +1305,7 @@ def build_schedule_excel_report(
         ensemble_applied = False
         ml_ensemble_id = "ensemble_ml_v1"
         spread_ensemble_id = "ensemble_spread_v1"
+        total_ensemble_id = "ensemble_total_v1"
         try:
             if bets_schedule_df is not None and len(models) > 1 and forecast_set_rows:
                 forecast_df = pd.DataFrame(forecast_set_rows)
@@ -1396,6 +1409,42 @@ def build_schedule_excel_report(
         except Exception:
             pass
 
+        # Apply a total ensemble to total fields (best-effort).
+        total_ensemble_applied = False
+        try:
+            if bets_schedule_df is not None and len(models) > 1 and forecast_set_rows:
+                forecast_df = pd.DataFrame(forecast_set_rows)
+                if not forecast_df.empty:
+                    total_ensemble = TotalWeightedAverageEnsemble(
+                        sport, season, ensemble_id=total_ensemble_id
+                    )
+                    for gid in pd.unique(bets_schedule_df["game_id"]):
+                        try:
+                            subset = forecast_df[forecast_df["game_id"] == gid]
+                            if subset.empty:
+                                continue
+                            total_mean_raw, total_sd_raw, components_json = (
+                                total_ensemble.combine(subset)
+                            )
+                            if total_mean_raw is None:
+                                continue
+                            mask = bets_schedule_df["game_id"] == gid
+                            bets_schedule_df.loc[mask, "total_mean"] = total_mean_raw
+                            if total_sd_raw is not None:
+                                bets_schedule_df.loc[mask, "total_sd"] = total_sd_raw
+                            bets_schedule_df.loc[
+                                mask, "total_source"
+                            ] = total_ensemble.ensemble_id
+                            if "total_ensemble_components_json" in bets_schedule_df.columns:
+                                bets_schedule_df.loc[
+                                    mask, "total_ensemble_components_json"
+                                ] = components_json
+                            total_ensemble_applied = True
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+
         # If the ensemble was applied successfully to any games, set the BETS model label
         # and ensure META reflects the ensemble as the bets model.
         if ensemble_applied and bets_schedule_df is not None:
@@ -1417,7 +1466,9 @@ def build_schedule_excel_report(
             or "direct"
         )
         total_source_id = (
-            _first_nonempty_source(
+            total_ensemble_id
+            if total_ensemble_applied
+            else _first_nonempty_source(
                 bets_schedule_df if bets_schedule_df is not None else pd.DataFrame(),
                 "total_source",
                 as_of_date=resolved_as_of_date,
@@ -1460,6 +1511,8 @@ def build_schedule_excel_report(
         ws = wb["BETS"]
         apply_ev_formulas(ws, use_price=True)
         apply_model_prob_formulas_for_bets_sheet(ws)
+        validate_bets_formulas(ws)
+        validate_no_ellipsis_formulas(wb)
         # Format the `stake` column as US dollars (column header: "stake").
         try:
             header = next(ws.iter_rows(min_row=1, max_row=1))

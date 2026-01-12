@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from openpyxl.styles import Protection
 from openpyxl.utils import get_column_letter
+from openpyxl.workbook.workbook import Workbook
 from openpyxl.worksheet.worksheet import Worksheet
 
 
@@ -11,8 +12,16 @@ def _header_index(ws: Worksheet) -> dict[str, int]:
     return {cell.value: cell.column for cell in ws[1] if cell.value}
 
 
+def build_header_letter_map(ws: Worksheet) -> dict[str, str]:
+    return {cell.value: cell.column_letter for cell in ws[1] if cell.value}
+
+
 def _cell_ref(col: int, row: int) -> str:
     return f"{get_column_letter(col)}{row}"
+
+
+def _cell_ref_letter(letter: str, row: int) -> str:
+    return f"{letter}{row}"
 
 
 def _column_has_values(ws: Worksheet, col: int) -> bool:
@@ -24,6 +33,53 @@ def _column_has_values(ws: Worksheet, col: int) -> bool:
             continue
         return True
     return False
+
+
+def resolve_market_inputs(cols_map: dict[str, str]) -> dict[str, dict[str, str | None]]:
+    def _resolve(preferred: str, fallback: str | None = None) -> str | None:
+        if preferred in cols_map:
+            return cols_map[preferred]
+        if fallback and fallback in cols_map:
+            return cols_map[fallback]
+        return None
+
+    return {
+        "ML": {
+            "home_prob": _resolve("ml_home_win_prob", "home_win_prob"),
+            "away_prob": _resolve("ml_away_win_prob", "away_win_prob"),
+        },
+        "spread": {
+            "line": _resolve("line"),
+            "mean": _resolve("spread_margin_mean", "margin_mean"),
+            "sd": _resolve("spread_margin_sd", "margin_sd"),
+        },
+        "total": {
+            "line": _resolve("line"),
+            "mean": _resolve("total_mean", "total"),
+            "sd": _resolve("total_sd"),
+        },
+    }
+
+
+def _select_ml_prob_letters(
+    ws: Worksheet,
+    header_index: dict[str, int],
+    header_letters: dict[str, str],
+    inputs: dict[str, dict[str, str | None]],
+) -> tuple[str | None, str | None]:
+    if (
+        "home_win_prob_calibrated" in header_index
+        and "away_win_prob_calibrated" in header_index
+    ):
+        calibrated_has_values = _column_has_values(
+            ws, header_index["home_win_prob_calibrated"]
+        ) or _column_has_values(ws, header_index["away_win_prob_calibrated"])
+        if calibrated_has_values:
+            return (
+                header_letters["home_win_prob_calibrated"],
+                header_letters["away_win_prob_calibrated"],
+            )
+    return inputs["ML"]["home_prob"], inputs["ML"]["away_prob"]
 
 
 def apply_ev_formulas(ws: Worksheet, *, use_price: bool = False) -> None:
@@ -82,74 +138,182 @@ def apply_model_prob_formulas_for_bets_sheet(ws: Worksheet) -> None:
         "model_prob",
         "home_team",
         "away_team",
-        "margin_mean",
-        "margin_sd",
-        "total",
-        "total_sd",
     }
     if not required.issubset(header):
         return
 
-    home_win_col = None
-    away_win_col = None
-    if "home_win_prob_calibrated" in header and "away_win_prob_calibrated" in header:
-        calibrated_has_values = _column_has_values(
-            ws, header["home_win_prob_calibrated"]
-        ) or _column_has_values(ws, header["away_win_prob_calibrated"])
-        if calibrated_has_values:
-            home_win_col = header["home_win_prob_calibrated"]
-            away_win_col = header["away_win_prob_calibrated"]
-    if home_win_col is None or away_win_col is None:
-        if "home_win_prob" not in header or "away_win_prob" not in header:
-            return
-        home_win_col = header["home_win_prob"]
-        away_win_col = header["away_win_prob"]
+    header_letters = {
+        name: get_column_letter(col) for name, col in header.items() if name
+    }
+    inputs = resolve_market_inputs(header_letters)
+    home_win_col, away_win_col = _select_ml_prob_letters(
+        ws, header, header_letters, inputs
+    )
+    if not home_win_col or not away_win_col:
+        return
 
-    market_col = header["market_type"]
-    selection_col = header["selection"]
-    line_col = header["line"]
-    model_col = header["model_prob"]
-    home_team_col = header["home_team"]
-    away_team_col = header["away_team"]
-    margin_mean_col = header["margin_mean"]
-    margin_sd_col = header["margin_sd"]
-    total_col = header["total"]
-    total_sd_col = header["total_sd"]
+    market_col = header_letters["market_type"]
+    selection_col = header_letters["selection"]
+    line_col = header_letters["line"]
+    model_col = header_letters["model_prob"]
+    home_team_col = header_letters["home_team"]
+    away_team_col = header_letters["away_team"]
+    spread_mean_col = inputs["spread"]["mean"]
+    spread_sd_col = inputs["spread"]["sd"]
+    total_mean_col = inputs["total"]["mean"]
+    total_sd_col = inputs["total"]["sd"]
+    if not spread_mean_col or not spread_sd_col or not total_mean_col or not total_sd_col:
+        return
 
     for row in range(2, ws.max_row + 1):
-        market_cell = _cell_ref(market_col, row)
-        selection_cell = _cell_ref(selection_col, row)
-        line_cell = _cell_ref(line_col, row)
-        model_cell = _cell_ref(model_col, row)
-        home_team_cell = _cell_ref(home_team_col, row)
-        away_team_cell = _cell_ref(away_team_col, row)
-        home_win_cell = _cell_ref(home_win_col, row)
-        away_win_cell = _cell_ref(away_win_col, row)
-        margin_mean_cell = _cell_ref(margin_mean_col, row)
-        margin_sd_cell = _cell_ref(margin_sd_col, row)
-        total_cell = _cell_ref(total_col, row)
-        total_sd_cell = _cell_ref(total_sd_col, row)
+        market_cell = _cell_ref_letter(market_col, row)
+        selection_cell = _cell_ref_letter(selection_col, row)
+        line_cell = _cell_ref_letter(line_col, row)
+        model_cell = _cell_ref_letter(model_col, row)
+        home_team_cell = _cell_ref_letter(home_team_col, row)
+        away_team_cell = _cell_ref_letter(away_team_col, row)
+        home_win_cell = _cell_ref_letter(home_win_col, row)
+        away_win_cell = _cell_ref_letter(away_win_col, row)
+        spread_mean_cell = _cell_ref_letter(spread_mean_col, row)
+        spread_sd_cell = _cell_ref_letter(spread_sd_col, row)
+        total_mean_cell = _cell_ref_letter(total_mean_col, row)
+        total_sd_cell = _cell_ref_letter(total_sd_col, row)
 
         spread_cdf = (
-            f"(0.5*(1+ERF((ABS({line_cell})-{margin_mean_cell})/({margin_sd_cell}*SQRT(2)))))"
+            f"(0.5*(1+ERF((ABS({line_cell})-{spread_mean_cell})/({spread_sd_cell}*SQRT(2)))))"
         )
-        total_cdf = f"(0.5*(1+ERF(({line_cell}-{total_cell})/({total_sd_cell}*SQRT(2)))))"
+        total_cdf = f"(0.5*(1+ERF(({line_cell}-{total_mean_cell})/({total_sd_cell}*SQRT(2)))))"
 
         ws[model_cell].value = (
             f"=@IF({market_cell}=\"ML\","
             f"IF({selection_cell}={home_team_cell},{home_win_cell},"
             f"IF({selection_cell}={away_team_cell},{away_win_cell},\"\")),"
             f"IF({market_cell}=\"spread\","
-            f"IF(OR({line_cell}=\"\",{margin_sd_cell}=\"\"),\"\"," 
+            f"IF(OR({line_cell}=\"\",{spread_sd_cell}=\"\"),\"\","
             f"IF({selection_cell}={home_team_cell},"
             f"1-{spread_cdf},"
             f"IF({selection_cell}={away_team_cell},"
             f"{spread_cdf},\"\"))),"
             f"IF({market_cell}=\"total\","
-            f"IF(OR({line_cell}=\"\",{total_sd_cell}=\"\"),\"\"," 
+            f"IF(OR({line_cell}=\"\",{total_sd_cell}=\"\"),\"\","
             f"IF({selection_cell}=\"Over\","
             f"1-{total_cdf},"
             f"IF({selection_cell}=\"Under\","
             f"{total_cdf},\"\"))),"
             "\"\")))"
+        )
+
+
+def validate_no_ellipsis_formulas(wb: Workbook) -> None:
+    """Fail if any worksheet contains a formula with ellipsis text."""
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                if not isinstance(cell.value, str):
+                    continue
+                if not cell.value.startswith(("=", "=@")):
+                    continue
+                if "..." in cell.value:
+                    raise ValueError(
+                        f"Formula validation failed: {ws.title}!{cell.coordinate} contains '...'"
+                    )
+
+
+def validate_bets_formulas(ws_bets: Worksheet) -> None:
+    header_index = _header_index(ws_bets)
+    header_letters = build_header_letter_map(ws_bets)
+    required_headers = {
+        "market_type",
+        "selection",
+        "line",
+        "model_prob",
+        "home_team",
+        "away_team",
+    }
+    missing_headers = sorted(name for name in required_headers if name not in header_index)
+    if missing_headers:
+        raise ValueError(f"BETS formula validation failed: missing headers {missing_headers}")
+
+    inputs = resolve_market_inputs(header_letters)
+    ml_home_col, ml_away_col = _select_ml_prob_letters(
+        ws_bets, header_index, header_letters, inputs
+    )
+    missing_inputs: list[str] = []
+    if not ml_home_col:
+        missing_inputs.append("ml_home_win_prob/home_win_prob")
+    if not ml_away_col:
+        missing_inputs.append("ml_away_win_prob/away_win_prob")
+    if not inputs["spread"]["mean"]:
+        missing_inputs.append("spread_margin_mean/margin_mean")
+    if not inputs["spread"]["sd"]:
+        missing_inputs.append("spread_margin_sd/margin_sd")
+    if not inputs["total"]["mean"]:
+        missing_inputs.append("total_mean/total")
+    if not inputs["total"]["sd"]:
+        missing_inputs.append("total_sd")
+    if missing_inputs:
+        raise ValueError(
+            "BETS formula validation failed: missing required input columns: "
+            + ", ".join(missing_inputs)
+        )
+
+    market_col = header_index["market_type"]
+    model_col = header_index["model_prob"]
+    sample_rows: dict[str, list[int]] = {"ML": [], "spread": [], "total": []}
+    for row in range(2, ws_bets.max_row + 1):
+        value = ws_bets.cell(row=row, column=market_col).value
+        market = str(value).strip() if value is not None else ""
+        if market in sample_rows and len(sample_rows[market]) < 3:
+            sample_rows[market].append(row)
+
+    def _assert_formula(row: int, required_refs: list[str], market: str) -> None:
+        cell = ws_bets.cell(row=row, column=model_col)
+        if not isinstance(cell.value, str):
+            raise ValueError(
+                f"BETS formula validation failed: model_prob not a string for {market} row {row}"
+            )
+        formula = cell.value.strip()
+        if not (formula.startswith("=") or formula.startswith("=@")):
+            raise ValueError(
+                f"BETS formula validation failed: model_prob missing formula for {market} row {row}"
+            )
+        if "..." in formula:
+            raise ValueError(
+                f"BETS formula validation failed: model_prob contains '...' for {market} row {row}"
+            )
+        missing_refs = [ref for ref in required_refs if ref not in formula]
+        if missing_refs:
+            raise ValueError(
+                f"BETS formula validation failed: model_prob missing refs {missing_refs} "
+                f"for {market} row {row}"
+            )
+
+    for row in sample_rows["ML"]:
+        _assert_formula(
+            row,
+            [
+                _cell_ref_letter(ml_home_col, row),
+                _cell_ref_letter(ml_away_col, row),
+            ],
+            "ML",
+        )
+    for row in sample_rows["spread"]:
+        _assert_formula(
+            row,
+            [
+                _cell_ref_letter(inputs["spread"]["line"], row),
+                _cell_ref_letter(inputs["spread"]["mean"], row),
+                _cell_ref_letter(inputs["spread"]["sd"], row),
+            ],
+            "spread",
+        )
+    for row in sample_rows["total"]:
+        _assert_formula(
+            row,
+            [
+                _cell_ref_letter(inputs["total"]["line"], row),
+                _cell_ref_letter(inputs["total"]["mean"], row),
+                _cell_ref_letter(inputs["total"]["sd"], row),
+            ],
+            "total",
         )
