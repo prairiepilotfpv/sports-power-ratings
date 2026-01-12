@@ -78,7 +78,9 @@ def test_schedule_workbook_includes_bets_and_meta(tmp_path: Path) -> None:
 
     meta_df = pd.read_excel(workbook_path, sheet_name="META")
     meta = dict(zip(meta_df["key"], meta_df["value"]))
-    assert meta["review_run_id"].startswith("schedule-nba-2024-25-2024-01-05-")
+    assert "ml_bradley-terry" in meta["review_run_id"]
+    assert "spread_direct" in meta["review_run_id"]
+    assert "total_direct" in meta["review_run_id"]
 
 
 def test_schedule_bets_rows_and_log_bets(tmp_path: Path) -> None:
@@ -186,3 +188,8 @@ def test_schedule_ensemble_uses_tuned_weights(tmp_path: Path, monkeypatch) -> No
     assert home_row["home_win_prob"] == pytest.approx(combined, rel=1e-6)
     assert "ensemble_ml_v1" in str(home_row["win_prob_source"])
     assert "ml_ensemble_components_json" in ml_rows.columns
+
+    meta_df = pd.read_excel(workbook_path, sheet_name="META")
+    meta = dict(zip(meta_df["key"], meta_df["value"]))
+    assert "ml_ensemble_ml_v1" in meta["review_run_id"]
+    assert "spread_ensemble_spread_v1" in meta["review_run_id"]

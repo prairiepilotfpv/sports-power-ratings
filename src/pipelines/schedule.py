@@ -6,6 +6,7 @@ import json
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
+import re
 
 import pandas as pd
 from openpyxl import load_workbook
@@ -675,10 +676,78 @@ def _resolve_bets_model(models: list[str], bets_model: str | None) -> str:
     return models[0]
 
 
+def _sanitize_source_id(value: Any, *, default: str = "direct") -> str:
+    text = _normalize_source_label(value, default=default).lower()
+    cleaned = re.sub(r"[^a-z0-9._-]+", "-", text).strip("-")
+    return cleaned or default
+
+
+def _normalize_source_label(value: Any, *, default: str = "direct") -> str:
+    if value is None:
+        return default
+    try:
+        if pd.isna(value):
+            return default
+    except Exception:
+        pass
+    text = str(value).strip()
+    return text if text else default
+
+
+def _is_missing(value: Any) -> bool:
+    if value is None:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except Exception:
+        pass
+    return isinstance(value, str) and not value.strip()
+
+
+def _first_nonempty_source(
+    schedule_df: pd.DataFrame, column: str, *, as_of_date: date
+) -> str | None:
+    if schedule_df.empty or column not in schedule_df.columns:
+        return None
+    subset = schedule_df
+    try:
+        if "status" in schedule_df.columns and "date" in schedule_df.columns:
+            _dt = pd.to_datetime(schedule_df["date"], errors="coerce").dt.date
+            mask = (schedule_df["status"] == "scheduled") & (_dt == as_of_date)
+            subset = schedule_df.loc[mask]
+    except Exception:
+        subset = schedule_df
+    for value in subset[column]:
+        if value is None:
+            continue
+        try:
+            if pd.isna(value):
+                continue
+        except Exception:
+            pass
+        text = str(value).strip()
+        if text:
+            return text
+    return None
+
+
 def _deterministic_review_run_id(
-    *, sport: str, season: str, as_of_date: date, bets_model: str
+    *,
+    sport: str,
+    season: str,
+    as_of_date: date,
+    ml_source_id: str,
+    spread_source_id: str,
+    total_source_id: str,
 ) -> str:
-    return f"schedule-{sport}-{season}-{as_of_date.isoformat()}-{bets_model}"
+    ml_id = _sanitize_source_id(ml_source_id)
+    spread_id = _sanitize_source_id(spread_source_id)
+    total_id = _sanitize_source_id(total_source_id)
+    return (
+        f"schedule-{sport}-{season}-{as_of_date.isoformat()}"
+        f"-ml_{ml_id}-spread_{spread_id}-total_{total_id}"
+    )
 
 
 def _build_bets_dataframe(
@@ -735,9 +804,11 @@ def _build_bets_dataframe(
             "total",
             "total_sd",
             "model",
+            "market_forecast_source",
             "ml_ensemble_components_json",
             "spread_source",
             "spread_ensemble_components_json",
+            "total_source",
         ]
     )
 
@@ -784,6 +855,7 @@ def _build_bets_dataframe(
             "source_market_snapshot_id": "",
             "opportunity_id": "",
             "model": model_name,
+            "market_forecast_source": "",
         }
         forecast_blanks = {
             "home_win_prob": "",
@@ -796,22 +868,42 @@ def _build_bets_dataframe(
             "ml_ensemble_components_json": "",
             "spread_source": "",
             "spread_ensemble_components_json": "",
+            "total_source": "",
         }
+        ml_source_label = _normalize_source_label(
+            row.get("win_prob_source") or row.get("ml_source")
+        )
+        spread_source_label = _normalize_source_label(row.get("spread_source"))
+        total_source_label = _normalize_source_label(row.get("total_source"))
+
+        win_prob_source = row.get("win_prob_source")
+        if _is_missing(win_prob_source):
+            win_prob_source = ml_source_label
+
+        spread_source = row.get("spread_source")
+        if _is_missing(spread_source):
+            spread_source = spread_source_label
+
+        total_source = row.get("total_source")
+        if _is_missing(total_source):
+            total_source = total_source_label
+
         ml_fields = {
             "home_win_prob": row.get("home_win_prob"),
             "away_win_prob": row.get("away_win_prob"),
-            "win_prob_source": row.get("win_prob_source", ""),
+            "win_prob_source": win_prob_source,
             "ml_ensemble_components_json": row.get("ml_ensemble_components_json"),
         }
         spread_fields = {
             "margin_mean": row.get("margin_mean"),
             "margin_sd": row.get("margin_sd"),
-            "spread_source": row.get("spread_source", ""),
+            "spread_source": spread_source,
             "spread_ensemble_components_json": row.get("spread_ensemble_components_json"),
         }
         total_fields = {
             "total": total,
             "total_sd": row.get("total_sd"),
+            "total_source": total_source,
         }
         if not include_calibrated:
             for key in (
@@ -849,6 +941,8 @@ def _build_bets_dataframe(
                     **ml_fields,
                     "market_type": "ML",
                     "selection": home_team,
+                    "model": ml_source_label,
+                    "market_forecast_source": ml_source_label,
                 },
                 {
                     **base,
@@ -856,6 +950,8 @@ def _build_bets_dataframe(
                     **ml_fields,
                     "market_type": "ML",
                     "selection": away_team,
+                    "model": ml_source_label,
+                    "market_forecast_source": ml_source_label,
                 },
                 {
                     **base,
@@ -863,6 +959,8 @@ def _build_bets_dataframe(
                     **spread_fields,
                     "market_type": "spread",
                     "selection": home_team,
+                    "model": spread_source_label,
+                    "market_forecast_source": spread_source_label,
                 },
                 {
                     **base,
@@ -870,6 +968,8 @@ def _build_bets_dataframe(
                     **spread_fields,
                     "market_type": "spread",
                     "selection": away_team,
+                    "model": spread_source_label,
+                    "market_forecast_source": spread_source_label,
                 },
                 {
                     **base,
@@ -877,6 +977,8 @@ def _build_bets_dataframe(
                     **total_fields,
                     "market_type": "total",
                     "selection": "Over",
+                    "model": total_source_label,
+                    "market_forecast_source": total_source_label,
                 },
                 {
                     **base,
@@ -884,6 +986,8 @@ def _build_bets_dataframe(
                     **total_fields,
                     "market_type": "total",
                     "selection": "Under",
+                    "model": total_source_label,
+                    "market_forecast_source": total_source_label,
                 },
             ]
         )
@@ -1078,12 +1182,6 @@ def build_schedule_excel_report(
     models = _resolve_models(model)
     bets_model_name = _resolve_bets_model(models, bets_model)
     resolved_as_of_date = _resolve_as_of_date(as_of_date)
-    review_run_id = _deterministic_review_run_id(
-        sport=sport,
-        season=season,
-        as_of_date=resolved_as_of_date,
-        bets_model=bets_model_name,
-    )
     report_path = _resolve_workbook_path(
         output_path,
         sport=sport,
@@ -1193,11 +1291,15 @@ def build_schedule_excel_report(
         # If multiple models were produced, try to build an ML ensemble and apply
         # the combined probabilities to the bets_schedule_df (best-effort).
         ensemble_applied = False
+        ml_ensemble_id = "ensemble_ml_v1"
+        spread_ensemble_id = "ensemble_spread_v1"
         try:
             if bets_schedule_df is not None and len(models) > 1 and forecast_set_rows:
                 forecast_df = pd.DataFrame(forecast_set_rows)
                 if not forecast_df.empty:
-                    ensemble = MLWeightedAverageEnsemble(sport, season, ensemble_id="ensemble_ml_v1")
+                    ensemble = MLWeightedAverageEnsemble(
+                        sport, season, ensemble_id=ml_ensemble_id
+                    )
                     # Load calibrator for the ensemble source, if present
                     try:
                         ensemble_cal = load_latest_calibrator(
@@ -1260,12 +1362,13 @@ def build_schedule_excel_report(
             pass
 
         # Apply a spread ensemble to margin fields (best-effort).
+        spread_ensemble_applied = False
         try:
             if bets_schedule_df is not None and len(models) > 1 and forecast_set_rows:
                 forecast_df = pd.DataFrame(forecast_set_rows)
                 if not forecast_df.empty:
                     spread_ensemble = SpreadWeightedAverageEnsemble(
-                        sport, season, ensemble_id="ensemble_spread_v1"
+                        sport, season, ensemble_id=spread_ensemble_id
                     )
                     for gid in pd.unique(bets_schedule_df["game_id"]):
                         try:
@@ -1287,6 +1390,7 @@ def build_schedule_excel_report(
                             bets_schedule_df.loc[
                                 mask, "spread_ensemble_components_json"
                             ] = components_json
+                            spread_ensemble_applied = True
                         except Exception:
                             continue
         except Exception:
@@ -1302,6 +1406,35 @@ def build_schedule_excel_report(
                 # Best-effort assignment; ignore failures.
                 pass
 
+        spread_source_id = (
+            spread_ensemble_id
+            if spread_ensemble_applied
+            else _first_nonempty_source(
+                bets_schedule_df if bets_schedule_df is not None else pd.DataFrame(),
+                "spread_source",
+                as_of_date=resolved_as_of_date,
+            )
+            or "direct"
+        )
+        total_source_id = (
+            _first_nonempty_source(
+                bets_schedule_df if bets_schedule_df is not None else pd.DataFrame(),
+                "total_source",
+                as_of_date=resolved_as_of_date,
+            )
+            or "direct"
+        )
+        ml_source_id = (
+            ml_ensemble_id if ensemble_applied else (bets_model_name or "direct")
+        )
+        review_run_id = _deterministic_review_run_id(
+            sport=sport,
+            season=season,
+            as_of_date=resolved_as_of_date,
+            ml_source_id=ml_source_id,
+            spread_source_id=spread_source_id,
+            total_source_id=total_source_id,
+        )
         bets_df = _build_bets_dataframe(
             bets_schedule_df if bets_schedule_df is not None else pd.DataFrame(),
             model_name=bets_model_name,

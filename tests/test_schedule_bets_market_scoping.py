@@ -17,14 +17,14 @@ def test_bets_dataframe_scopes_forecasts_by_market():
                 "home_team": "H",
                 "home_win_prob": 0.6,
                 "away_win_prob": 0.4,
-                "win_prob_source": "model_x",
+                "win_prob_source": "direct+ensemble_ml_v1",
                 "margin_mean": 3.0,
                 "margin_sd": 1.2,
                 "projected_home_score": 110.0,
                 "projected_away_score": 100.0,
                 "total_sd": 5.0,
                 "ml_ensemble_components_json": "[]",
-                "spread_source": "model_y",
+                "spread_source": "ensemble_spread_v1",
                 "spread_ensemble_components_json": "[]",
             }
         ]
@@ -36,18 +36,27 @@ def test_bets_dataframe_scopes_forecasts_by_market():
 
     ml_rows = df[df["market_type"] == "ML"]
     assert not ml_rows.empty
+    assert ml_rows.iloc[0]["model"] == "direct+ensemble_ml_v1"
+    assert ml_rows.iloc[0]["market_forecast_source"] == "direct+ensemble_ml_v1"
     assert ml_rows.iloc[0]["home_win_prob"] == 0.6
     assert ml_rows.iloc[0]["margin_mean"] == ""
     assert ml_rows.iloc[0]["total"] == ""
+    assert ml_rows.iloc[0]["spread_source"] == ""
 
     spread_rows = df[df["market_type"] == "spread"]
     assert not spread_rows.empty
+    assert spread_rows.iloc[0]["model"] == "ensemble_spread_v1"
+    assert spread_rows.iloc[0]["market_forecast_source"] == "ensemble_spread_v1"
     assert spread_rows.iloc[0]["margin_mean"] == 3.0
     assert spread_rows.iloc[0]["home_win_prob"] == ""
     assert spread_rows.iloc[0]["total"] == ""
+    assert spread_rows.iloc[0]["win_prob_source"] == ""
 
     total_rows = df[df["market_type"] == "total"]
     assert not total_rows.empty
+    assert total_rows.iloc[0]["model"] == "direct"
+    assert total_rows.iloc[0]["market_forecast_source"] == "direct"
     assert total_rows.iloc[0]["total"] == 210.0
     assert total_rows.iloc[0]["margin_mean"] == ""
     assert total_rows.iloc[0]["home_win_prob"] == ""
+    assert total_rows.iloc[0]["spread_source"] == ""
