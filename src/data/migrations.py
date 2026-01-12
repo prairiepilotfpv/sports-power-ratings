@@ -126,6 +126,8 @@ def _add_model_metrics_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_brier_score REAL")
     if "backtest_mae_margin" not in cols:
         conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_mae_margin REAL")
+    if "backtest_mae_total" not in cols:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_mae_total REAL")
     if "backtest_win_prob_k" not in cols:
         conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_win_prob_k REAL")
     if "margin_std" not in cols:
@@ -154,12 +156,100 @@ def _add_model_metrics_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE model_metrics ADD COLUMN tuned_params_updated_at TEXT")
 
 
+def _add_market_tuning_tables(conn: sqlite3.Connection) -> None:
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(model_metrics)")]
+    if cols and "backtest_mae_total" not in cols:
+        conn.execute("ALTER TABLE model_metrics ADD COLUMN backtest_mae_total REAL")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS model_market_tuning_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sport TEXT NOT NULL,
+            season TEXT NOT NULL,
+            model TEXT NOT NULL,
+            market TEXT NOT NULL,
+            metric_optimized TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            best_score REAL,
+            best_params_json TEXT,
+            summary_metrics_json TEXT,
+            started_at TEXT,
+            finished_at TEXT,
+            notes TEXT
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_model_market_tuning_runs
+        ON model_market_tuning_runs(sport, season, model, market, metric_optimized);
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS model_market_active_params (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sport TEXT NOT NULL,
+            season TEXT NOT NULL,
+            model TEXT NOT NULL,
+            market TEXT NOT NULL,
+            params_json TEXT NOT NULL,
+            source_run_id TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(sport, season, model, market)
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ensemble_market_tuning_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sport TEXT NOT NULL,
+            season TEXT NOT NULL,
+            market TEXT NOT NULL,
+            ensemble_id TEXT NOT NULL,
+            metric_optimized TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            best_score REAL,
+            weights_json TEXT,
+            models_json TEXT,
+            summary_metrics_json TEXT,
+            started_at TEXT,
+            finished_at TEXT
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ensemble_market_tuning_runs
+        ON ensemble_market_tuning_runs(sport, season, market, ensemble_id);
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ensemble_market_active_weights (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sport TEXT NOT NULL,
+            season TEXT NOT NULL,
+            market TEXT NOT NULL,
+            ensemble_id TEXT NOT NULL,
+            weights_json TEXT NOT NULL,
+            models_json TEXT NOT NULL,
+            source_run_id TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(sport, season, market, ensemble_id)
+        );
+        """
+    )
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "add_hold_reason_to_staging", _add_hold_reason_to_staging),
     Migration(2, "add_clv_snapshots_table", _add_clv_snapshots_table),
     Migration(3, "add_prediction_exclusions_table", _add_prediction_exclusions_table),
     Migration(4, "add_games_metadata_columns", _add_games_metadata_columns),
     Migration(5, "add_model_metrics_columns", _add_model_metrics_columns),
+    Migration(6, "add_market_tuning_tables", _add_market_tuning_tables),
 ]
 
 LATEST_SCHEMA_VERSION = max((m.version for m in MIGRATIONS), default=0)

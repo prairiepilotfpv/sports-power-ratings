@@ -15,11 +15,21 @@ from markets.base import Market
 class TotalWeightedAverageEnsemble:
     """Combine multiple model total forecasts using weighted average."""
 
-    def __init__(self, sport: str, season: str, ensemble_id: str = "ensemble_total_v1") -> None:
+    def __init__(
+        self,
+        sport: str,
+        season: str,
+        ensemble_id: str = "ensemble_total_v1",
+        weights: dict[str, float] | None = None,
+    ) -> None:
         self.sport = sport
         self.season = season
         self._ensemble_id = ensemble_id
-        self._weights = load_market_weights(sport, season, Market.TOTAL.name, ensemble_id) or {}
+        self._weights = (
+            weights
+            if weights is not None
+            else (load_market_weights(sport, season, Market.TOTAL.name, ensemble_id) or {})
+        )
 
     @property
     def ensemble_id(self) -> str:

@@ -15,7 +15,7 @@ from backtest.runner import load_games_df_from_csv, run_backtest
 from data.repository import save_tuned_params, set_active_tuned_params
 from models.registry import get_backtest_model, normalize_model_name
 
-_METRICS = {"log_loss", "brier_score", "mae_margin"}
+_METRICS = {"log_loss", "brier_score", "mae_margin", "mae_total"}
 
 
 @dataclass(frozen=True)
@@ -143,6 +143,7 @@ def run_tuning_pipeline(
                 "log_loss": metrics.get("log_loss"),
                 "brier_score": metrics.get("brier_score"),
                 "mae_margin": metrics.get("mae_margin"),
+                "mae_total": metrics.get("mae_total"),
                 "metric": metric,
                 "metric_value": metric_value,
                 "output_dir": str(candidate_dir),

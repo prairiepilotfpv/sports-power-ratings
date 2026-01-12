@@ -16,11 +16,18 @@ from models.poisson import PoissonModel
 from models.toor import TOORModel
 
 
+def normalize_model_name(name: str) -> str:
+    return name.strip().lower()
+
+
 @dataclass(frozen=True)
 class ModelSpec:
     name: str
     path: str
     abbreviation: str
+    is_experimental: bool = False
+    is_deprecated: bool = False
+    tags: tuple[str, ...] = ()
     required_module: str | None = None
 
 
@@ -67,6 +74,35 @@ _BACKTEST_REGISTRY: dict[str, Type[BaseModel]] = {
 }
 
 
+@dataclass(frozen=True)
+class ModelMetadata:
+    is_experimental: bool = False
+    is_deprecated: bool = False
+    tags: tuple[str, ...] = ()
+
+
+def _default_experimental_flag(name: str) -> bool:
+    normalized = normalize_model_name(name)
+    # Treat any variant that references HFA explicitly as experimental by default.
+    return "hfa" in normalized
+
+
+_MODEL_METADATA: dict[str, ModelMetadata] = {}
+for spec_name, spec in _MODEL_SPECS.items():
+    _MODEL_METADATA[spec_name] = ModelMetadata(
+        is_experimental=spec.is_experimental or _default_experimental_flag(spec_name),
+        is_deprecated=spec.is_deprecated,
+        tags=spec.tags,
+    )
+
+_BACKTEST_METADATA: dict[str, ModelMetadata] = {}
+for name in _BACKTEST_REGISTRY.keys():
+    _BACKTEST_METADATA[name] = ModelMetadata(
+        is_experimental=_default_experimental_flag(name),
+        tags=("backtest",),
+    )
+
+
 def _model_available(spec: ModelSpec) -> bool:
     if spec.required_module is None:
         return True
@@ -98,6 +134,19 @@ def list_models() -> list[str]:
     return sorted(set(static + list(_DYNAMIC_MODELS.keys())))
 
 
+def get_model_metadata(name: str) -> ModelMetadata:
+    normalized = normalize_model_name(name)
+    if normalized in _MODEL_METADATA:
+        return _MODEL_METADATA[normalized]
+    if normalized in _BACKTEST_METADATA:
+        return _BACKTEST_METADATA[normalized]
+    return ModelMetadata(is_experimental=_default_experimental_flag(normalized))
+
+
+def is_experimental_model(name: str) -> bool:
+    return get_model_metadata(name).is_experimental
+
+
 def get_model_abbreviation(name: str) -> str:
     name = normalize_model_name(name)
     if name in _DYNAMIC_ABBREVIATIONS:
@@ -123,21 +172,22 @@ def list_backtest_models() -> list[str]:
     return sorted(_BACKTEST_REGISTRY.keys())
 
 
-def normalize_model_name(name: str) -> str:
-    return name.strip().lower()
-
-
 def register_model(
     name: str,
     model_cls: Type[PowerRatingModel],
     *,
     abbreviation: str | None = None,
+    metadata: ModelMetadata | None = None,
 ) -> None:
     """Register a power rating model (primarily for tests)."""
     normalized = normalize_model_name(name)
     _DYNAMIC_MODELS[normalized] = model_cls
     if abbreviation:
         _DYNAMIC_ABBREVIATIONS[normalized] = abbreviation
+    resolved_metadata = metadata or ModelMetadata(
+        is_experimental=_default_experimental_flag(normalized)
+    )
+    _MODEL_METADATA[normalized] = resolved_metadata
 
 
 def unregister_model(name: str) -> None:
@@ -145,3 +195,4 @@ def unregister_model(name: str) -> None:
     normalized = normalize_model_name(name)
     _DYNAMIC_MODELS.pop(normalized, None)
     _DYNAMIC_ABBREVIATIONS.pop(normalized, None)
+    _MODEL_METADATA.pop(normalized, None)

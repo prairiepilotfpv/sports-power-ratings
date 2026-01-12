@@ -1,0 +1,296 @@
+"""Market-aware tuning wrappers for models and ensembles."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+from typing import Any, Iterable
+
+from backtest.runner import load_games_df_from_csv, run_backtest
+from data.repository import (
+    save_ensemble_market_tuning_run,
+    save_model_market_tuning_run,
+    set_active_ensemble_market_weights,
+    set_active_model_market_params,
+)
+from markets.base import Market
+from models.registry import get_backtest_model, normalize_model_name
+from pipelines.ensemble_tuning import tune_market_ensemble
+from pipelines.tuning import run_tuning_pipeline
+
+
+@dataclass(frozen=True)
+class ModelMarketTuningResult:
+    model: str
+    market: str
+    metric_optimized: str
+    run_id: str
+    best_score: float | None
+    best_params: dict[str, Any]
+    summary_metrics: dict[str, Any]
+    output_dir: Path
+
+
+def run_model_market_tuning(
+    *,
+    sport: str,
+    season: str,
+    model: str,
+    market: str,
+    start_date: str,
+    end_date: str,
+    window: str,
+    rolling_days: int | None,
+    rolling_games: int | None,
+    csv_path: str | Path,
+    output_dir: str | Path | None,
+    grid_override: dict[str, Any] | None,
+    db_path: str | Path,
+    metric_override: str | None = None,
+    allow_worse: bool = False,
+) -> ModelMarketTuningResult:
+    normalized_market = _normalize_market(market)
+    tuning_metric, metric_optimized = _resolve_market_metric(
+        normalized_market, metric_override
+    )
+    started_at = _utc_now()
+    tuning_outputs = run_tuning_pipeline(
+        csv_path=csv_path,
+        model=model,
+        start_date=start_date,
+        end_date=end_date,
+        window=window,
+        rolling_days=rolling_days,
+        rolling_games=rolling_games,
+        metric=tuning_metric,
+        output_dir=output_dir,
+        grid_override=grid_override,
+        apply_best=False,
+        require_improvement=not allow_worse,
+        db_path=None,
+        sport=sport,
+        season=season,
+    )
+    run_id = _extract_run_id(tuning_outputs)
+    model_name = normalize_model_name(tuning_outputs.model)
+    best_params = tuning_outputs.best_params or {}
+
+    games_df = load_games_df_from_csv(csv_path, sport=sport, season=season)
+    model_cls = get_backtest_model(model_name)
+    best_dir = Path(tuning_outputs.output_dir) / f"{run_id}__best_market"
+    best_dir.mkdir(parents=True, exist_ok=True)
+    best_outputs = run_backtest(
+        model_factory=_build_model_factory(model_cls, best_params),
+        games_df=games_df,
+        start_date=start_date,
+        end_date=end_date,
+        window=window,
+        rolling_days=rolling_days,
+        rolling_games=rolling_games,
+        output_dir=best_dir,
+        model_name=model_name,
+    )
+    summary_metrics = (
+        best_outputs.metrics_overall.iloc[0].to_dict()
+        if not best_outputs.metrics_overall.empty
+        else {}
+    )
+    finished_at = _utc_now()
+
+    save_model_market_tuning_run(
+        db_path,
+        sport=sport,
+        season=season,
+        model=model_name,
+        market=normalized_market,
+        metric_optimized=metric_optimized,
+        run_id=run_id,
+        best_score=tuning_outputs.best_score,
+        best_params_json=json.dumps(best_params, sort_keys=True),
+        summary_metrics_json=_json_dumps(summary_metrics),
+        started_at=started_at,
+        finished_at=finished_at,
+        notes=None,
+    )
+    set_active_model_market_params(
+        db_path,
+        sport=sport,
+        season=season,
+        model=model_name,
+        market=normalized_market,
+        params_json=json.dumps(best_params, sort_keys=True),
+        source_run_id=run_id,
+    )
+    return ModelMarketTuningResult(
+        model=model_name,
+        market=normalized_market,
+        metric_optimized=metric_optimized,
+        run_id=run_id,
+        best_score=tuning_outputs.best_score,
+        best_params=best_params,
+        summary_metrics=summary_metrics,
+        output_dir=Path(tuning_outputs.output_dir),
+    )
+
+
+@dataclass(frozen=True)
+class EnsembleMarketTuningResult:
+    market: str
+    ensemble_id: str
+    metric_optimized: str
+    run_id: str
+    games: int
+    best_score: float | None
+    weights: dict[str, float]
+    models: list[str]
+    summary_metrics: dict[str, Any] | None
+    artifact_path: Path
+
+
+def run_ensemble_market_tuning(
+    *,
+    sport: str,
+    season: str,
+    market: str,
+    ensemble_id: str,
+    start_date: str,
+    end_date: str,
+    models: Iterable[str] | None,
+    csv_path: str | Path | None,
+    db_path: str | Path,
+) -> EnsembleMarketTuningResult:
+    normalized_market = _normalize_market(market)
+    metric_optimized = _metric_optimized_label(normalized_market)
+    started_at = _utc_now()
+    result = tune_market_ensemble(
+        sport=sport,
+        season=season,
+        market=Market[normalized_market],
+        start_date=start_date,
+        end_date=end_date,
+        ensemble_id=ensemble_id,
+        models=models,
+        csv_path=csv_path,
+        db_path=db_path,
+    )
+    run_id = _build_ensemble_run_id(start_date, end_date)
+    finished_at = _utc_now()
+
+    save_ensemble_market_tuning_run(
+        db_path,
+        sport=sport,
+        season=season,
+        market=normalized_market,
+        ensemble_id=ensemble_id,
+        metric_optimized=metric_optimized,
+        run_id=run_id,
+        best_score=result.best_score,
+        weights_json=json.dumps(result.weights, sort_keys=True),
+        models_json=json.dumps(result.models, sort_keys=True),
+        summary_metrics_json=(
+            _json_dumps(result.summary_metrics)
+            if result.summary_metrics is not None
+            else None
+        ),
+        started_at=started_at,
+        finished_at=finished_at,
+    )
+    set_active_ensemble_market_weights(
+        db_path,
+        sport=sport,
+        season=season,
+        market=normalized_market,
+        ensemble_id=ensemble_id,
+        weights_json=json.dumps(result.weights, sort_keys=True),
+        models_json=json.dumps(result.models, sort_keys=True),
+        source_run_id=run_id,
+    )
+    return EnsembleMarketTuningResult(
+        market=normalized_market,
+        ensemble_id=ensemble_id,
+        metric_optimized=metric_optimized,
+        run_id=run_id,
+        games=int(result.games),
+        best_score=result.best_score,
+        weights=result.weights,
+        models=result.models,
+        summary_metrics=result.summary_metrics,
+        artifact_path=result.artifact_path,
+    )
+
+
+def _normalize_market(market: str) -> str:
+    normalized = market.strip().upper()
+    if normalized not in {"ML", "SPREAD", "TOTAL"}:
+        raise ValueError(f"Unsupported market: {market}")
+    return normalized
+
+
+def _metric_optimized_label(market: str) -> str:
+    if market == "ML":
+        return "backtest_log_loss"
+    if market == "SPREAD":
+        return "backtest_mae_margin"
+    return "backtest_mae_total"
+
+
+def _resolve_market_metric(market: str, metric_override: str | None) -> tuple[str, str]:
+    if metric_override:
+        metric = metric_override.strip().lower()
+        if metric.startswith("backtest_"):
+            metric = metric.replace("backtest_", "", 1)
+        if metric not in {"log_loss", "brier_score", "mae_margin", "mae_total"}:
+            raise ValueError(f"Unsupported metric override: {metric_override}")
+        optimized = f"backtest_{metric}"
+        return metric, optimized
+    return _metric_name_for_market(market), _metric_optimized_label(market)
+
+
+def _metric_name_for_market(market: str) -> str:
+    if market == "ML":
+        return "log_loss"
+    if market == "SPREAD":
+        return "mae_margin"
+    return "mae_total"
+
+
+def _build_ensemble_run_id(start_date: str, end_date: str) -> str:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{start_date}_to_{end_date}_ensemble_{timestamp}"
+
+
+def _extract_run_id(outputs) -> str:
+    if outputs.results is not None and not outputs.results.empty:
+        run_id = outputs.results["run_id"].iloc[0]
+        if isinstance(run_id, str) and run_id:
+            return run_id
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"tune_{timestamp}"
+
+
+def _build_model_factory(model_cls, params: dict[str, Any]):
+    if not params:
+        return lambda cls=model_cls: cls()
+    return lambda cls=model_cls, params=params: cls(**params)
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _json_dumps(payload: dict[str, Any]) -> str:
+    safe = {k: _coerce_json_value(v) for k, v in payload.items()}
+    return json.dumps(safe, sort_keys=True)
+
+
+def _coerce_json_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (bool, int, float, str)):
+        return value
+    try:
+        return float(value)
+    except Exception:
+        return str(value)

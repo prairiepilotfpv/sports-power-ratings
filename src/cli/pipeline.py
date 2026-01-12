@@ -235,6 +235,11 @@ def _parse_args() -> argparse.Namespace:
         help="Model to populate BETS when multiple models are requested.",
     )
     schedule_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail if active tuned params/weights are missing for market ensembles.",
+    )
+    schedule_parser.add_argument(
         "--db",
         help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db)",
     )
@@ -539,7 +544,7 @@ def _parse_args() -> argparse.Namespace:
     tune_parser.add_argument(
         "--metric",
         default="log_loss",
-        choices=["log_loss", "brier_score", "mae_margin", "all"],
+        choices=["log_loss", "brier_score", "mae_margin", "mae_total", "all"],
         help="Metric to optimize (default: log_loss).",
     )
     tune_parser.add_argument(
@@ -563,7 +568,7 @@ def _parse_args() -> argparse.Namespace:
     tune_parser.add_argument(
         "--apply-metric",
         default="log_loss",
-        choices=["log_loss", "brier_score", "mae_margin"],
+        choices=["log_loss", "brier_score", "mae_margin", "mae_total"],
         help="Metric to activate when applying tuned params (default: log_loss).",
     )
     tune_parser.add_argument(
@@ -589,10 +594,134 @@ def _parse_args() -> argparse.Namespace:
         help="Optional SQLite DB path to persist best backtest metrics.",
     )
 
+    tune_batch_parser = subparsers.add_parser(
+        "tune-batch",
+        help=(
+            "Run tuning across many models/metrics for a sport/season and apply the best params."
+        ),
+    )
+    tune_batch_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
+    tune_batch_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
+    tune_batch_parser.add_argument("--start", required=True, help="Backtest start date (YYYY-MM-DD).")
+    tune_batch_parser.add_argument("--end", required=True, help="Backtest end date (YYYY-MM-DD).")
+    tune_batch_parser.add_argument(
+        "--models",
+        help=(
+            "Optional comma-separated models. Default: union of ensemble_config models or all backtest models."
+        ),
+    )
+    tune_batch_parser.add_argument(
+        "--include-all-models",
+        action="store_true",
+        help="Force tuning of every backtest model (includes experimental variants).",
+    )
+    tune_batch_parser.add_argument(
+        "--include-experimental",
+        action="store_true",
+        help="Allow experimental models (HFA variants) to be tuned when using defaults.",
+    )
+    tune_batch_parser.add_argument(
+        "--metrics",
+        help=(
+            "Optional comma-separated metrics. Default: log_loss,mae_margin,mae_total"
+        ),
+    )
+    tune_batch_parser.add_argument(
+        "--window",
+        default="expanding",
+        choices=["expanding", "rolling"],
+        help="Training window type (default: expanding).",
+    )
+    tune_batch_parser.add_argument(
+        "--rolling-days",
+        type=int,
+        help="Rolling window size in days (required for rolling).",
+    )
+    tune_batch_parser.add_argument(
+        "--rolling-games",
+        type=int,
+        help="Rolling window size in games (optional alternative for rolling).",
+    )
+    tune_batch_parser.add_argument(
+        "--csv",
+        required=True,
+        help="CSV path containing historical games for tuning.",
+    )
+    tune_batch_parser.add_argument(
+        "--db",
+        help="Optional SQLite DB path to persist best backtest metrics.",
+    )
+
+    init_ensemble_parser = subparsers.add_parser(
+        "init-ensemble-config",
+        help="Create default ensemble config files for a sport/season (per market).",
+    )
+    init_ensemble_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
+    init_ensemble_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2025-26)")
+    init_ensemble_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing default ensemble configs if present.",
+    )
+
+    tune_model_parser = subparsers.add_parser(
+        "tune-model",
+        aliases=["tune_model"],
+        help="Tune model hyperparameters per sport/season/market and persist results.",
+    )
+    tune_model_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
+    tune_model_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
+    tune_model_parser.add_argument("--model", required=True, help="Backtest model to tune (e.g., elo, gssd).")
+    tune_model_parser.add_argument("--market", default="ML", help="Market identifier (ML, SPREAD, TOTAL).")
+    tune_model_parser.add_argument("--start", required=True, help="Backtest start date (YYYY-MM-DD).")
+    tune_model_parser.add_argument("--end", required=True, help="Backtest end date (YYYY-MM-DD).")
+    tune_model_parser.add_argument(
+        "--window",
+        default="expanding",
+        choices=["expanding", "rolling"],
+        help="Training window type (default: expanding).",
+    )
+    tune_model_parser.add_argument(
+        "--rolling-days",
+        type=int,
+        help="Rolling window size in days (required for rolling).",
+    )
+    tune_model_parser.add_argument(
+        "--rolling-games",
+        type=int,
+        help="Rolling window size in games (optional alternative for rolling).",
+    )
+    tune_model_parser.add_argument(
+        "--metric",
+        help="Metric to optimize (overrides market default).",
+    )
+    tune_model_parser.add_argument(
+        "--output-dir",
+        help="Optional output directory override (default: outputs/tuning/<sport>/<season>/<model>).",
+    )
+    tune_model_parser.add_argument(
+        "--csv",
+        required=True,
+        help="CSV path containing historical games for tuning.",
+    )
+    tune_model_parser.add_argument(
+        "--grid-file",
+        help="Optional JSON file defining parameter grids.",
+    )
+    tune_model_parser.add_argument(
+        "--allow-worse",
+        action="store_true",
+        help="Allow worse results than the default parameters (disables improvement guard).",
+    )
+    tune_model_parser.add_argument(
+        "--db",
+        help="Optional SQLite DB path to persist tuning results.",
+    )
+
     tune_ensemble_parser = subparsers.add_parser(
         "tune-ensemble",
         aliases=["tune_ensemble"],
-        help="Tune ML ensemble weights using backtest predictions.",
+        help="Tune ensemble weights for a market using backtest predictions.",
     )
     tune_ensemble_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
     tune_ensemble_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
@@ -888,6 +1017,7 @@ def _run_schedule(args: argparse.Namespace) -> None:
         tuned_metric=args.tuned_metric,
         as_of_date=getattr(args, "as_of_date", None),
         bets_model=getattr(args, "bets_model", None),
+        strict=bool(getattr(args, "strict", False)),
     )
     print(f"Saved schedule workbook -> {result_path}")
 
@@ -1196,29 +1326,130 @@ def _run_tuning(args: argparse.Namespace) -> None:
             print(f"- {error}")
 
 
+def _run_tune_batch(args: argparse.Namespace) -> None:
+    """Wrapper to run tuning across many models/metrics for a season."""
+    _ensure_src_on_path()
+    from data.paths import db_path_for
+    from pipelines.tune_batch import run_tune_batch, summarize_tune_batch
+
+    start_date = _require_iso_date(args.start, field="--start")
+    end_date = _require_iso_date(args.end, field="--end")
+    db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
+    _echo_db_path(db_path)
+
+    models = None
+    if args.models:
+        models = [m.strip() for m in args.models.split(",") if m.strip()]
+    metrics = None
+    if args.metrics:
+        metrics = [m.strip() for m in args.metrics.split(",") if m.strip()]
+
+    results = run_tune_batch(
+        sport=args.sport,
+        season=args.season,
+        start_date=start_date,
+        end_date=end_date,
+        csv_path=Path(args.csv),
+        db_path=db_path,
+        models=models,
+        metrics=metrics,
+        window=args.window,
+        rolling_days=args.rolling_days,
+        rolling_games=args.rolling_games,
+        include_all_models=args.include_all_models,
+        include_experimental=args.include_experimental,
+    )
+
+    leaderboard = summarize_tune_batch(results)
+    print("TUNE-BATCH LEADERBOARD")
+    for metric, rows in leaderboard.items():
+        print(f"metric={metric}")
+        for row in rows:
+            score = row.get("best_score")
+            rid = row.get("run_id")
+            model = row.get("model")
+            print(f"  {model}: score={score} run_id={rid}")
+
+
+def _run_init_ensemble_config(args: argparse.Namespace) -> None:
+    _ensure_src_on_path()
+    from pipelines.ensemble_config_init import init_default_ensemble_configs
+
+    results = init_default_ensemble_configs(
+        sport=args.sport,
+        season=args.season,
+        overwrite=args.overwrite,
+    )
+    for result in results:
+        if result.created:
+            print(f"Created {result.market} default config -> {result.path}")
+        elif result.skipped:
+            print(f"Skipped {result.market} (exists) -> {result.path}")
+
+
+def _run_tune_model(args: argparse.Namespace) -> None:
+    _ensure_src_on_path()
+    from pipelines.market_tuning import run_model_market_tuning
+    from data.paths import db_path_for
+
+    start_date = _require_iso_date(args.start, field="--start")
+    end_date = _require_iso_date(args.end, field="--end")
+    grid_override = None
+    if args.grid_file:
+        grid_override = _load_grid_override(args.grid_file)
+    db_path = args.db or db_path_for(args.sport, args.season)
+    _echo_db_path(Path(db_path))
+    result = run_model_market_tuning(
+        sport=args.sport,
+        season=args.season,
+        model=args.model,
+        market=args.market,
+        start_date=start_date,
+        end_date=end_date,
+        window=args.window,
+        rolling_days=args.rolling_days,
+        rolling_games=args.rolling_games,
+        csv_path=args.csv,
+        output_dir=args.output_dir,
+        grid_override=grid_override,
+        db_path=db_path,
+        metric_override=args.metric,
+        allow_worse=args.allow_worse,
+    )
+    print(
+        "Model tuning completed: "
+        f"model={result.model} market={result.market} "
+        f"metric={result.metric_optimized} run_id={result.run_id}"
+    )
+    print(f"Saved tuning outputs -> {result.output_dir}")
+
+
 def _run_tune_ensemble(args: argparse.Namespace) -> None:
     _ensure_src_on_path()
-    from pipelines.ensemble_tuning import tune_ml_ensemble
+    from pipelines.market_tuning import run_ensemble_market_tuning
+    from data.paths import db_path_for
 
-    if args.market.strip().upper() != "ML":
-        raise ValueError("Only ML ensemble tuning is supported for now.")
     start_date = _require_iso_date(args.start_date, field="--start-date")
     end_date = _require_iso_date(args.end_date, field="--end-date")
     model_list = None
     if args.models:
         model_list = [m.strip() for m in args.models.split(",") if m.strip()]
-    result = tune_ml_ensemble(
+    db_path = args.db or db_path_for(args.sport, args.season)
+    _echo_db_path(Path(db_path))
+    result = run_ensemble_market_tuning(
         sport=args.sport,
         season=args.season,
+        market=args.market,
         start_date=start_date,
         end_date=end_date,
         ensemble_id=args.ensemble,
         models=model_list,
         csv_path=args.csv,
-        db_path=args.db,
+        db_path=db_path,
     )
     print(f"Ensemble tuned on {result.games} games.")
     print(f"Saved weights -> {result.artifact_path}")
+    print(f"Stored tuning run -> {result.run_id}")
 
 
 def _run_calibrate_ensemble(args: argparse.Namespace) -> None:
@@ -1269,8 +1500,14 @@ def main() -> None:
         _run_backtest(args)
     elif args.command == "tune":
         _run_tuning(args)
+    elif args.command == "tune-batch":
+        _run_tune_batch(args)
+    elif args.command == "tune-model":
+        _run_tune_model(args)
     elif args.command == "tune-ensemble":
         _run_tune_ensemble(args)
+    elif args.command == "init-ensemble-config":
+        _run_init_ensemble_config(args)
     elif args.command == "calibrate":
         _run_calibrate_ensemble(args)
     elif args.command == "betting":
@@ -1670,6 +1907,19 @@ def _parse_json_arg(raw: str | None) -> dict | None:
         raise ValueError(f"Invalid JSON for --model-params: {raw}") from exc
     if not isinstance(data, dict):
         raise ValueError("--model-params must be a JSON object.")
+    return data
+
+
+def _load_grid_override(path: str | Path) -> dict | None:
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Grid file not found: {path}")
+    with path.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        raise ValueError("Grid file must contain a JSON object.")
     return data
 
 

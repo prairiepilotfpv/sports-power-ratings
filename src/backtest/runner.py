@@ -552,6 +552,7 @@ def _persist_backtest_metrics(
     log_loss = metrics.get("log_loss")
     brier_score = metrics.get("brier_score")
     mae_margin = metrics.get("mae_margin")
+    mae_total = metrics.get("mae_total")
     win_prob_k = _extract_backtest_win_prob_k(outputs.predictions)
 
     save_backtest_metrics(
@@ -562,6 +563,7 @@ def _persist_backtest_metrics(
         log_loss=log_loss,
         brier_score=brier_score,
         mae_margin=mae_margin,
+        mae_total=mae_total,
         win_prob_k=win_prob_k,
         run_id=run_id,
     )
@@ -738,7 +740,9 @@ def _aggregate_metrics_by_date(predictions_df: pd.DataFrame) -> pd.DataFrame:
                 "log_loss",
                 "brier_score",
                 "mae_margin",
+                "mae_total",
                 "margin_games",
+                "total_games",
                 "calibration_intercept",
                 "calibration_slope",
                 "ece",
@@ -763,7 +767,9 @@ def _compute_metrics(df: pd.DataFrame) -> dict[str, float | int | None]:
         "log_loss": None,
         "brier_score": None,
         "mae_margin": None,
+        "mae_total": None,
         "margin_games": 0,
+        "total_games": 0,
         "calibration_intercept": None,
         "calibration_slope": None,
         "ece": None,
@@ -789,6 +795,14 @@ def _compute_metrics(df: pd.DataFrame) -> dict[str, float | int | None]:
             np.mean(np.abs(margin_df["pred_margin"] - margin_df["actual_margin"]))
         )
         metrics["margin_games"] = int(len(margin_df))
+
+    total_df = df.dropna(subset=["pred_total", "home_score", "away_score"])
+    if not total_df.empty:
+        actual_total = total_df["home_score"] + total_df["away_score"]
+        metrics["mae_total"] = float(
+            np.mean(np.abs(total_df["pred_total"] - actual_total))
+        )
+        metrics["total_games"] = int(len(total_df))
 
     return metrics
 

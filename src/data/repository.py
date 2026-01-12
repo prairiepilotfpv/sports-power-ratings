@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS model_metrics (
     backtest_log_loss REAL,
     backtest_brier_score REAL,
     backtest_mae_margin REAL,
+    backtest_mae_total REAL,
     backtest_win_prob_k REAL,
     backtest_run_id TEXT,
     backtest_updated_at TEXT,
@@ -75,6 +76,69 @@ CREATE TABLE IF NOT EXISTS model_tuned_params (
     best_score REAL,
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(sport, season, model, metric)
+);
+
+CREATE TABLE IF NOT EXISTS model_market_tuning_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    model TEXT NOT NULL,
+    market TEXT NOT NULL,
+    metric_optimized TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    best_score REAL,
+    best_params_json TEXT,
+    summary_metrics_json TEXT,
+    started_at TEXT,
+    finished_at TEXT,
+    notes TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_market_tuning_runs
+    ON model_market_tuning_runs(sport, season, model, market, metric_optimized);
+
+CREATE TABLE IF NOT EXISTS model_market_active_params (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    model TEXT NOT NULL,
+    market TEXT NOT NULL,
+    params_json TEXT NOT NULL,
+    source_run_id TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(sport, season, model, market)
+);
+
+CREATE TABLE IF NOT EXISTS ensemble_market_tuning_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    market TEXT NOT NULL,
+    ensemble_id TEXT NOT NULL,
+    metric_optimized TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    best_score REAL,
+    weights_json TEXT,
+    models_json TEXT,
+    summary_metrics_json TEXT,
+    started_at TEXT,
+    finished_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ensemble_market_tuning_runs
+    ON ensemble_market_tuning_runs(sport, season, market, ensemble_id);
+
+CREATE TABLE IF NOT EXISTS ensemble_market_active_weights (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    market TEXT NOT NULL,
+    ensemble_id TEXT NOT NULL,
+    weights_json TEXT NOT NULL,
+    models_json TEXT NOT NULL,
+    source_run_id TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(sport, season, market, ensemble_id)
 );
 """
 
@@ -323,6 +387,7 @@ def save_backtest_metrics(
     log_loss: float | None,
     brier_score: float | None,
     mae_margin: float | None,
+    mae_total: float | None,
     win_prob_k: float | None,
     run_id: str,
 ) -> None:
@@ -344,6 +409,7 @@ def save_backtest_metrics(
                    backtest_log_loss,
                    backtest_brier_score,
                    backtest_mae_margin,
+                   backtest_mae_total,
                    backtest_win_prob_k
             FROM model_metrics
             WHERE sport = ? AND season = ? AND model = ?
@@ -364,11 +430,12 @@ def save_backtest_metrics(
                     backtest_log_loss,
                     backtest_brier_score,
                     backtest_mae_margin,
+                    backtest_mae_total,
                     backtest_win_prob_k,
                     backtest_run_id,
                     backtest_updated_at,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                 """,
                 (
                     sport,
@@ -381,6 +448,7 @@ def save_backtest_metrics(
                     log_loss,
                     brier_score,
                     mae_margin,
+                    mae_total,
                     win_prob_k,
                     run_id,
                 ),
@@ -392,6 +460,7 @@ def save_backtest_metrics(
                 SET backtest_log_loss = ?,
                     backtest_brier_score = ?,
                     backtest_mae_margin = ?,
+                    backtest_mae_total = ?,
                     backtest_win_prob_k = ?,
                     backtest_run_id = ?,
                     backtest_updated_at = datetime('now')
@@ -401,6 +470,7 @@ def save_backtest_metrics(
                     log_loss,
                     brier_score,
                     mae_margin,
+                    mae_total,
                     win_prob_k,
                     run_id,
                     sport,
@@ -436,6 +506,7 @@ def load_model_metrics(
                    backtest_log_loss,
                    backtest_brier_score,
                    backtest_mae_margin,
+                   backtest_mae_total,
                    backtest_win_prob_k
             FROM model_metrics
             WHERE sport = ? AND season = ? AND model = ?
@@ -464,7 +535,8 @@ def load_model_metrics(
         "backtest_log_loss": row[10],
         "backtest_brier_score": row[11],
         "backtest_mae_margin": row[12],
-        "backtest_win_prob_k": row[13],
+        "backtest_mae_total": row[13],
+        "backtest_win_prob_k": row[14],
     }
     if any(value is not None for value in backtest_values.values()):
         metrics.update(backtest_values)
@@ -654,5 +726,274 @@ def load_active_tuned_metric(
             WHERE sport = ? AND season = ? AND model = ?
             """,
             (sport, season, model),
+        ).fetchone()
+    return row[0] if row and row[0] is not None else None
+
+
+def save_model_market_tuning_run(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+    market: str,
+    metric_optimized: str,
+    run_id: str,
+    best_score: float | None,
+    best_params_json: str | None,
+    summary_metrics_json: str | None,
+    started_at: str | None,
+    finished_at: str | None,
+    notes: str | None = None,
+) -> None:
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        conn.execute(
+            """
+            INSERT INTO model_market_tuning_runs (
+                sport,
+                season,
+                model,
+                market,
+                metric_optimized,
+                run_id,
+                best_score,
+                best_params_json,
+                summary_metrics_json,
+                started_at,
+                finished_at,
+                notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sport,
+                season,
+                model,
+                market,
+                metric_optimized,
+                run_id,
+                best_score,
+                best_params_json,
+                summary_metrics_json,
+                started_at,
+                finished_at,
+                notes,
+            ),
+        )
+        conn.commit()
+
+
+def set_active_model_market_params(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+    market: str,
+    params_json: str,
+    source_run_id: str | None,
+) -> None:
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        conn.execute(
+            """
+            INSERT INTO model_market_active_params (
+                sport,
+                season,
+                model,
+                market,
+                params_json,
+                source_run_id,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(sport, season, model, market) DO UPDATE SET
+                params_json = excluded.params_json,
+                source_run_id = excluded.source_run_id,
+                updated_at = datetime('now')
+            """,
+            (sport, season, model, market, params_json, source_run_id),
+        )
+        conn.commit()
+
+
+def get_active_model_market_params(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+    market: str,
+) -> dict | None:
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT params_json
+            FROM model_market_active_params
+            WHERE sport = ? AND season = ? AND model = ? AND market = ?
+            """,
+            (sport, season, model, market),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    data = json.loads(row[0])
+    if not isinstance(data, dict):
+        raise ValueError("Stored market params must be a JSON object.")
+    return data
+
+
+def get_active_model_market_params_source(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+    market: str,
+) -> str | None:
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT source_run_id
+            FROM model_market_active_params
+            WHERE sport = ? AND season = ? AND model = ? AND market = ?
+            """,
+            (sport, season, model, market),
+        ).fetchone()
+    return row[0] if row and row[0] is not None else None
+
+
+def save_ensemble_market_tuning_run(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    market: str,
+    ensemble_id: str,
+    metric_optimized: str,
+    run_id: str,
+    best_score: float | None,
+    weights_json: str | None,
+    models_json: str | None,
+    summary_metrics_json: str | None,
+    started_at: str | None,
+    finished_at: str | None,
+) -> None:
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        conn.execute(
+            """
+            INSERT INTO ensemble_market_tuning_runs (
+                sport,
+                season,
+                market,
+                ensemble_id,
+                metric_optimized,
+                run_id,
+                best_score,
+                weights_json,
+                models_json,
+                summary_metrics_json,
+                started_at,
+                finished_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sport,
+                season,
+                market,
+                ensemble_id,
+                metric_optimized,
+                run_id,
+                best_score,
+                weights_json,
+                models_json,
+                summary_metrics_json,
+                started_at,
+                finished_at,
+            ),
+        )
+        conn.commit()
+
+
+def set_active_ensemble_market_weights(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    market: str,
+    ensemble_id: str,
+    weights_json: str,
+    models_json: str,
+    source_run_id: str | None,
+) -> None:
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        conn.execute(
+            """
+            INSERT INTO ensemble_market_active_weights (
+                sport,
+                season,
+                market,
+                ensemble_id,
+                weights_json,
+                models_json,
+                source_run_id,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(sport, season, market, ensemble_id) DO UPDATE SET
+                weights_json = excluded.weights_json,
+                models_json = excluded.models_json,
+                source_run_id = excluded.source_run_id,
+                updated_at = datetime('now')
+            """,
+            (sport, season, market, ensemble_id, weights_json, models_json, source_run_id),
+        )
+        conn.commit()
+
+
+def get_active_ensemble_market_weights(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    market: str,
+    ensemble_id: str,
+) -> dict | None:
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT weights_json
+            FROM ensemble_market_active_weights
+            WHERE sport = ? AND season = ? AND market = ? AND ensemble_id = ?
+            """,
+            (sport, season, market, ensemble_id),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    data = json.loads(row[0])
+    if not isinstance(data, dict):
+        raise ValueError("Stored ensemble weights must be a JSON object.")
+    return data
+
+
+def get_active_ensemble_market_weights_source(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    market: str,
+    ensemble_id: str,
+) -> str | None:
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT source_run_id
+            FROM ensemble_market_active_weights
+            WHERE sport = ? AND season = ? AND market = ? AND ensemble_id = ?
+            """,
+            (sport, season, market, ensemble_id),
         ).fetchone()
     return row[0] if row and row[0] is not None else None

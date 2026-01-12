@@ -20,11 +20,21 @@ class MLWeightedAverageEnsemble:
     If missing, equal weights are used and re-normalized for the available models.
     """
 
-    def __init__(self, sport: str, season: str, ensemble_id: str = "ensemble_ml_v1") -> None:
+    def __init__(
+        self,
+        sport: str,
+        season: str,
+        ensemble_id: str = "ensemble_ml_v1",
+        weights: dict[str, float] | None = None,
+    ) -> None:
         self.sport = sport
         self.season = season
         self._ensemble_id = ensemble_id
-        self._weights = load_ml_weights(sport, season, ensemble_id) or {}
+        self._weights = (
+            weights
+            if weights is not None
+            else (load_ml_weights(sport, season, ensemble_id) or {})
+        )
 
     @property
     def ensemble_id(self) -> str:

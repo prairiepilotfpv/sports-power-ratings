@@ -14,9 +14,20 @@ from openpyxl.styles.numbers import FORMAT_CURRENCY_USD_SIMPLE
 
 from contracts import SCHEDULE_EXPORT_COLUMNS, validate_schedule_export_frame
 from data.paths import processed_path_for
-from data.repository import load_games, load_model_metrics
+from data.repository import (
+    get_active_ensemble_market_weights,
+    get_active_ensemble_market_weights_source,
+    get_active_model_market_params,
+    get_active_model_market_params_source,
+    load_games,
+    load_model_metrics,
+)
 from pipelines.common import normalize_games, resolve_output_path
 from pipelines.model_params import resolve_model_params_with_metadata
+from pipelines.market_tuning import _metric_name_for_market
+from ensemble.config import load_ensemble_config
+from ensemble.io import load_market_weights
+from pipelines.market_tuning import _metric_name_for_market
 from pipelines.matchups import team_home_advantages
 from config import CALIBRATION_RESIDUAL_GAMES, DEFAULT_WIN_PROB_K
 from pipelines.projection_engines import get_projection_engine
@@ -576,6 +587,250 @@ def _apply_calibration_to_schedule_df(
         df["win_prob_source"] = df["win_prob_source"].apply(_append_calibrated)
 
     return df
+
+
+def _build_market_forecasts_for_ensembles(
+    schedule_df: pd.DataFrame,
+    *,
+    db_path: str | Path,
+    sport: str,
+    season: str,
+    models: list[str],
+    as_of_date: date,
+    allowed_models_by_market: dict[str, list[str] | None] | None = None,
+    market_metrics: dict[str, str] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    rows_by_market: dict[str, list[dict[str, Any]]] = {
+        Market.ML.name: [],
+        Market.SPREAD.name: [],
+        Market.TOTAL.name: [],
+    }
+    if schedule_df.empty:
+        return rows_by_market
+
+    for market in (Market.ML, Market.SPREAD, Market.TOTAL):
+        market_allowed = None
+        if allowed_models_by_market and market.name in allowed_models_by_market:
+            market_allowed = allowed_models_by_market.get(market.name)
+        model_iter = market_allowed if market_allowed else models
+        metric_for_market = None
+        if market_metrics and market.name in market_metrics:
+            metric_for_market = market_metrics.get(market.name)
+        for model_name in model_iter:
+            # 1) Highest priority: market-specific active params set in DB
+            params = get_active_model_market_params(
+                db_path,
+                sport=sport,
+                season=season,
+                model=model_name,
+                market=market.name,
+            )
+            if params:
+                params_source = "db_market"
+                tuned_metric_used = None
+            else:
+                # 2) Fallback: use tuned params for the metric appropriate to this market
+                metric_for_market = metric_for_market or _metric_name_for_market(
+                    market.name
+                )
+                resolution = resolve_model_params_with_metadata(
+                    model_name,
+                    db_path=db_path,
+                    sport=sport,
+                    season=season,
+                    tuned_metric=metric_for_market,
+                )
+                if resolution.params is not None:
+                    params = resolution.params
+                    params_source = resolution.params_source
+                    tuned_metric_used = resolution.tuned_metric_used
+                else:
+                    params = None
+                    params_source = "default"
+                    tuned_metric_used = None
+
+            model_df = schedule_df.copy(deep=True)
+            market_schedule = _build_schedule_dataframe(
+                model_df,
+                db_path=db_path,
+                sport=sport,
+                season=season,
+                model=model_name,
+                upcoming_only=True,
+                model_params=params,
+                params_source=params_source,
+                tuned_metric_used=tuned_metric_used,
+            )
+            if market == Market.ML:
+                market_schedule = _apply_calibration_to_schedule_df(
+                    market_schedule,
+                    sport=sport,
+                    season=season,
+                    model=model_name,
+                )
+            if market_schedule.empty:
+                continue
+            if "date" in market_schedule.columns and "status" in market_schedule.columns:
+                _dt = pd.to_datetime(market_schedule["date"], errors="coerce").dt.date
+                mask = (market_schedule["status"] == "scheduled") & (_dt == as_of_date)
+                subset = market_schedule.loc[mask]
+            else:
+                subset = market_schedule
+            if subset.empty:
+                continue
+            for _, r in subset.iterrows():
+                if market == Market.ML:
+                    p_raw = None
+                    if (
+                        "home_win_prob_raw" in subset.columns
+                        and pd.notna(r.get("home_win_prob_raw"))
+                    ):
+                        p_raw = r.get("home_win_prob_raw")
+                    elif pd.notna(r.get("model_p_home_win")):
+                        p_raw = r.get("model_p_home_win")
+                    else:
+                        p_raw = r.get("home_win_prob")
+                    rows_by_market[market.name].append(
+                        {
+                            "game_id": r.get("game_id"),
+                            "model_name": model_name,
+                            "p_home_win": p_raw,
+                            "margin_mean": r.get("margin_mean"),
+                            "margin_sd": r.get("margin_sd"),
+                            "total_mean": (
+                                r.get("total")
+                                if not _is_missing(r.get("total"))
+                                else r.get("total_mean")
+                            ),
+                            "total_sd": r.get("total_sd"),
+                        }
+                    )
+                else:
+                    rows_by_market[market.name].append(
+                        {
+                            "game_id": r.get("game_id"),
+                            "model_name": model_name,
+                            "p_home_win": r.get("home_win_prob"),
+                            "margin_mean": r.get("margin_mean"),
+                            "margin_sd": r.get("margin_sd"),
+                            "total_mean": (
+                                r.get("total")
+                                if not _is_missing(r.get("total"))
+                                else r.get("total_mean")
+                            ),
+                            "total_sd": r.get("total_sd"),
+                        }
+                    )
+    return rows_by_market
+
+
+def _validate_market_tuning_inputs(
+    *,
+    db_path: str | Path,
+    sport: str,
+    season: str,
+    models: list[str],
+    ensemble_ids: dict[str, str],
+    strict: bool,
+) -> None:
+    missing: list[str] = []
+    for market in (Market.ML, Market.SPREAD, Market.TOTAL):
+        for model_name in models:
+            params = get_active_model_market_params(
+                db_path,
+                sport=sport,
+                season=season,
+                model=model_name,
+                market=market.name,
+            )
+            if params is None:
+                msg = (
+                    f"Missing active params for model={model_name} market={market.name}; "
+                    "using defaults."
+                )
+                missing.append(msg)
+        ensemble_id = ensemble_ids.get(market.name)
+        if ensemble_id:
+            weights = get_active_ensemble_market_weights(
+                db_path,
+                sport=sport,
+                season=season,
+                market=market.name,
+                ensemble_id=ensemble_id,
+            )
+            if weights is None:
+                msg = (
+                    f"Missing active ensemble weights for market={market.name} "
+                    f"ensemble_id={ensemble_id}; using file or equal weights."
+                )
+                missing.append(msg)
+    if missing:
+        for msg in missing:
+            print(f"[tuning] {msg}")
+        if strict:
+            raise ValueError("Missing active market tuning inputs; rerun with defaults or disable --strict.")
+
+
+def _collect_market_param_sources(
+    *,
+    db_path: str | Path,
+    sport: str,
+    season: str,
+    models: list[str],
+) -> dict[str, dict[str, str | None]]:
+    sources: dict[str, dict[str, str | None]] = {}
+    for market in (Market.ML, Market.SPREAD, Market.TOTAL):
+        market_sources: dict[str, str | None] = {}
+        for model_name in models:
+            source = get_active_model_market_params_source(
+                db_path,
+                sport=sport,
+                season=season,
+                model=model_name,
+                market=market.name,
+            )
+            if source:
+                market_sources[model_name] = source
+            else:
+                # If no market-specific params, check for tuned params for this market's metric
+                metric = _metric_name_for_market(market.name)
+                resolution = resolve_model_params_with_metadata(
+                    model_name,
+                    db_path=db_path,
+                    sport=sport,
+                    season=season,
+                    tuned_metric=metric,
+                )
+                if resolution.params is not None:
+                    # Include tuned metric in reported source so META is informative.
+                    tuned = resolution.tuned_metric_used or metric
+                    market_sources[model_name] = f"{resolution.params_source}/{tuned}"
+                else:
+                    market_sources[model_name] = None
+        sources[market.name] = market_sources
+    return sources
+
+
+def _collect_ensemble_weight_sources(
+    *,
+    db_path: str | Path,
+    sport: str,
+    season: str,
+    ensemble_ids: dict[str, str],
+) -> dict[str, str | None]:
+    sources: dict[str, str | None] = {}
+    for market in (Market.ML, Market.SPREAD, Market.TOTAL):
+        ensemble_id = ensemble_ids.get(market.name)
+        if not ensemble_id:
+            continue
+        sources[market.name] = get_active_ensemble_market_weights_source(
+            db_path,
+            sport=sport,
+            season=season,
+            market=market.name,
+            ensemble_id=ensemble_id,
+        )
+    return sources
 
 
 def _format_game_name(away_team: Any, home_team: Any) -> str:
@@ -1180,6 +1435,7 @@ def build_schedule_excel_report(
     tuned_metric: str | None = None,
     as_of_date: str | date | None = None,
     bets_model: str | None = None,
+    strict: bool = False,
 ) -> Path:
     """Build an Excel workbook with schedule projections (one sheet per model)."""
     rows = load_games(
@@ -1204,8 +1460,47 @@ def build_schedule_excel_report(
     )
     dashboard_rows: list[Dict[str, Any]] = []
     bets_schedule_df: pd.DataFrame | None = None
-    # Collected per-model forecasts for scheduled games on `as_of_date`.
-    forecast_set_rows: list[dict[str, Any]] = []
+
+    ensemble_config = load_ensemble_config(
+        sport,
+        season,
+        available_models=list_models(),
+    )
+    ensemble_config_meta = (ensemble_config or {}).get("_meta", {})
+    market_configs = (ensemble_config or {}).get("markets", {})
+    market_config_meta = ensemble_config_meta.get("markets", {})
+    config_warnings: list[str] = list(ensemble_config_meta.get("warnings", []) or [])
+
+    def _market_config_value(market_name: str, field: str, default: Any = None) -> Any:
+        cfg = market_configs.get(market_name) or {}
+        return cfg.get(field, default)
+
+    ensemble_ids = {
+        Market.ML.name: _market_config_value(Market.ML.name, "ensemble_id", "ensemble_ml_v1"),
+        Market.SPREAD.name: _market_config_value(
+            Market.SPREAD.name, "ensemble_id", "ensemble_spread_v1"
+        ),
+        Market.TOTAL.name: _market_config_value(
+            Market.TOTAL.name, "ensemble_id", "ensemble_total_v1"
+        ),
+    }
+    allowed_models_map = {
+        Market.ML.name: _market_config_value(Market.ML.name, "models"),
+        Market.SPREAD.name: _market_config_value(Market.SPREAD.name, "models"),
+        Market.TOTAL.name: _market_config_value(Market.TOTAL.name, "models"),
+    }
+    market_metrics = {
+        Market.ML.name: _market_config_value(Market.ML.name, "metric_slot"),
+        Market.SPREAD.name: _market_config_value(Market.SPREAD.name, "metric_slot"),
+        Market.TOTAL.name: _market_config_value(Market.TOTAL.name, "metric_slot"),
+    }
+    config_weights_map = {
+        Market.ML.name: _market_config_value(Market.ML.name, "weights"),
+        Market.SPREAD.name: _market_config_value(Market.SPREAD.name, "weights"),
+        Market.TOTAL.name: _market_config_value(Market.TOTAL.name, "weights"),
+    }
+    resolved_ensemble_meta: dict[str, dict[str, Any]] = {}
+
     with pd.ExcelWriter(report_path) as writer:
         for model_name in models:
             model_df = df.copy(deep=True)
@@ -1239,38 +1534,6 @@ def build_schedule_excel_report(
                 model=model_name,
             )
             schedule_df = _order_schedule_export(schedule_df)
-            # Collect ML forecast rows for scheduled games on the as_of_date.
-            try:
-                if not schedule_df.empty and "date" in schedule_df.columns and "status" in schedule_df.columns:
-                    _dt = pd.to_datetime(schedule_df["date"], errors="coerce").dt.date
-                    mask = (schedule_df["status"] == "scheduled") & (_dt == resolved_as_of_date)
-                    for _, r in schedule_df.loc[mask].iterrows():
-                        # Prefer explicit raw column when present, fall back to model samples or final prob.
-                        p_raw = None
-                        if "home_win_prob_raw" in schedule_df.columns and pd.notna(r.get("home_win_prob_raw")):
-                            p_raw = r.get("home_win_prob_raw")
-                        elif pd.notna(r.get("model_p_home_win")):
-                            p_raw = r.get("model_p_home_win")
-                        else:
-                            p_raw = r.get("home_win_prob")
-                        forecast_set_rows.append(
-                            {
-                                "game_id": r.get("game_id"),
-                                "model_name": model_name,
-                                "p_home_win": p_raw,
-                                "margin_mean": r.get("margin_mean"),
-                                "margin_sd": r.get("margin_sd"),
-                                "total_mean": (
-                                    r.get("total")
-                                    if not _is_missing(r.get("total"))
-                                    else r.get("total_mean")
-                                ),
-                                "total_sd": r.get("total_sd"),
-                            }
-                        )
-            except Exception:
-                # Best-effort collection; do not fail schedule generation on ensemble errors.
-                pass
             metadata = _build_model_metadata(
                 model_name=model_name,
                 played=_completed_games(model_df),
@@ -1311,16 +1574,81 @@ def build_schedule_excel_report(
         # If multiple models were produced, try to build an ML ensemble and apply
         # the combined probabilities to the bets_schedule_df (best-effort).
         ensemble_applied = False
-        ml_ensemble_id = "ensemble_ml_v1"
-        spread_ensemble_id = "ensemble_spread_v1"
-        total_ensemble_id = "ensemble_total_v1"
+        market_forecast_rows: dict[str, list[dict[str, Any]]] = {
+            Market.ML.name: [],
+            Market.SPREAD.name: [],
+            Market.TOTAL.name: [],
+        }
+        if bets_schedule_df is not None and len(models) > 1:
+            _validate_market_tuning_inputs(
+                db_path=db_path,
+                sport=sport,
+                season=season,
+                models=models,
+                ensemble_ids=ensemble_ids,
+                strict=strict,
+            )
+            market_forecast_rows = _build_market_forecasts_for_ensembles(
+                df,
+                db_path=db_path,
+                sport=sport,
+                season=season,
+                models=models,
+                as_of_date=resolved_as_of_date,
+                allowed_models_by_market=allowed_models_map,
+                market_metrics=market_metrics,
+            )
         try:
-            if bets_schedule_df is not None and len(models) > 1 and forecast_set_rows:
-                forecast_df = pd.DataFrame(forecast_set_rows)
+            ml_rows = market_forecast_rows.get(Market.ML.name, [])
+            if bets_schedule_df is not None and len(models) > 1 and ml_rows:
+                forecast_df = pd.DataFrame(ml_rows)
                 if not forecast_df.empty:
+                    allowed_models = allowed_models_map.get(Market.ML.name)
+                    if allowed_models:
+                        forecast_df = forecast_df[forecast_df["model_name"].isin(set(allowed_models))]
+                        if forecast_df.empty:
+                            config_warnings.append(
+                                f"No ML forecasts matched configured models {allowed_models}; ensemble skipped"
+                            )
+                            raise Exception("No ML forecasts after model filter")
+                    weights = config_weights_map.get(Market.ML.name)
+                    weight_source = "config" if weights else None
+                    if weights is None:
+                        weights = get_active_ensemble_market_weights(
+                            db_path,
+                            sport=sport,
+                            season=season,
+                            market=Market.ML.name,
+                            ensemble_id=ensemble_ids[Market.ML.name],
+                        )
+                        weight_source = "db" if weights else weight_source
+                    if weights is None:
+                        weights = load_market_weights(
+                            sport,
+                            season,
+                            Market.ML.name,
+                            ensemble_ids[Market.ML.name],
+                        )
+                        weight_source = "file" if weights else weight_source
                     ensemble = MLWeightedAverageEnsemble(
-                        sport, season, ensemble_id=ml_ensemble_id
+                        sport,
+                        season,
+                        ensemble_id=ensemble_ids[Market.ML.name],
+                        weights=weights,
                     )
+                    used_models = sorted(set(forecast_df.get("model_name", [])))
+                    cfg_meta = market_config_meta.get(Market.ML.name, {}) if isinstance(market_config_meta, dict) else {}
+                    resolved_ensemble_meta[Market.ML.name] = {
+                        "ensemble_id": ensemble.ensemble_id,
+                        "metric_slot": market_metrics.get(Market.ML.name),
+                        "configured_models": allowed_models,
+                        "configured_weights": config_weights_map.get(Market.ML.name),
+                        "weights_source": weight_source or "equal",
+                        "weights": weights,
+                        "used_models": used_models,
+                        "config_source": cfg_meta.get("source"),
+                        "config_path": cfg_meta.get("path"),
+                    }
                     # Load calibrator for the ensemble source, if present
                     try:
                         ensemble_cal = load_latest_calibrator(
@@ -1385,12 +1713,56 @@ def build_schedule_excel_report(
         # Apply a spread ensemble to margin fields (best-effort).
         spread_ensemble_applied = False
         try:
-            if bets_schedule_df is not None and len(models) > 1 and forecast_set_rows:
-                forecast_df = pd.DataFrame(forecast_set_rows)
+            spread_rows = market_forecast_rows.get(Market.SPREAD.name, [])
+            if bets_schedule_df is not None and len(models) > 1 and spread_rows:
+                forecast_df = pd.DataFrame(spread_rows)
                 if not forecast_df.empty:
+                    allowed_models = allowed_models_map.get(Market.SPREAD.name)
+                    if allowed_models:
+                        forecast_df = forecast_df[forecast_df["model_name"].isin(set(allowed_models))]
+                        if forecast_df.empty:
+                            config_warnings.append(
+                                f"No SPREAD forecasts matched configured models {allowed_models}; ensemble skipped"
+                            )
+                            raise Exception("No SPREAD forecasts after model filter")
+                    weights = config_weights_map.get(Market.SPREAD.name)
+                    weight_source = "config" if weights else None
+                    if weights is None:
+                        weights = get_active_ensemble_market_weights(
+                            db_path,
+                            sport=sport,
+                            season=season,
+                            market=Market.SPREAD.name,
+                            ensemble_id=ensemble_ids[Market.SPREAD.name],
+                        )
+                        weight_source = "db" if weights else weight_source
+                    if weights is None:
+                        weights = load_market_weights(
+                            sport,
+                            season,
+                            Market.SPREAD.name,
+                            ensemble_ids[Market.SPREAD.name],
+                        )
+                        weight_source = "file" if weights else weight_source
                     spread_ensemble = SpreadWeightedAverageEnsemble(
-                        sport, season, ensemble_id=spread_ensemble_id
+                        sport,
+                        season,
+                        ensemble_id=ensemble_ids[Market.SPREAD.name],
+                        weights=weights,
                     )
+                    used_models = sorted(set(forecast_df.get("model_name", [])))
+                    cfg_meta = market_config_meta.get(Market.SPREAD.name, {}) if isinstance(market_config_meta, dict) else {}
+                    resolved_ensemble_meta[Market.SPREAD.name] = {
+                        "ensemble_id": spread_ensemble.ensemble_id,
+                        "metric_slot": market_metrics.get(Market.SPREAD.name),
+                        "configured_models": allowed_models,
+                        "configured_weights": config_weights_map.get(Market.SPREAD.name),
+                        "weights_source": weight_source or "equal",
+                        "weights": weights,
+                        "used_models": used_models,
+                        "config_source": cfg_meta.get("source"),
+                        "config_path": cfg_meta.get("path"),
+                    }
                     for gid in pd.unique(bets_schedule_df["game_id"]):
                         try:
                             subset = forecast_df[forecast_df["game_id"] == gid]
@@ -1420,12 +1792,56 @@ def build_schedule_excel_report(
         # Apply a total ensemble to total fields (best-effort).
         total_ensemble_applied = False
         try:
-            if bets_schedule_df is not None and len(models) > 1 and forecast_set_rows:
-                forecast_df = pd.DataFrame(forecast_set_rows)
+            total_rows = market_forecast_rows.get(Market.TOTAL.name, [])
+            if bets_schedule_df is not None and len(models) > 1 and total_rows:
+                forecast_df = pd.DataFrame(total_rows)
                 if not forecast_df.empty:
+                    allowed_models = allowed_models_map.get(Market.TOTAL.name)
+                    if allowed_models:
+                        forecast_df = forecast_df[forecast_df["model_name"].isin(set(allowed_models))]
+                        if forecast_df.empty:
+                            config_warnings.append(
+                                f"No TOTAL forecasts matched configured models {allowed_models}; ensemble skipped"
+                            )
+                            raise Exception("No TOTAL forecasts after model filter")
+                    weights = config_weights_map.get(Market.TOTAL.name)
+                    weight_source = "config" if weights else None
+                    if weights is None:
+                        weights = get_active_ensemble_market_weights(
+                            db_path,
+                            sport=sport,
+                            season=season,
+                            market=Market.TOTAL.name,
+                            ensemble_id=ensemble_ids[Market.TOTAL.name],
+                        )
+                        weight_source = "db" if weights else weight_source
+                    if weights is None:
+                        weights = load_market_weights(
+                            sport,
+                            season,
+                            Market.TOTAL.name,
+                            ensemble_ids[Market.TOTAL.name],
+                        )
+                        weight_source = "file" if weights else weight_source
                     total_ensemble = TotalWeightedAverageEnsemble(
-                        sport, season, ensemble_id=total_ensemble_id
+                        sport,
+                        season,
+                        ensemble_id=ensemble_ids[Market.TOTAL.name],
+                        weights=weights,
                     )
+                    used_models = sorted(set(forecast_df.get("model_name", [])))
+                    cfg_meta = market_config_meta.get(Market.TOTAL.name, {}) if isinstance(market_config_meta, dict) else {}
+                    resolved_ensemble_meta[Market.TOTAL.name] = {
+                        "ensemble_id": total_ensemble.ensemble_id,
+                        "metric_slot": market_metrics.get(Market.TOTAL.name),
+                        "configured_models": allowed_models,
+                        "configured_weights": config_weights_map.get(Market.TOTAL.name),
+                        "weights_source": weight_source or "equal",
+                        "weights": weights,
+                        "used_models": used_models,
+                        "config_source": cfg_meta.get("source"),
+                        "config_path": cfg_meta.get("path"),
+                    }
                     for gid in pd.unique(bets_schedule_df["game_id"]):
                         try:
                             subset = forecast_df[forecast_df["game_id"] == gid]
@@ -1461,6 +1877,10 @@ def build_schedule_excel_report(
             except Exception:
                 # Best-effort assignment; ignore failures.
                 pass
+
+        ml_ensemble_id = ensemble_ids.get(Market.ML.name, "ensemble_ml_v1")
+        spread_ensemble_id = ensemble_ids.get(Market.SPREAD.name, "ensemble_spread_v1")
+        total_ensemble_id = ensemble_ids.get(Market.TOTAL.name, "ensemble_total_v1")
 
         spread_source_id = (
             spread_ensemble_id
@@ -1501,6 +1921,27 @@ def build_schedule_excel_report(
         )
         bets_df.to_excel(writer, sheet_name="BETS", index=False)
 
+        param_sources = _collect_market_param_sources(
+            db_path=db_path,
+            sport=sport,
+            season=season,
+            models=models,
+        )
+        ensemble_sources = _collect_ensemble_weight_sources(
+            db_path=db_path,
+            sport=sport,
+            season=season,
+            ensemble_ids=ensemble_ids,
+        )
+        config_path = next(
+            (meta.get("path") for meta in market_config_meta.values() if isinstance(meta, dict) and meta.get("path")),
+            None,
+        )
+        config_sha = next(
+            (meta.get("sha256") for meta in market_config_meta.values() if isinstance(meta, dict) and meta.get("sha256")),
+            None,
+        )
+        config_sources_json = json.dumps(market_config_meta, sort_keys=True, default=str)
         meta_rows = [
             {"key": "review_run_id", "value": review_run_id},
             {"key": "sport", "value": sport},
@@ -1509,6 +1950,34 @@ def build_schedule_excel_report(
             {"key": "bets_model", "value": bets_model_name},
             {"key": "workbook_kind", "value": "schedule_with_bets"},
             {"key": "created_at_utc", "value": datetime.now(timezone.utc).isoformat()},
+            {
+                "key": "ensemble_config_path",
+                "value": config_path,
+            },
+            {
+                "key": "ensemble_config_sha256",
+                "value": config_sha,
+            },
+            {
+                "key": "ensemble_config_warnings",
+                "value": ", ".join(config_warnings) if config_warnings else None,
+            },
+            {
+                "key": "ensemble_config_sources_json",
+                "value": config_sources_json,
+            },
+            {
+                "key": "active_model_market_params_source_json",
+                "value": json.dumps(param_sources, sort_keys=True),
+            },
+            {
+                "key": "active_ensemble_market_weights_source_json",
+                "value": json.dumps(ensemble_sources, sort_keys=True),
+            },
+            {
+                "key": "resolved_ensemble_membership_json",
+                "value": json.dumps(resolved_ensemble_meta, sort_keys=True, default=str),
+            },
         ]
         meta_df = pd.DataFrame(meta_rows)
         meta_df.to_excel(writer, sheet_name="META", index=False)
