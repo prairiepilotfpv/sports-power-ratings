@@ -179,8 +179,11 @@ def apply_model_prob_formulas_for_bets_sheet(ws: Worksheet) -> None:
         total_mean_cell = _cell_ref_letter(total_mean_col, row)
         total_sd_cell = _cell_ref_letter(total_sd_col, row)
 
-        spread_cdf = (
-            f"(0.5*(1+ERF((ABS({line_cell})-{spread_mean_cell})/({spread_sd_cell}*SQRT(2)))))"
+        spread_cdf_selection_away = (
+            f"(0.5*(1+ERF((({line_cell})-{spread_mean_cell})/({spread_sd_cell}*SQRT(2)))))"
+        )
+        spread_cdf_selection_home = (
+            f"(0.5*(1+ERF(((-{line_cell})-{spread_mean_cell})/({spread_sd_cell}*SQRT(2)))))"
         )
         total_cdf = f"(0.5*(1+ERF(({line_cell}-{total_mean_cell})/({total_sd_cell}*SQRT(2)))))"
 
@@ -191,9 +194,9 @@ def apply_model_prob_formulas_for_bets_sheet(ws: Worksheet) -> None:
             f"IF({market_cell}=\"spread\","
             f"IF(OR({line_cell}=\"\",{spread_sd_cell}=\"\"),\"\","
             f"IF({selection_cell}={home_team_cell},"
-            f"1-{spread_cdf},"
+            f"1-{spread_cdf_selection_home},"
             f"IF({selection_cell}={away_team_cell},"
-            f"{spread_cdf},\"\"))),"
+            f"{spread_cdf_selection_away},\"\"))),"
             f"IF({market_cell}=\"total\","
             f"IF(OR({line_cell}=\"\",{total_sd_cell}=\"\"),\"\","
             f"IF({selection_cell}=\"Over\","
