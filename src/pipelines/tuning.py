@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import itertools
 import json
+import os
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -15,7 +16,6 @@ from backtest.runner import load_games_df_from_csv, run_backtest
 from data.repository import save_tuned_params, set_active_tuned_params
 from models.registry import get_backtest_model, normalize_model_name
 from joblib import Parallel, delayed
-import os
 
 _METRICS = {"log_loss", "brier_score", "mae_margin", "mae_total"}
 
@@ -132,7 +132,8 @@ def run_tuning_pipeline(
         "run_id": run_id,
     }
 
-    if jobs == 1:
+    resolved_jobs = _resolve_jobs(jobs)
+    if resolved_jobs == 1:
         for params in candidates:
             params_label = _format_params(params)
             candidate_dir = base_dir / f"{run_id}__{params_label}"
@@ -172,7 +173,13 @@ def run_tuning_pipeline(
     else:
         # Limit BLAS thread usage in child processes to avoid oversubscription.
         prev_env = {
-            k: os.environ.get(k) for k in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS")
+            k: os.environ.get(k)
+            for k in (
+                "OMP_NUM_THREADS",
+                "MKL_NUM_THREADS",
+                "OPENBLAS_NUM_THREADS",
+                "NUMEXPR_NUM_THREADS",
+            )
         }
         os.environ["OMP_NUM_THREADS"] = "1"
         os.environ["MKL_NUM_THREADS"] = "1"
@@ -181,8 +188,11 @@ def run_tuning_pipeline(
 
         try:
             # Use joblib with loky backend for process-based parallelism.
-            tasks = [delayed(_eval_candidate)(i, params, context, games_df) for i, params in enumerate(candidates)]
-            raw_results = Parallel(n_jobs=jobs, backend="loky")(tasks)
+            tasks = [
+                delayed(_eval_candidate)(i, params, context, games_df)
+                for i, params in enumerate(candidates)
+            ]
+            raw_results = Parallel(n_jobs=resolved_jobs, backend="loky")(tasks)
         finally:
             # restore previous environment
             for k, v in prev_env.items():
@@ -303,6 +313,17 @@ def _resolve_param_grid(
         if override:
             return override
     return _default_param_grid(model)
+
+
+def _resolve_jobs(jobs: int) -> int:
+    if jobs is None:
+        return 1
+    if jobs < 0:
+        raise ValueError("jobs must be >= 0")
+    if jobs == 0:
+        cpu_count = os.cpu_count() or 1
+        return max(cpu_count - 1, 1)
+    return jobs
 
 
 def _normalize_grid_override(
