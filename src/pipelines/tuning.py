@@ -14,6 +14,8 @@ import pandas as pd
 from backtest.runner import load_games_df_from_csv, run_backtest
 from data.repository import save_tuned_params, set_active_tuned_params
 from models.registry import get_backtest_model, normalize_model_name
+from joblib import Parallel, delayed
+import os
 
 _METRICS = {"log_loss", "brier_score", "mae_margin", "mae_total"}
 
@@ -48,6 +50,7 @@ def run_tuning_pipeline(
     apply_best: bool = False,
     require_improvement: bool = True,
     db_path: str | Path | None = None,
+    jobs: int = 1,
     sport: str | None = None,
     season: str | None = None,
 ) -> TuningOutputs:
@@ -113,42 +116,98 @@ def run_tuning_pipeline(
         baseline_score = baseline_metrics.get(metric)
 
     results_rows: list[dict[str, Any]] = []
-    for params in candidates:
-        params_label = _format_params(params)
-        candidate_dir = base_dir / f"{run_id}__{params_label}"
-        candidate_dir.mkdir(parents=True, exist_ok=True)
 
-        outputs = run_backtest(
-            lambda params=params: model_cls(**params),
-            games_df,
-            start_date=start_date,
-            end_date=end_date,
-            window=window,
-            rolling_days=rolling_days,
-            rolling_games=rolling_games,
-            output_dir=candidate_dir,
-            model_name=model_name,
-        )
-        metrics = (
-            outputs.metrics_overall.iloc[0].to_dict()
-            if not outputs.metrics_overall.empty
-            else {}
-        )
-        metric_value = metrics.get(metric)
-        results_rows.append(
-            {
-                "run_id": run_id,
-                "params": params,
-                "params_json": json.dumps(params, sort_keys=True),
-                "log_loss": metrics.get("log_loss"),
-                "brier_score": metrics.get("brier_score"),
-                "mae_margin": metrics.get("mae_margin"),
-                "mae_total": metrics.get("mae_total"),
-                "metric": metric,
-                "metric_value": metric_value,
-                "output_dir": str(candidate_dir),
-            }
-        )
+    # Prepare execution context for workers. Use strings for paths to ensure
+    # picklability on Windows. When jobs==1, fall back to the original serial
+    # loop to guarantee identical behavior.
+    context = {
+        "model_name": model_name,
+        "start_date": start_date,
+        "end_date": end_date,
+        "window": window,
+        "rolling_days": rolling_days,
+        "rolling_games": rolling_games,
+        "metric": metric,
+        "base_dir": str(base_dir),
+        "run_id": run_id,
+    }
+
+    if jobs == 1:
+        for params in candidates:
+            params_label = _format_params(params)
+            candidate_dir = base_dir / f"{run_id}__{params_label}"
+            candidate_dir.mkdir(parents=True, exist_ok=True)
+
+            outputs = run_backtest(
+                lambda params=params: model_cls(**params),
+                games_df,
+                start_date=start_date,
+                end_date=end_date,
+                window=window,
+                rolling_days=rolling_days,
+                rolling_games=rolling_games,
+                output_dir=candidate_dir,
+                model_name=model_name,
+            )
+            metrics = (
+                outputs.metrics_overall.iloc[0].to_dict()
+                if not outputs.metrics_overall.empty
+                else {}
+            )
+            metric_value = metrics.get(metric)
+            results_rows.append(
+                {
+                    "run_id": run_id,
+                    "params": params,
+                    "params_json": json.dumps(params, sort_keys=True),
+                    "log_loss": metrics.get("log_loss"),
+                    "brier_score": metrics.get("brier_score"),
+                    "mae_margin": metrics.get("mae_margin"),
+                    "mae_total": metrics.get("mae_total"),
+                    "metric": metric,
+                    "metric_value": metric_value,
+                    "output_dir": str(candidate_dir),
+                }
+            )
+    else:
+        # Limit BLAS thread usage in child processes to avoid oversubscription.
+        prev_env = {
+            k: os.environ.get(k) for k in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS")
+        }
+        os.environ["OMP_NUM_THREADS"] = "1"
+        os.environ["MKL_NUM_THREADS"] = "1"
+        os.environ["OPENBLAS_NUM_THREADS"] = "1"
+        os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
+        try:
+            # Use joblib with loky backend for process-based parallelism.
+            tasks = [delayed(_eval_candidate)(i, params, context, games_df) for i, params in enumerate(candidates)]
+            raw_results = Parallel(n_jobs=jobs, backend="loky")(tasks)
+        finally:
+            # restore previous environment
+            for k, v in prev_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+        # Ensure deterministic ordering by sorting on the candidate index.
+        raw_results_sorted = sorted(raw_results, key=lambda r: int(r.get("index", 0)))
+        for r in raw_results_sorted:
+            results_rows.append(
+                {
+                    "run_id": run_id,
+                    "params": r.get("params", {}),
+                    "params_json": json.dumps(r.get("params", {}), sort_keys=True),
+                    "log_loss": r.get("log_loss"),
+                    "brier_score": r.get("brier_score"),
+                    "mae_margin": r.get("mae_margin"),
+                    "mae_total": r.get("mae_total"),
+                    "metric": metric,
+                    "metric_value": r.get("metric_value"),
+                    "output_dir": r.get("output_dir"),
+                }
+            )
 
     results = pd.DataFrame(results_rows)
     if results.empty:
@@ -393,3 +452,50 @@ def _resolve_tuning_output_dir(
 
 def list_metrics() -> list[str]:
     return sorted(_METRICS)
+
+
+def _eval_candidate(index: int, params: dict[str, Any], context: dict[str, Any], games_df: pd.DataFrame) -> dict[str, Any]:
+    """Worker function to evaluate a single candidate.
+
+    Returns a dict containing the candidate index and metrics. This function
+    is top-level so it can be pickled by joblib on Windows.
+    """
+    try:
+        from pathlib import Path
+        # Resolve model class in child process to avoid pickling issues.
+        model_name = context.get("model_name")
+        model_cls = get_backtest_model(model_name)
+
+        params_label = _format_params(params)
+        candidate_dir = Path(context.get("base_dir")) / f"{context.get('run_id')}__{params_label}"
+        candidate_dir.mkdir(parents=True, exist_ok=True)
+
+        outputs = run_backtest(
+            lambda params=params: model_cls(**params),
+            games_df,
+            start_date=context.get("start_date"),
+            end_date=context.get("end_date"),
+            window=context.get("window"),
+            rolling_days=context.get("rolling_days"),
+            rolling_games=context.get("rolling_games"),
+            output_dir=candidate_dir,
+            model_name=model_name,
+        )
+        metrics = (
+            outputs.metrics_overall.iloc[0].to_dict()
+            if not outputs.metrics_overall.empty
+            else {}
+        )
+        metric_value = metrics.get(context.get("metric"))
+        return {
+            "index": int(index),
+            "params": params,
+            "metric_value": metric_value,
+            "log_loss": metrics.get("log_loss"),
+            "brier_score": metrics.get("brier_score"),
+            "mae_margin": metrics.get("mae_margin"),
+            "mae_total": metrics.get("mae_total"),
+            "output_dir": str(candidate_dir),
+        }
+    except Exception as exc:  # pragma: no cover - bubble up with candidate index
+        raise RuntimeError(f"Candidate {index} failed: {exc}") from exc

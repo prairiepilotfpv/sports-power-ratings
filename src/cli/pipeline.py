@@ -552,6 +552,12 @@ def _parse_args() -> argparse.Namespace:
         help="Optional output directory override (default: outputs/tuning/<model>).",
     )
     tune_parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Number of parallel jobs to run (default: 1). Use 0 for all cores minus one.",
+    )
+    tune_parser.add_argument(
         "--csv",
         required=True,
         help="CSV path containing historical games for tuning.",
@@ -650,6 +656,12 @@ def _parse_args() -> argparse.Namespace:
     tune_batch_parser.add_argument(
         "--db",
         help="Optional SQLite DB path to persist best backtest metrics.",
+    )
+    tune_batch_parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Number of parallel jobs to use for tuning runs (default: 1).",
     )
 
     init_ensemble_parser = subparsers.add_parser(
@@ -1291,6 +1303,7 @@ def _run_tuning(args: argparse.Namespace) -> None:
                     apply_best=apply_best,
                     require_improvement=not args.allow_worse,
                     db_path=db_path,
+                    jobs=getattr(args, "jobs", 1),
                     sport=args.sport,
                     season=args.season,
                 )
@@ -1403,6 +1416,7 @@ def _run_tune_batch(args: argparse.Namespace) -> None:
         rolling_games=args.rolling_games,
         include_all_models=args.include_all_models,
         include_experimental=args.include_experimental,
+        jobs=getattr(args, "jobs", 1),
     )
 
     leaderboard = summarize_tune_batch(results)

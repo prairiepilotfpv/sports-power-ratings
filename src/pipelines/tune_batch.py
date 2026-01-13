@@ -63,6 +63,7 @@ def run_tune_batch(
     rolling_games: int | None = None,
     include_all_models: bool = False,
     include_experimental: bool = False,
+    jobs: int = 1,
 ) -> list[dict[str, object]]:
     """Run tuning across many models/metrics and apply best params.
 
@@ -133,6 +134,7 @@ def run_tune_batch(
                     apply_best=True,
                     require_improvement=True,
                     db_path=db_path,
+                    jobs=jobs,
                     sport=sport,
                     season=season,
                 )

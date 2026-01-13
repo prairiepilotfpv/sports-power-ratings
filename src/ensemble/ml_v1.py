@@ -30,11 +30,25 @@ class MLWeightedAverageEnsemble:
         self.sport = sport
         self.season = season
         self._ensemble_id = ensemble_id
-        self._weights = (
-            weights
-            if weights is not None
-            else (load_ml_weights(sport, season, ensemble_id) or {})
-        )
+        if weights is not None:
+            self._weights = weights
+        else:
+            loaded = load_ml_weights(sport, season, ensemble_id)
+            if not loaded:
+                # Defensive legacy fallback: directly check legacy path in case
+                # market-aware resolution missed the file for any reason.
+                from pathlib import Path
+
+                legacy = Path("outputs") / "ensembles" / sport / season / f"{ensemble_id}.json"
+                if legacy.exists():
+                    try:
+                        import json as _json
+
+                        data = _json.loads(legacy.read_text(encoding="utf-8"))
+                        loaded = data.get("weights") if isinstance(data.get("weights"), dict) else data
+                    except Exception:
+                        loaded = None
+            self._weights = loaded or {}
 
     @property
     def ensemble_id(self) -> str:
