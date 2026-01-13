@@ -69,6 +69,11 @@ python -m src.cli.pipeline schedule --sport nba --season 2025-26 --output data/p
 - If `--output` ends with `.csv`, writes CSV per model (prefixed when multiple models run).
 - `--upcoming-only` limits export to games without scores.
 - Rows include schedule fields, projections (ratings, spreads, totals, win probabilities), calibration info, and results when scores exist.
+- When multiple models run, the workbook includes a `BETS` sheet with ensemble-aware columns:
+  - ML: `home_win_prob`, `away_win_prob`, `win_prob_source`, `ml_ensemble_components_json`
+  - SPREAD: `margin_mean`, `margin_sd`, `spread_source`, `spread_ensemble_components_json`
+  - TOTAL: `total`, `total_sd`, `total_source`, `total_ensemble_components_json`
+  - `market_forecast_source` records which source drove the row.
 
 ## matchup — predict one matchup
 
@@ -363,3 +368,31 @@ python -m src.cli.pipeline tune --model elo --csv nba_results.csv --start 2024-1
 - `--model all` tunes all backtest models; `--metric all` tunes all metrics; use `--fail-fast` to stop on the first failure.
 - `--apply-best` persists best candidate metrics when it beats baseline (disable guard with `--allow-worse`). Use `--apply-metric` when tuning multiple metrics.
 - Tuned parameters are auto-loaded by rank/schedule/matchup; override via `--model-params` or choose a tuned metric with `--tuned-metric`.
+
+## init-ensemble-config — create default per-market configs
+
+```bash
+python -m src.cli.pipeline init-ensemble-config --sport nba --season 2025-26
+```
+
+- Writes per-market defaults to `outputs/ensembles/<sport>/<season>/<market>/default.json`.
+- Use `--overwrite` to replace existing defaults.
+
+## tune-ensemble — optimize ensemble weights for a market
+
+```bash
+python -m src.cli.pipeline tune-ensemble --sport nba --season 2025-26 --market ML --ensemble ensemble_ml_v1 \
+  --start-date 2020-01-01 --end-date 2024-12-31 --csv data/raw/nba_history.csv
+```
+
+- Stores the tuning run in the DB and writes weights to `outputs/ensembles/<sport>/<season>/<market>/<ensemble_id>.json`.
+- `tuning-status` reports whether active weights come from explicit DB actives, best runs, or defaults.
+
+## calibrate — fit a probability calibrator for an ML source
+
+```bash
+python -m src.cli.pipeline calibrate --sport nba --season 2025-26 --market ML --source ensemble_ml_v1 \
+  --start-date 2020-01-01 --end-date 2024-12-31 --csv data/raw/nba_history.csv
+```
+
+- Calibrators are written to `outputs/calibrators/<sport>/<season>/<source_id>/<market>/`.

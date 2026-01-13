@@ -523,8 +523,6 @@ See the complete command and option documentation in [docs/CLI.md](docs/CLI.md).
 - `--apply-best` reruns the best candidate and persists calibrated metrics when it beats the default-parameter baseline (disable the guard with `--allow-worse`). When tuning multiple metrics, `--apply-metric` chooses which metric becomes the active tuned parameters in the DB.
 - Tuned parameters are persisted per metric and loaded automatically by rank/schedule/matchup runs; override with `--model-params` or `--model-params-file`, or select a specific tuned metric with `--tuned-metric`.
 
-## Model parameter overrides (JSON examples)
-
 ## Model Parameter Overrides (JSON examples)
 
 - Inline: `--model-params '{"k_factor": 20, "home_advantage": 60}'`
@@ -538,35 +536,67 @@ See the complete command and option documentation in [docs/CLI.md](docs/CLI.md).
 ```
 
 Then run: `python -m src.cli.pipeline rank --sport nba --season 2025-26 --model-params-file params.json`
-- Inline: `--model-params '{"k_factor": 20, "home_advantage": 60}'`
+
 ## Input Format Notes
 
 - Recognized columns: `Date` / `Game Date`; `Visitor/Neutral` / `Away`; `Home/Neutral` / `Home`; `PTS` or `PTS_away` / `PTS_home`; `OT` / `Overtime`; `Box Score`.
 - If a CSV contains an unlabeled start-time column, the parser realigns columns automatically.
 - Future games are accepted; rankings and projections require at least one completed game per team to be meaningful.
-{
+
 ## Outputs At A Glance
 
 - SQLite DB: `data/db/<sport>/<season>.db` (`games`, `model_metrics`, optional `backtest_metrics`).
 - Rankings: `data/processed/<sport>/<season>/rankings.csv` (prefixed when multiple models run).
-- Schedule: `data/processed/<sport>/<season>/schedule_with_projections.xlsx` (default) or `.csv` (per model).
+- Schedule (workbook): `data/processed/<sport>/<season>/schedule_with_projections.xlsx` with one sheet per model plus `dashboard` and `BETS`.
+- Schedule (CSV): `data/processed/<sport>/<season>/schedule_with_projections.csv` (prefixed per model when multiple).
 - Rankings report: `data/processed/<sport>/<season>/report.xlsx` (per model when multiple).
 - Backtests: `outputs/backtests/<model>/` CSVs + Excel per run.
 - Tuning: `outputs/tuning/<sport>/<season>/<model>/<metric>/` (or `outputs/tuning/<model>/<metric>/`) grid CSV, best params JSON, and per-candidate backtests.
+- Ensemble weights: `outputs/ensembles/<sport>/<season>/<market>/<ensemble_id>.json`.
+- Ensemble calibrators: `outputs/calibrators/<sport>/<season>/<source_id>/<market>/`.
+
+## Ensembles & Forecast Outputs
+
+### Run ensembles end-to-end (ML/SPREAD/TOTAL)
+
+```bash
+# 1) Create default per-market configs
+python -m src.cli.pipeline init-ensemble-config --sport nba --season 2025-26
+
+# 2) (Optional) Tune ensemble weights per market
+python -m src.cli.pipeline tune-ensemble --sport nba --season 2025-26 --market ML --ensemble ensemble_ml_v1 \
+  --start-date 2020-01-01 --end-date 2024-12-31 --csv data/raw/nba_history.csv
+python -m src.cli.pipeline tune-ensemble --sport nba --season 2025-26 --market SPREAD --ensemble ensemble_spread_v1 \
+  --start-date 2020-01-01 --end-date 2024-12-31 --csv data/raw/nba_history.csv
+python -m src.cli.pipeline tune-ensemble --sport nba --season 2025-26 --market TOTAL --ensemble ensemble_total_v1 \
+  --start-date 2020-01-01 --end-date 2024-12-31 --csv data/raw/nba_history.csv
+
+# 3) (Optional) Calibrate ML ensemble probabilities
+python -m src.cli.pipeline calibrate --sport nba --season 2025-26 --market ML --source ensemble_ml_v1 \
+  --start-date 2020-01-01 --end-date 2024-12-31 --csv data/raw/nba_history.csv
+
+# 4) Export forecasts (workbook includes ensemble outputs)
+python -m src.cli.pipeline schedule --sport nba --season 2025-26 --model all --strict
+```
+
+Notes:
+- `schedule` only applies ensembles when multiple models are available; keep `--model all` (default) for full coverage.
+- `tuning-status` shows whether ensemble weights come from active DB weights, best runs, or defaults.
+- `--strict` fails if tuned params or ensemble weights are missing for any configured market.
+
+### Where ensemble forecasts appear
+
+Use the schedule workbook (`schedule_with_projections.xlsx`) and inspect the `BETS` sheet:
+- ML ensemble: `home_win_prob`, `away_win_prob`, `win_prob_source`, `ml_ensemble_components_json`.
+- SPREAD ensemble: `margin_mean`, `margin_sd`, `spread_source`, `spread_ensemble_components_json`.
+- TOTAL ensemble: `total`, `total_sd`, `total_source`, `total_ensemble_components_json`.
+- `market_forecast_source` records which forecast source drove the row.
+
+The per-model schedule CSVs are still useful for individual model outputs, but the ensemble-combined forecasts live in the workbook.
 
 ## Configuration
 
 - `src/config.py` holds global defaults such as `DEFAULT_WIN_PROB_K`, calibration sample sizes, and fallback spread/total uncertainty.
-
-- If a CSV contains an unlabeled start-time column, the parser realigns columns automatically.
-- Future games are accepted; rankings and projections require at least one completed game per team to be meaningful.
-
-
-- SQLite DB: `data/db/<sport>/<season>.db` (`games`, `model_metrics`, optional `backtest_metrics`).
-- Rankings: `data/processed/<sport>/<season>/rankings.csv` (prefixed when multiple models run).
-- Rankings report: `data/processed/<sport>/<season>/report.xlsx` (per model when multiple).
-- Backtests: `outputs/backtests/<model>/` CSVs + Excel per run.
-- Tuning: `outputs/tuning/<sport>/<season>/<model>/<metric>/` (or `outputs/tuning/<model>/<metric>/`) grid CSV, best params JSON, and per-candidate backtests.
 
 ## Testing
 
@@ -597,35 +627,6 @@ See [TESTING.md](TESTING.md) for more detail. `make test` is also available as a
 - Unknown teams during `matchup`: rerun `rank` after new ingests so ratings exist for those teams.
 - No completed games: rankings/projections require finished games; ingest more results or allow future games only for schedule exports.
 - Overwriting outputs: pass `--overwrite` for rankings; for schedule/report/backtest/tune, specify a new `--output`/`--output-dir` or let the CLI append numeric suffixes when available.
-Run everything:
-## License
-
-This project is provided as-is for internal analytics workflows.
-```bash
-python -m pytest
-```
-
-Run only fast tests:
-
-```bash
-python -m pytest -q -m "not slow"
-```
-
-Coverage:
-
-```bash
-coverage run -m pytest -q
-coverage report --fail-under=70
-```
-
-`make test` is also available as a shortcut.
-
-## Troubleshooting
-
-- Missing or misnamed columns: ensure the CSV has date + home/away + scores; common aliases are auto-mapped.
-- Unknown teams during `matchup`: rerun `rank` after new ingests so ratings exist for those teams.
-- No completed games: rankings/projections require finished games; ingest more results or allow future games only for schedule exports.
-- Overwriting outputs: pass `--overwrite` for rankings; for schedule/report/backtest/tune, specify a new `--output`/`--output-dir` or allow the CLI to append numeric suffixes when available.
 
 ## License
 

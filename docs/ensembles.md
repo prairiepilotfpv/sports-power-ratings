@@ -9,6 +9,10 @@ Per market, configs are resolved in this order (first hit wins):
 3. Global repo default: `src/ensemble/default_configs/<market>.json`
 4. Fallback: generated from the default allowlist (equal weights).
 
+Legacy multi-market configs are still supported at:
+- `outputs/ensembles/<sport>/<season>/ensemble_config.json` (with a `markets` object).
+These are merged into the per-market resolution order above.
+
 Schema for any file:
 ```json
 {
@@ -23,9 +27,9 @@ Schema for any file:
 ```
 
 Defaults per market (also baked into repo JSON under `src/ensemble/default_configs/`):
-- ML: models `["elo", "bradley-terry"]`, metric `log_loss`
-- SPREAD: models `["elo", "gssd", "toor"]`, metric `mae_margin`
-- TOTAL: models `["poisson", "gssd"]`, metric `mae_total`
+- ML: `ensemble_ml_v1`, models `["elo", "bradley-terry"]`, metric `log_loss`
+- SPREAD: `ensemble_spread_v1`, models `["elo", "gssd", "toor"]`, metric `mae_margin`
+- TOTAL: `ensemble_total_v1`, models `["poisson", "gssd"]`, metric `mae_total`
 Weights: equal if omitted or invalid. Missing models fall back to the default allowlist; unavailable models are dropped and weights renormalized.
 
 ## CLI helper: create season defaults
@@ -41,7 +45,8 @@ Writes:
 ## How schedule uses configs
 - Always resolves configs via the order above; you will get an ensemble even with zero files in `outputs/`.
 - Models/weights/metric_slot come from the resolved config (config weights override DB/file weights).
-- META now records per-market config source/path, resolved models/weights, and metric slot.
+- Ensemble weights are resolved in this order: config weights -> active DB weights -> on-disk weights -> equal fallback.
+- META records per-market config source/path, resolved models/weights, and metric slot.
 - Missing/filtered models are skipped and weights renormalized.
 
 ## How tune-batch chooses models
@@ -64,6 +69,36 @@ Prints the final model list before tuning; experimental models are excluded unle
 2) Edit `models` and `weights` (weights auto-renormalize; extras trimmed).
 3) Optional: change `metric_slot` if you intentionally want a different tuned metric for that market.
 4) Rerun `schedule` / `tune-batch`. META will show which file was used and the resolved models/weights.
+
+## Running ensembles end-to-end
+
+```bash
+# Create defaults per market
+python -m src.cli.pipeline init-ensemble-config --sport nba --season 2025-26
+
+# Tune ensemble weights for each market (optional but recommended)
+python -m src.cli.pipeline tune-ensemble --sport nba --season 2025-26 --market ML --ensemble ensemble_ml_v1 \
+  --start-date 2020-01-01 --end-date 2024-12-31 --csv data/raw/nba_history.csv
+python -m src.cli.pipeline tune-ensemble --sport nba --season 2025-26 --market SPREAD --ensemble ensemble_spread_v1 \
+  --start-date 2020-01-01 --end-date 2024-12-31 --csv data/raw/nba_history.csv
+python -m src.cli.pipeline tune-ensemble --sport nba --season 2025-26 --market TOTAL --ensemble ensemble_total_v1 \
+  --start-date 2020-01-01 --end-date 2024-12-31 --csv data/raw/nba_history.csv
+
+# (Optional) Calibrate ML ensemble probabilities
+python -m src.cli.pipeline calibrate --sport nba --season 2025-26 --market ML --source ensemble_ml_v1 \
+  --start-date 2020-01-01 --end-date 2024-12-31 --csv data/raw/nba_history.csv
+
+# Export schedule forecasts (workbook includes ensemble outputs)
+python -m src.cli.pipeline schedule --sport nba --season 2025-26 --model all --strict
+```
+
+## Forecast outputs from ensembles
+
+The schedule workbook (`schedule_with_projections.xlsx`) includes a `BETS` sheet with ensemble-aware columns:
+- ML: `home_win_prob`, `away_win_prob`, `win_prob_source`, `ml_ensemble_components_json`.
+- SPREAD: `margin_mean`, `margin_sd`, `spread_source`, `spread_ensemble_components_json`.
+- TOTAL: `total`, `total_sd`, `total_source`, `total_ensemble_components_json`.
+- `market_forecast_source` captures the forecast source used for the row.
 
 ## Troubleshooting
 - **Config missing:** global default is used; META shows `source=fallback/global_default`.
