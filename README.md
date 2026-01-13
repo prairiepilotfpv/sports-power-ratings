@@ -1,6 +1,6 @@
 # Sports Power Ratings
 
-Local-first tooling to turn Sports-Reference schedules/results into SQLite databases, power ratings, projections, and reports. Everything runs through a single CLI and works entirely offline once inputs are downloaded.
+Local-first tooling to turn Sports-Reference schedules/results into SQLite databases, power ratings, projections, and reports. Everything runs through a single CLI and works entirely offline once inputs are downloaded. For the day-to-day command sequence, see the runbook in [docs/daily-workflow.md](docs/daily-workflow.md).
 
 ## Table of Contents
 - Overview
