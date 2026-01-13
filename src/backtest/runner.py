@@ -275,7 +275,24 @@ def run_backtest(
         predictions = validate_predictions(predictions, context="Backtest model output")
         _attach_prediction_metadata(predictions, model=model, train_data=train_data)
         pred_df = _predictions_to_frame(predictions)
-        pred_df["date"] = pd.to_datetime(pred_df["date"]).dt.normalize()
+        # Ensure an empty predictions return value yields a DataFrame with the
+        # expected columns so downstream normalization and merges don't fail.
+        if pred_df.empty:
+            pred_df = pd.DataFrame(columns=REQUIRED_BACKTEST_PREDICTION_COLUMNS)
+            _log_backtest_issue(model_name, current_date, pred_df, note="empty_predictions")
+
+        # If the frame is missing expected columns, record details for debugging.
+        missing = [c for c in (REQUIRED_BACKTEST_PREDICTION_COLUMNS) if c not in pred_df.columns]
+        if missing:
+            _log_backtest_issue(model_name, current_date, pred_df, note=f"missing_columns:{missing}")
+
+        # Normalize date column for merging; keep wrapped to log unexpected errors.
+        try:
+            pred_df["date"] = pd.to_datetime(pred_df["date"]).dt.normalize()
+        except Exception as exc:
+            _log_backtest_issue(model_name, current_date, pred_df, note=f"date_normalize_error:{type(exc).__name__}")
+            # Re-raise so upstream behavior remains unchanged for visible failures.
+            raise
 
         # Apply sport-specific guardrails to predicted SDs so downstream
         # evaluation and calibration see clamped, sensible variances.
@@ -643,6 +660,26 @@ def _predictions_to_frame(predictions: Iterable[GamePrediction]) -> pd.DataFrame
                             row[key] = val
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def _log_backtest_issue(model_name: str | None, current_date: object, pred_df: pd.DataFrame, note: str | None = None) -> None:
+    try:
+        out_dir = Path("outputs") / "logs"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_file = out_dir / "backtest_pred_issues.log"
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "model": model_name,
+            "date": str(current_date),
+            "note": note,
+            "n_rows": int(len(pred_df)) if isinstance(pred_df, pd.DataFrame) else None,
+            "columns": list(pred_df.columns) if isinstance(pred_df, pd.DataFrame) else None,
+        }
+        with out_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        # Best-effort logging only; do not raise from instrumentation.
+        pass
 
 
 def _prediction_hash_columns(pred_df: pd.DataFrame) -> list[str]:

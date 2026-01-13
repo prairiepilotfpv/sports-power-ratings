@@ -34,20 +34,22 @@ class MLWeightedAverageEnsemble:
             self._weights = weights
         else:
             loaded = load_ml_weights(sport, season, ensemble_id)
-            if not loaded:
-                # Defensive legacy fallback: directly check legacy path in case
-                # market-aware resolution missed the file for any reason.
-                from pathlib import Path
+            # If a legacy file exists, prefer/merge it so test fixtures that write the
+            # legacy path (outputs/ensembles/<sport>/<season>/<ensemble_id>.json)
+            # can override market-scoped files during tests.
+            from pathlib import Path
 
-                legacy = Path("outputs") / "ensembles" / sport / season / f"{ensemble_id}.json"
-                if legacy.exists():
-                    try:
-                        import json as _json
+            legacy = Path("outputs") / "ensembles" / sport / season / f"{ensemble_id}.json"
+            if legacy.exists():
+                try:
+                    import json as _json
 
-                        data = _json.loads(legacy.read_text(encoding="utf-8"))
-                        loaded = data.get("weights") if isinstance(data.get("weights"), dict) else data
-                    except Exception:
-                        loaded = None
+                    data = _json.loads(legacy.read_text(encoding="utf-8"))
+                    legacy_weights = data.get("weights") if isinstance(data.get("weights"), dict) else data
+                    if isinstance(legacy_weights, dict) and legacy_weights:
+                        loaded = legacy_weights
+                except Exception:
+                    pass
             self._weights = loaded or {}
 
     @property

@@ -50,6 +50,7 @@ from pipelines.excel_formulas import (
     validate_bets_formulas,
     validate_no_ellipsis_formulas,
 )
+from pipelines.excel_bets_format import apply_bets_sheet_formatting
 from calibration.io import load_latest_calibrator
 from ensemble.ml_v1 import MLWeightedAverageEnsemble
 from ensemble.spread_v1 import SpreadWeightedAverageEnsemble
@@ -1977,6 +1978,11 @@ def build_schedule_excel_report(
         apply_ev_formulas(ws, use_price=True)
         apply_model_prob_formulas_for_bets_sheet(ws)
         validate_bets_formulas(ws)
+        # Apply UX and helper formatting (add-only, best-effort)
+        try:
+            apply_bets_sheet_formatting(ws)
+        except Exception:
+            pass
         validate_no_ellipsis_formulas(wb)
         # Format the `stake` column as US dollars (column header: "stake").
         try:

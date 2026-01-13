@@ -30,8 +30,8 @@ class PoissonPowerRating:
         max_iter: int = 1500,
         learning_rate: float = 0.05,
         tol: float = 1e-6,
-        reg_strength: float = 0.1,
-        n_simulations: int = 20000,
+        reg_strength: float = 0.5,
+        n_simulations: int = 5000,
         random_seed: int | None = None,
     ) -> None:
         self.model_id = "poisson"
@@ -264,8 +264,8 @@ class PoissonModel(BaseModel):
         max_iter: int = 1500,
         learning_rate: float = 0.05,
         tol: float = 1e-6,
-        reg_strength: float = 0.1,
-        n_simulations: int = 20000,
+        reg_strength: float = 0.5,
+        n_simulations: int = 5000,
         random_seed: int | None = None,
     ) -> None:
         self._rating_model = PoissonPowerRating(
