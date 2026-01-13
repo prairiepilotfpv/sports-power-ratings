@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import atexit
 from math import sqrt
 from typing import Any
 
@@ -12,8 +14,23 @@ from .io import load_market_weights
 from markets.base import Market
 
 
+logger = logging.getLogger(__name__)
+_LOG_REGISTERED = False
+
+
+def _register_log_hook() -> None:
+    global _LOG_REGISTERED
+    if _LOG_REGISTERED:
+        return
+    atexit.register(SpreadWeightedAverageEnsemble.log_between_var_usage)
+    _LOG_REGISTERED = True
+
+
 class SpreadWeightedAverageEnsemble:
     """Combine multiple model margin forecasts using weighted average."""
+
+    _combine_calls: int = 0
+    _between_var_applied_calls: int = 0
 
     def __init__(
         self,
@@ -21,15 +38,18 @@ class SpreadWeightedAverageEnsemble:
         season: str,
         ensemble_id: str = "ensemble_spread_v1",
         weights: dict[str, float] | None = None,
+        include_between_model_variance: bool = True,
     ) -> None:
         self.sport = sport
         self.season = season
         self._ensemble_id = ensemble_id
+        self._include_between_model_variance = include_between_model_variance
         self._weights = (
             weights
             if weights is not None
             else (load_market_weights(sport, season, Market.SPREAD.name, ensemble_id) or {})
         )
+        _register_log_hook()
 
     @property
     def ensemble_id(self) -> str:
@@ -49,6 +69,10 @@ class SpreadWeightedAverageEnsemble:
         """
         if game_rows is None or game_rows.empty:
             return None, None, "[]"
+
+        cls = type(self)
+        cls._combine_calls += 1
+        applied_between_var = False
 
         rows = list(game_rows.itertuples(index=False))
         models: list[str] = []
@@ -115,10 +139,48 @@ class SpreadWeightedAverageEnsemble:
             sd_values.append(comp["margin_sd"])
 
         combined_sd = None
+        within_var = None
         if sd_weights:
             total_sd_weight = sum(sd_weights)
             if total_sd_weight > 0:
                 normalized = [w / total_sd_weight for w in sd_weights]
-                combined_sd = sqrt(sum(w * (sd ** 2) for w, sd in zip(normalized, sd_values)))
+                within_var = sum(w * (sd ** 2) for w, sd in zip(normalized, sd_values))
+                combined_sd = sqrt(within_var)
+
+        if within_var is not None and self._include_between_model_variance:
+            var_set = [
+                comp
+                for comp in components
+                if comp.get("margin_mean") is not None
+                and comp.get("margin_sd") is not None
+                and comp.get("w", 0.0) > 0.0
+            ]
+            if len(var_set) >= 2:
+                weight_sum = sum(comp["w"] for comp in var_set)
+                if weight_sum > 0:
+                    normalized_weights = [comp["w"] / weight_sum for comp in var_set]
+                    mean_for_var_set = sum(
+                        w * comp["margin_mean"] for w, comp in zip(normalized_weights, var_set)
+                    )
+                    between_var = sum(
+                        w * ((comp["margin_mean"] - mean_for_var_set) ** 2)
+                        for w, comp in zip(normalized_weights, var_set)
+                    )
+                    combined_sd = sqrt(within_var + between_var)
+                    applied_between_var = True
+
+        if applied_between_var:
+            cls._between_var_applied_calls += 1
 
         return float(combined_mean), combined_sd, json.dumps(components, sort_keys=True)
+
+    @classmethod
+    def log_between_var_usage(cls) -> None:
+        """Log aggregated usage of between-model variance application."""
+        if cls._combine_calls <= 0:
+            return
+        logger.info(
+            "Spread ensemble between_var applied for %s/%s games (>=2 mean+sd components).",
+            cls._between_var_applied_calls,
+            cls._combine_calls,
+        )

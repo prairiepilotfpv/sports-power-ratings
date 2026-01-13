@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import logging
+import sqlite3
+
 from data.repository import (
     load_active_tuned_metric,
     load_active_tuned_params,
@@ -138,6 +141,33 @@ def _load_tuned_params_with_metadata(
             metric=tuned_metric,
         )
         if params is not None:
+            # Fetch the run_id for audit/debugging (stored in model_tuned_params.run_id)
+            run_id = None
+            try:
+                with sqlite3.connect(db_path) as conn:
+                    cur = conn.execute(
+                        "SELECT run_id FROM model_tuned_params WHERE sport = ? AND season = ? AND model = ? AND metric = ?",
+                        (sport, season, model_name, tuned_metric),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        run_id = row[0]
+            except Exception:
+                run_id = None
+
+            # Log a short debug message (do not log full params JSON)
+            logger = logging.getLogger(__name__)
+            try:
+                keys = list(params.keys()) if isinstance(params, dict) else None
+            except Exception:
+                keys = None
+            logger.debug(
+                "Using tuned params from DB (metric=%s) for model=%s; params_keys=%s; run_id=%s",
+                tuned_metric,
+                model_name,
+                keys,
+                run_id,
+            )
             print(
                 "Using tuned params from DB "
                 f"(metric={tuned_metric}) for model={model_name}"
@@ -171,6 +201,19 @@ def _load_tuned_params_with_metadata(
         model=model_name,
     )
     metric_label = metric or "unknown"
+    # Log a short debug message (do not log full params JSON). run_id is not available for active params.
+    logger = logging.getLogger(__name__)
+    try:
+        keys = list(params.keys()) if isinstance(params, dict) else None
+    except Exception:
+        keys = None
+    logger.debug(
+        "Using tuned params from DB (metric=%s) for model=%s; params_keys=%s; run_id=%s",
+        metric_label,
+        model_name,
+        keys,
+        None,
+    )
     print(
         "Using tuned params from DB "
         f"(metric={metric_label}) for model={model_name}"

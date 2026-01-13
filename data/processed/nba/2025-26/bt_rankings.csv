@@ -1,31 +1,31 @@
 team,rating,points,games,params_source,tuned_metric_used
-Oklahoma City Thunder,4.520474563297048,10.216882711289896,40,db_active,mae_total
-Detroit Pistons,2.8389749137133564,6.4164665252641795,38,db_active,mae_total
-San Antonio Spurs,2.7621280503318464,6.24278224081446,40,db_active,mae_total
-Denver Nuggets,1.9845533445865435,4.485358444567899,39,db_active,mae_total
-Los Angeles Lakers,1.9055839776373906,4.306877015548233,36,db_active,mae_total
-New York Knicks,1.9001868047374284,4.294678676254571,40,db_active,mae_total
-Minnesota Timberwolves,1.7986670906235334,4.0652304186741,40,db_active,mae_total
-Boston Celtics,1.713725244434351,3.873250380374241,38,db_active,mae_total
-Phoenix Suns,1.6739414917293616,3.783333729033684,39,db_active,mae_total
-Houston Rockets,1.5002720734447215,3.3908174008679155,36,db_active,mae_total
-Toronto Raptors,0.9541401895997712,2.156485623526821,40,db_active,mae_total
-Philadelphia 76ers,0.7821636000335928,1.7677953167720017,37,db_active,mae_total
-Orlando Magic,0.682633993564141,1.5428449711035248,40,db_active,mae_total
-Cleveland Cavaliers,0.5026442897550989,1.1360439445060986,40,db_active,mae_total
-Miami Heat,0.4261562260297195,0.9631705957119628,39,db_active,mae_total
-Golden State Warriors,0.40272559756775583,0.9102142125942811,40,db_active,mae_total
-Atlanta Hawks,0.201865494539064,0.45624326656046804,41,db_active,mae_total
-Portland Trail Blazers,0.19825160367748368,0.44807538539065594,40,db_active,mae_total
-Memphis Grizzlies,-0.7272758544645754,-1.6437416027396488,39,db_active,mae_total
-Chicago Bulls,-0.7484773761652019,-1.6916599036797562,38,db_active,mae_total
-Los Angeles Clippers,-0.8675336563295047,-1.9607431677151965,38,db_active,mae_total
-Milwaukee Bucks,-1.1249421454532866,-2.5425210995325744,39,db_active,mae_total
-Utah Jazz,-1.7477773245100618,-3.9502126778802884,38,db_active,mae_total
-Dallas Mavericks,-2.0667929345632055,-4.671231019062221,39,db_active,mae_total
-Charlotte Hornets,-2.083084104952147,-4.708051263211998,39,db_active,mae_total
-Brooklyn Nets,-2.7166618051119333,-6.1400223893364325,36,db_active,mae_total
-Sacramento Kings,-3.085537844581146,-6.973732031430582,39,db_active,mae_total
-Washington Wizards,-3.4313074413735856,-7.75521799404194,38,db_active,mae_total
-New Orleans Pelicans,-3.7344285279690403,-8.440312566680289,41,db_active,mae_total
-Indiana Pacers,-4.415269533828528,-9.979105143544066,39,db_active,mae_total
+Oklahoma City Thunder,4.559765306258379,10.428077220731485,40,db_active,mae_total
+Detroit Pistons,2.8207474656482328,6.450983859101191,38,db_active,mae_total
+San Antonio Spurs,2.72817067658612,6.239262895335347,40,db_active,mae_total
+Denver Nuggets,2.0120501425549357,4.601511886971169,39,db_active,mae_total
+New York Knicks,1.8587930682494986,4.251016521938467,40,db_active,mae_total
+Minnesota Timberwolves,1.7964347666835248,4.108404536362999,40,db_active,mae_total
+Phoenix Suns,1.6976445580023725,3.8824736264178594,39,db_active,mae_total
+Los Angeles Lakers,1.633518129652801,3.7358179760050607,37,db_active,mae_total
+Houston Rockets,1.525364430628427,3.4884729813874773,36,db_active,mae_total
+Boston Celtics,1.4025143477990025,3.2075176987635725,39,db_active,mae_total
+Philadelphia 76ers,0.9176075545060964,2.098547138727216,38,db_active,mae_total
+Toronto Raptors,0.7051182657620825,1.6125890766840714,41,db_active,mae_total
+Orlando Magic,0.6635483070708945,1.5175195478424564,40,db_active,mae_total
+Golden State Warriors,0.43205434887272703,0.9880982487001613,40,db_active,mae_total
+Miami Heat,0.4042334539047609,0.9244725088671009,39,db_active,mae_total
+Cleveland Cavaliers,0.23210843014567703,0.5308265821970631,41,db_active,mae_total
+Portland Trail Blazers,0.20861035536178354,0.4770870316003159,40,db_active,mae_total
+Atlanta Hawks,0.17719928571016605,0.40525064575316205,41,db_active,mae_total
+Memphis Grizzlies,-0.7060227464833773,-1.614657603060501,39,db_active,mae_total
+Los Angeles Clippers,-0.7562259908933923,-1.729471255579052,39,db_active,mae_total
+Chicago Bulls,-0.7580507344896424,-1.7336444017503285,38,db_active,mae_total
+Milwaukee Bucks,-1.1513511660382536,-2.63311334272997,39,db_active,mae_total
+Utah Jazz,-1.4687356215350904,-3.358964211860927,39,db_active,mae_total
+Dallas Mavericks,-1.8887169569410356,-4.319451759513441,40,db_active,mae_total
+Charlotte Hornets,-2.2191074187214452,-5.075047062567843,40,db_active,mae_total
+Sacramento Kings,-2.7057096469052544,-6.187895042773346,40,db_active,mae_total
+Brooklyn Nets,-2.88136072266418,-6.58960496837074,37,db_active,mae_total
+Washington Wizards,-3.4522298862414913,-7.895169470242773,38,db_active,mae_total
+New Orleans Pelicans,-3.742395232367495,-8.55877086920714,41,db_active,mae_total
+Indiana Pacers,-4.045576770116826,-9.252139995730115,40,db_active,mae_total
