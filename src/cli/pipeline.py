@@ -873,7 +873,8 @@ def _import_games(args: argparse.Namespace) -> None:
     ingest_source = get_ingest_source(args.source)()
     division = getattr(args, "division", None)
     conference = getattr(args, "conference", None)
-    format_hint = None if args.format == "auto" else args.format
+    raw_format = getattr(args, "format", "auto")
+    format_hint = None if raw_format == "auto" else raw_format
     games = []
 
     if input_dir:
