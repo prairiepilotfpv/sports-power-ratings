@@ -120,7 +120,7 @@ def run_model_market_tuning(
         season=season,
         model=model_name,
         market=normalized_market,
-        params_json=json.dumps(best_params, sort_keys=True),
+        params=best_params,
         source_run_id=run_id,
     )
     return ModelMarketTuningResult(

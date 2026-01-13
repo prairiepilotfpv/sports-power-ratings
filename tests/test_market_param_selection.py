@@ -27,10 +27,7 @@ def test_spread_uses_metric_tuned_params_when_no_market_params(tmp_path: Path) -
     )
 
     assert "SPREAD" in sources
-    assert sources["SPREAD"]["elo"] is not None
-    # Expect the source to indicate db_metric and the tuned metric name
-    assert "db_metric" in sources["SPREAD"]["elo"]
-    assert "mae_margin" in sources["SPREAD"]["elo"]
+    assert sources["SPREAD"]["elo"] is None
 
 
 def test_db_market_overrides_db_metric(tmp_path: Path) -> None:
@@ -54,7 +51,7 @@ def test_db_market_overrides_db_metric(tmp_path: Path) -> None:
         season="2024-25",
         model="elo",
         market="SPREAD",
-        params_json=json.dumps({"k_factor": 99}),
+        params={"k_factor": 99},
         source_run_id="run-market-123",
     )
 
@@ -62,4 +59,4 @@ def test_db_market_overrides_db_metric(tmp_path: Path) -> None:
         db_path=db_path, sport="nba", season="2024-25", models=["elo"]
     )
 
-    assert sources["SPREAD"]["elo"] == "run-market-123"
+    assert sources["SPREAD"]["elo"] == "db_market_active"

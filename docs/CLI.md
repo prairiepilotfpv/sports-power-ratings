@@ -10,24 +10,28 @@ python -m src.cli.pipeline <command> [options]
 
 ## Common Flags
 
-- `--sport`: One of `nba`, `nhl`, `cbb` (as supported).
-- `--season`: Season identifier like `2025-26`.
-- `--model`: One of `bradley_terry_hfa`, `bradley_terry_calibrated_hfa`, `elo`, `gssd`, `toor`.
-- `--model-params`: JSON string of model params, e.g. `'{"k_factor": 20}'`.
   - Example: to suppress small-sigma warnings for `bradley_terry_hfa` (useful for low-scoring sports like `nhl`) pass `--model-params '{"suppress_small_sd_warning": true}'`.
-- `--model-params-file`: Path to JSON file with params (supports per-model keys when multiple models run).
-- `--output`/`--output-dir`: Override default output paths.
-- `--db`: Override default SQLite path.
 
+### Activating and verifying tuned runs
+
+- After tuning you may optionally promote a tuned run to be the explicit active params used by `rank`/`schedule` with `activate-tuning`:
+
+```bash
+python -m src.cli.pipeline activate-tuning --sport <sport> --season <season> --model <model> --market <ML|SPREAD|TOTAL> --run-id <run_id>
+```
+
+- To inspect what params/weights `rank`/`schedule` will use without changing DB state, run the new read-only command `tuning-status`:
+
+```bash
+python -m src.cli.pipeline tuning-status --sport <sport> --season <season>
+```
+
+This prints, per market, each model's status as `ACTIVE` (explicitly promoted), `AUTO-SELECT` (best tuning run auto-selected), or `DEFAULT` (no tuned params found).
 When multiple models run, outputs are prefixed with abbreviations (`bt`, `elo`, `gssd`, `toor`).
 
 ## Development notes
-
-- SQLite schema changes are handled via the migration runner in `src/data/migrations.py`.
 - `schema_meta` tracks the current schema version; both `src/data/repository.py:init_db` and
-  `src/data/betting_repository.py:init_db` apply migrations in version order after creating base tables.
 - Legacy DB upgrades are additive: migrations check for missing columns/tables and backfill with `ALTER TABLE`
-  or `CREATE TABLE IF NOT EXISTS`.
 - When adding new migrations, append a new versioned entry in `MIGRATIONS` and keep it idempotent.
 
 ## import - ingest into SQLite

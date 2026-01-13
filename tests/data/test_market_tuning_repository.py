@@ -46,7 +46,7 @@ def test_round_trip_model_market_params(tmp_path: Path) -> None:
         season="2024-25",
         model="elo",
         market="ML",
-        params_json=json.dumps(params),
+        params=params,
         source_run_id="run-123",
     )
     loaded = get_active_model_market_params(

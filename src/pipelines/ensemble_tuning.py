@@ -184,7 +184,34 @@ def build_market_ensemble_dataset(
         )
         preds_by_model[model_name] = preds
 
-    aligned = _align_market_predictions(preds_by_model)
+    # Drop models that produced no predictions for this market/window.
+    non_empty_preds = {k: v for k, v in preds_by_model.items() if v is not None and not v.empty}
+    empty_models = [k for k in preds_by_model.keys() if k not in non_empty_preds]
+    # Remove models that produced no predictions from the resolved model list
+    # so later indexing/pivoting doesn't fail. Keep behavior permissive: if
+    # all requested models are empty, raise a clear error above; otherwise
+    # proceed with the subset that produced data.
+    if empty_models:
+        model_list = [m for m in model_list if m in non_empty_preds]
+    if not non_empty_preds:
+        counts = {k: (0 if preds_by_model.get(k) is None else len(preds_by_model.get(k))) for k in preds_by_model}
+        raise ValueError(
+            "No models produced predictions for the requested market/window. "
+            f"Per-model counts: {counts}"
+        )
+
+    try:
+        aligned = _align_market_predictions(non_empty_preds)
+    except ValueError:
+        # Provide a more informative error listing per-model key counts and samples.
+        details = {}
+        for name, df in non_empty_preds.items():
+            keys = df["game_key"].astype(str).unique().tolist()
+            details[name] = {"count": len(keys), "sample": keys[:5]}
+        raise ValueError(
+            "No overlapping games across model predictions. "
+            f"Per-model sample keys: {details}"
+        )
     pred_matrix = aligned.pivot_table(
         index="game_key", columns="model_name", values="pred_value", aggfunc="mean"
     )

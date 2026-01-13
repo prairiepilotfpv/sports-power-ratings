@@ -790,10 +790,13 @@ def set_active_model_market_params(
     season: str,
     model: str,
     market: str,
-    params_json: str,
+    params: dict,
     source_run_id: str | None,
 ) -> None:
+    if not isinstance(params, dict):
+        raise ValueError("Active market params must be a JSON object (dict).")
     init_db(db_path)
+    params_json = json.dumps(params, sort_keys=True)
     with closing(sqlite3.connect(Path(db_path))) as conn:
         conn.execute(
             """
@@ -997,3 +1000,115 @@ def get_active_ensemble_market_weights_source(
             (sport, season, market, ensemble_id),
         ).fetchone()
     return row[0] if row and row[0] is not None else None
+
+
+def load_best_model_market_tuning_params_by_optimized_metric(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+    market: str,
+    metric_optimized: str,
+) -> tuple[dict | None, str | None]:
+    """Load the best tuned params (best_score) for a model+market by optimized metric.
+
+    Returns (params_dict, run_id) or (None, None) when not found.
+    """
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT best_params_json, run_id
+            FROM model_market_tuning_runs
+            WHERE sport = ? AND season = ? AND model = ? AND market = ? AND metric_optimized = ?
+            ORDER BY best_score ASC
+            LIMIT 1
+            """,
+            (sport, season, model, market, metric_optimized),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None, None
+    data = json.loads(row[0])
+    if not isinstance(data, dict):
+        raise ValueError("Stored model market tuned params must be a JSON object.")
+    return data, row[1]
+
+
+def load_model_market_tuning_run_by_run_id(
+    db_path: str | Path, *, run_id: str
+) -> tuple[dict | None, str | None]:
+    """Load a model_market_tuning_runs entry by run_id. Returns (params_dict, run_id) or (None,None)."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT best_params_json, run_id
+            FROM model_market_tuning_runs
+            WHERE run_id = ?
+            LIMIT 1
+            """,
+            (run_id,),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None, None
+    data = json.loads(row[0])
+    if not isinstance(data, dict):
+        raise ValueError("Stored model market tuned params must be a JSON object.")
+    return data, row[1]
+
+
+def load_best_ensemble_market_tuning_weights_by_optimized_metric(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    market: str,
+    ensemble_id: str,
+    metric_optimized: str,
+) -> tuple[dict | None, str | None]:
+    """Load best ensemble weights for a market+ensemble by optimized metric.
+
+    Returns (weights_dict, run_id) or (None, None).
+    """
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT weights_json, run_id
+            FROM ensemble_market_tuning_runs
+            WHERE sport = ? AND season = ? AND market = ? AND ensemble_id = ? AND metric_optimized = ?
+            ORDER BY best_score ASC
+            LIMIT 1
+            """,
+            (sport, season, market, ensemble_id, metric_optimized),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None, None
+    data = json.loads(row[0])
+    if not isinstance(data, dict):
+        raise ValueError("Stored ensemble weights must be a JSON object.")
+    return data, row[1]
+
+
+def load_ensemble_market_tuning_run_by_run_id(
+    db_path: str | Path, *, run_id: str
+) -> tuple[dict | None, str | None]:
+    """Load an ensemble_market_tuning_runs entry by run_id. Returns (weights_dict, run_id) or (None,None)."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT weights_json, run_id
+            FROM ensemble_market_tuning_runs
+            WHERE run_id = ?
+            LIMIT 1
+            """,
+            (run_id,),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None, None
+    data = json.loads(row[0])
+    if not isinstance(data, dict):
+        raise ValueError("Stored ensemble weights must be a JSON object.")
+    return data, row[1]

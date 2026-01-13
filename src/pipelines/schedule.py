@@ -22,6 +22,10 @@ from data.repository import (
     load_games,
     load_model_metrics,
 )
+from pipelines.model_params import (
+    resolve_active_model_market_params,
+    resolve_active_ensemble_weights,
+)
 from pipelines.common import normalize_games, resolve_output_path
 from pipelines.model_params import resolve_model_params_with_metadata
 from pipelines.market_tuning import _metric_name_for_market
@@ -617,37 +621,17 @@ def _build_market_forecasts_for_ensembles(
         if market_metrics and market.name in market_metrics:
             metric_for_market = market_metrics.get(market.name)
         for model_name in model_iter:
-            # 1) Highest priority: market-specific active params set in DB
-            params = get_active_model_market_params(
-                db_path,
+            # Resolve active market params (active -> best run -> defaults)
+            resolved = resolve_active_model_market_params(
+                db_path=db_path,
                 sport=sport,
                 season=season,
                 model=model_name,
                 market=market.name,
             )
-            if params:
-                params_source = "db_market"
-                tuned_metric_used = None
-            else:
-                # 2) Fallback: use tuned params for the metric appropriate to this market
-                metric_for_market = metric_for_market or _metric_name_for_market(
-                    market.name
-                )
-                resolution = resolve_model_params_with_metadata(
-                    model_name,
-                    db_path=db_path,
-                    sport=sport,
-                    season=season,
-                    tuned_metric=metric_for_market,
-                )
-                if resolution.params is not None:
-                    params = resolution.params
-                    params_source = resolution.params_source
-                    tuned_metric_used = resolution.tuned_metric_used
-                else:
-                    params = None
-                    params_source = "default"
-                    tuned_metric_used = None
+            params = resolved.params
+            params_source = resolved.params_source
+            tuned_metric_used = resolved.tuned_metric_used
 
             model_df = schedule_df.copy(deep=True)
             market_schedule = _build_schedule_dataframe(
@@ -733,22 +717,19 @@ def _validate_market_tuning_inputs(
     ensemble_ids: dict[str, str],
     strict: bool,
 ) -> None:
-    missing: list[str] = []
+    missing_model_market: list[tuple[str, str]] = []
+    missing_ensemble_market: list[tuple[str, str]] = []
     for market in (Market.ML, Market.SPREAD, Market.TOTAL):
         for model_name in models:
-            params = get_active_model_market_params(
-                db_path,
+            resolved = resolve_active_model_market_params(
+                db_path=db_path,
                 sport=sport,
                 season=season,
                 model=model_name,
                 market=market.name,
             )
-            if params is None:
-                msg = (
-                    f"Missing active params for model={model_name} market={market.name}; "
-                    "using defaults."
-                )
-                missing.append(msg)
+            if resolved.params is None:
+                missing_model_market.append((model_name, market.name))
         ensemble_id = ensemble_ids.get(market.name)
         if ensemble_id:
             weights = get_active_ensemble_market_weights(
@@ -759,16 +740,34 @@ def _validate_market_tuning_inputs(
                 ensemble_id=ensemble_id,
             )
             if weights is None:
-                msg = (
-                    f"Missing active ensemble weights for market={market.name} "
-                    f"ensemble_id={ensemble_id}; using file or equal weights."
-                )
-                missing.append(msg)
-    if missing:
-        for msg in missing:
-            print(f"[tuning] {msg}")
+                missing_ensemble_market.append((market.name, ensemble_id))
+    if missing_model_market or missing_ensemble_market:
+        print(f"[tuning] DB: {db_path}")
+        for model_name, market_name in missing_model_market:
+            print(
+                "[tuning] Missing active params for "
+                f"model={model_name} market={market_name}; using defaults."
+            )
+        for market_name, ensemble_id in missing_ensemble_market:
+            print(
+                "[tuning] Missing active ensemble weights for "
+                f"market={market_name} ensemble_id={ensemble_id}; using file or equal weights."
+            )
+        if missing_model_market:
+            model_arg = (
+                models[0] if len(models) == 1 else "all"
+            )
+            suggestion = (
+                "python -m src.cli.pipeline bootstrap-market-actives "
+                f"--sport {sport} --season {season} --model {model_arg}"
+            )
+            print(f"[tuning] To bootstrap missing model market actives, run: {suggestion}")
         if strict:
-            raise ValueError("Missing active market tuning inputs; rerun with defaults or disable --strict.")
+            missing_count = len(missing_model_market) + len(missing_ensemble_market)
+            raise ValueError(
+                "Missing active market tuning inputs "
+                f"({missing_count}). Run bootstrap-market-actives or disable --strict."
+            )
 
 
 def _collect_market_param_sources(
@@ -782,31 +781,21 @@ def _collect_market_param_sources(
     for market in (Market.ML, Market.SPREAD, Market.TOTAL):
         market_sources: dict[str, str | None] = {}
         for model_name in models:
-            source = get_active_model_market_params_source(
-                db_path,
+            resolved = resolve_active_model_market_params(
+                db_path=db_path,
                 sport=sport,
                 season=season,
                 model=model_name,
                 market=market.name,
             )
-            if source:
-                market_sources[model_name] = source
-            else:
-                # If no market-specific params, check for tuned params for this market's metric
-                metric = _metric_name_for_market(market.name)
-                resolution = resolve_model_params_with_metadata(
-                    model_name,
-                    db_path=db_path,
-                    sport=sport,
-                    season=season,
-                    tuned_metric=metric,
+            if resolved.params is not None:
+                tuned = resolved.tuned_metric_used or None
+                # Include tuned metric in reported source when available
+                market_sources[model_name] = (
+                    f"{resolved.params_source}/{tuned}" if tuned else resolved.params_source
                 )
-                if resolution.params is not None:
-                    # Include tuned metric in reported source so META is informative.
-                    tuned = resolution.tuned_metric_used or metric
-                    market_sources[model_name] = f"{resolution.params_source}/{tuned}"
-                else:
-                    market_sources[model_name] = None
+            else:
+                market_sources[model_name] = None
         sources[market.name] = market_sources
     return sources
 

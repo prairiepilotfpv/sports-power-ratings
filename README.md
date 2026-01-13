@@ -128,6 +128,90 @@ python -m src.cli.pipeline backtest --csv nba_results.csv --model bradley_terry_
 python -m src.cli.pipeline tune --model elo --csv nba_results.csv --start 2024-11-01 --end 2024-12-01 --metric log_loss
 ```
 
+## Best Probabilities: Quickstart (model + market tuning)
+
+Use this sequence to produce the best calibrated forecasting probabilities for each market (ML, SPREAD, TOTAL) for a given sport/season. These steps assume you have a backtest CSV of historical games (required for tuning) and have ingested games into the DB for the target season.
+
+1) Ingest games into the per-sport/season DB (if not already done):
+
+```bash
+python -m src.cli.pipeline import --sport nhl --season 2025-26 --input data/raw/nhl_2025_26.csv
+```
+
+2) Build rankings (runs all models by default):
+
+```bash
+python -m src.cli.pipeline rank --sport nhl --season 2025-26
+```
+
+3) Tune models (per-model grid-search backtests). Use a historical CSV for tuning. Example (tune Elo optimizing log_loss and persist best run):
+
+```bash
+python -m src.cli.pipeline tune --model elo --csv data/raw/nhl_history.csv --start 2020-01-01 --end 2024-12-31 --metric log_loss --apply-best --sport nhl --season 2025-26 --db data/db/nhl/2025-26.db
+```
+
+4) (Optional) Tune model performance per-market using `tune-model` to persist per-market runs (ML/SPREAD/TOTAL):
+
+```bash
+python -m src.cli.pipeline tune-model --sport nhl --season 2025-26 --model elo --market ML --csv data/raw/nhl_history.csv --start 2020-01-01 --end 2024-12-31 --output-dir outputs/tuning/nhl/2025-26/elo
+```
+
+5) (Optional) Tune ensemble weights per market (if using ensembles):
+
+```bash
+python -m src.cli.pipeline tune-ensemble --sport nhl --season 2025-26 --start-date 2020-01-01 --end-date 2024-12-31 --market ML --ensemble ensemble_ml_v1 --csv data/raw/nhl_history.csv
+```
+
+6) Activate/promote a specific model-market tuning run to be used by `rank`/`schedule` (if you need explicit activation). You can either provide `--run-id` (preferred) or `--metric` to pick the best run for that metric:
+
+```bash
+# Using a run id
+python -m src.cli.pipeline activate-tuning --sport nhl --season 2025-26 --model elo --market ML --run-id tune-20250101-elo-ml
+
+# Or activate the best run for metric=log_loss
+python -m src.cli.pipeline activate-tuning --sport nhl --season 2025-26 --model elo --market ML --metric log_loss
+```
+
+7) Verify tuning is being used and then export the schedule (final step):
+
+```bash
+# Check status (new read-only command)
+python -m src.cli.pipeline tuning-status --sport nhl --season 2025-26
+
+# Export schedule (uses active or auto-selected tuned params)
+python -m src.cli.pipeline schedule --sport nhl --season 2025-26
+```
+
+Notes:
+- `rank`/`schedule` prefer explicitly activated per-model-market params (via `activate-tuning`). If none exist, they auto-select the best tuning run for the market's optimized metric (and print that they auto-selected it). If neither is available, defaults are used.
+- Use `--strict` on `schedule` to fail when tuned params or ensemble weights are missing.
+- If you want explicit, durable actives for every model+market (including defaults), run `bootstrap-market-actives` once for the sport/season.
+
+### NHL 2025-26 exact command sequence (concise)
+
+```bash
+python -m src.cli.pipeline import --sport nhl --season 2025-26 --input data/raw/nhl_2025_26.csv
+python -m src.cli.pipeline rank --sport nhl --season 2025-26
+python -m src.cli.pipeline tune --model elo --csv data/raw/nhl_history.csv --start 2018-01-01 --end 2024-12-31 --metric log_loss --apply-best --sport nhl --season 2025-26 --db data/db/nhl/2025-26.db
+python -m src.cli.pipeline tuning-status --sport nhl --season 2025-26
+python -m src.cli.pipeline schedule --sport nhl --season 2025-26 --strict
+```
+
+## Sanity Check (what to see in logs)
+
+When everything is configured and active, `rank`/`schedule` logs should show one of the following per model+market:
+
+- `Using active market params ...` — explicit activation via `activate-tuning`.
+- `Auto-selected tuned params from best run (metric=...)` — no explicit activation but a tuned run was chosen.
+- It should NOT print `Missing active params ... using defaults` when a tuned run exists and is active/auto-selected.
+
+If you see `Missing active params ... using defaults` while tuned runs exist, run `tuning-status` to verify activation and use `activate-tuning` to promote the desired run. If there are no actives yet, bootstrap them:
+
+```bash
+python -m src.cli.pipeline bootstrap-market-actives --sport nhl --season 2025-26 --model all
+```
+
+
 ## Bet Tracking Suite
 
 The bet-tracking flow layers on top of the core pipelines and adds OCR ingestion, staging review, bet logging, closing-line (CLV) snapshots, settlement, and formatted reporting. Use these steps to turn screenshot dumps into structured logs and weekly/monthly summaries:
