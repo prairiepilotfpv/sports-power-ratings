@@ -15,7 +15,7 @@ def _ensure_src_on_path() -> None:
         sys.path.insert(0, str(src_dir))
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Build the CLI argument parser with subcommands for each pipeline step."""
     _ensure_src_on_path()
     from data.paths import db_dir, processed_dir
@@ -61,6 +61,12 @@ def _parse_args() -> argparse.Namespace:
     import_parser.add_argument(
         "--input-text",
         help="Raw CSV text pasted from Sports-Reference.",
+    )
+    import_parser.add_argument(
+        "--format",
+        choices=["auto", "csv", "html"],
+        default="auto",
+        help="Input format override (default: auto-detect by extension).",
     )
     import_parser.add_argument(
         "--conference-from-filename",
@@ -109,6 +115,7 @@ def _parse_args() -> argparse.Namespace:
         help="Use tuned params for a specific metric instead of the active tuned params.",
     )
     rank_parser.add_argument(
+        "-o",
         "--output",
         help=(
             "Optional output CSV path. Defaults to "
@@ -838,7 +845,7 @@ def _parse_args() -> argparse.Namespace:
         help="Optional SQLite DB path override for historical games.",
     )
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _import_games(args: argparse.Namespace) -> None:
@@ -866,6 +873,7 @@ def _import_games(args: argparse.Namespace) -> None:
     ingest_source = get_ingest_source(args.source)()
     division = getattr(args, "division", None)
     conference = getattr(args, "conference", None)
+    format_hint = None if args.format == "auto" else args.format
     games = []
 
     if input_dir:
@@ -893,6 +901,7 @@ def _import_games(args: argparse.Namespace) -> None:
                     season=args.season,
                     division=division,
                     conference=file_conference,
+                    format_hint=format_hint,
                 )
             )
     else:
@@ -905,6 +914,7 @@ def _import_games(args: argparse.Namespace) -> None:
             season=args.season,
             division=division,
             conference=conference,
+            format_hint=format_hint,
         )
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
     _echo_db_path(db_path)
@@ -1543,9 +1553,9 @@ def _run_calibrate_ensemble(args: argparse.Namespace) -> None:
     print(f"Saved calibrator -> {out_path}")
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     """CLI entry point: route subcommands to their handlers."""
-    args = _parse_args()
+    args = _parse_args(argv)
     if hasattr(args, "season") and args.season:
         args.season = _require_season_format(args.season)
     if args.command == "import":
