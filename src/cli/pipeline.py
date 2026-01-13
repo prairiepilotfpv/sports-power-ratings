@@ -661,7 +661,7 @@ def _parse_args() -> argparse.Namespace:
         "--jobs",
         type=int,
         default=1,
-        help="Number of parallel jobs to use for tuning runs (default: 1).",
+        help="Number of parallel jobs to use for tuning runs (default: 1). Use 0 for all cores minus one.",
     )
 
     init_ensemble_parser = subparsers.add_parser(
@@ -719,6 +719,12 @@ def _parse_args() -> argparse.Namespace:
     tune_model_parser.add_argument(
         "--grid-file",
         help="Optional JSON file defining parameter grids.",
+    )
+    tune_model_parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Number of parallel jobs to run (default: 1). Use 0 for all cores minus one.",
     )
     tune_model_parser.add_argument(
         "--allow-worse",
@@ -1474,6 +1480,7 @@ def _run_tune_model(args: argparse.Namespace) -> None:
         db_path=db_path,
         metric_override=args.metric,
         allow_worse=args.allow_worse,
+        jobs=args.jobs,
     )
     print(
         "Model tuning completed: "

@@ -50,6 +50,7 @@ def run_model_market_tuning(
     db_path: str | Path,
     metric_override: str | None = None,
     allow_worse: bool = False,
+    jobs: int = 1,
 ) -> ModelMarketTuningResult:
     normalized_market = _normalize_market(market)
     tuning_metric, metric_optimized = _resolve_market_metric(
@@ -70,6 +71,7 @@ def run_model_market_tuning(
         apply_best=False,
         require_improvement=not allow_worse,
         db_path=None,
+        jobs=jobs,
         sport=sport,
         season=season,
     )
