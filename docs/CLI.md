@@ -44,6 +44,35 @@ python -m src.cli.pipeline import --sport nba --season 2025-26 --input data/raw/
 - Input resolution: if path does not exist, the CLI also checks `data/raw/<value>`.
 - Output: `data/db/<sport>/<season>.db` unless `--db` overrides it.
 
+## action-paste — convert Action paste blocks into CSV or Excel-paste text
+
+When you have the middle section copied from Action (matchup table), use the deterministic parser to produce either a CSV compatible with the staging workflow or the exact 6-lines-per-game tab-separated block you paste into Excel columns H:I.
+
+CSV (writes one row per required paste line — 6 rows per game):
+
+```bash
+python -m src.cli.action_paste --in markettest.txt --out outputs/paste_parsed/mymarkets.csv
+```
+
+Excel-paste block (exactly 6 lines per game, each `line<TAB>odds`):
+
+```bash
+python tools/action_to_bets_paste.py --in markettest.txt --out bets_paste.txt
+# or write to stdout for quick copy:
+python tools/action_to_bets_paste.py --in markettest.txt
+```
+
+Optional: also persist opens (open spread/total) to JSON for later review:
+
+```bash
+python -m src.cli.action_paste --in markettest.txt --out outputs/paste_parsed/mymarkets.csv --include-opens-json opens.json
+```
+
+Notes:
+- The parser expects header lines of the form `<AWAY> at <HOME> Odds` and the specific positional token layout described in `docs/action_paste.md`.
+- The CSV produced matches the staging columns so you can paste or import into the existing workflows.
+
+
 ## rank — build power ratings and store calibration
 
 ```bash
