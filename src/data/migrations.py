@@ -100,6 +100,8 @@ def _add_games_metadata_columns(conn: sqlite3.Connection) -> None:
     cols = [row[1] for row in conn.execute("PRAGMA table_info(games)")]
     if not cols:
         return
+    if "start_time" not in cols:
+        conn.execute("ALTER TABLE games ADD COLUMN start_time TEXT")
     if "division" not in cols:
         conn.execute("ALTER TABLE games ADD COLUMN division TEXT")
     if "conference" not in cols:
@@ -154,6 +156,14 @@ def _add_model_metrics_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE model_metrics ADD COLUMN tuned_params_metric TEXT")
     if "tuned_params_updated_at" not in cols:
         conn.execute("ALTER TABLE model_metrics ADD COLUMN tuned_params_updated_at TEXT")
+
+
+def _add_games_start_time(conn: sqlite3.Connection) -> None:
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(games)")]
+    if not cols:
+        return
+    if "start_time" not in cols:
+        conn.execute("ALTER TABLE games ADD COLUMN start_time TEXT")
 
 
 def _add_market_tuning_tables(conn: sqlite3.Connection) -> None:
@@ -250,6 +260,7 @@ MIGRATIONS: list[Migration] = [
     Migration(4, "add_games_metadata_columns", _add_games_metadata_columns),
     Migration(5, "add_model_metrics_columns", _add_model_metrics_columns),
     Migration(6, "add_market_tuning_tables", _add_market_tuning_tables),
+    Migration(7, "add_games_start_time", _add_games_start_time),
 ]
 
 LATEST_SCHEMA_VERSION = max((m.version for m in MIGRATIONS), default=0)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -12,6 +12,7 @@ class GameResult(BaseModel):
     """Normalized game row produced by ingestion parsers."""
 
     date: date
+    start_time: Optional[datetime] = None
     home_team: str
     away_team: str
     home_score: Optional[int] = Field(default=None, ge=0)

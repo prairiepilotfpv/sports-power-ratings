@@ -23,6 +23,7 @@ def normalize_games(
         normalized.append(
             GameResult(
                 date=game.date,
+                start_time=game.start_time,
                 home_team=game.home_team.strip(),
                 away_team=game.away_team.strip(),
                 home_score=game.home_score,

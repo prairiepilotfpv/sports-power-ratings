@@ -6,7 +6,7 @@ import json
 import math
 import sqlite3
 from contextlib import closing
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable, List
 
@@ -20,6 +20,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS games (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     date TEXT NOT NULL,
+    start_time TEXT,
     home_team TEXT NOT NULL,
     away_team TEXT NOT NULL,
     home_score INTEGER,
@@ -159,6 +160,7 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
     rows = [
         (
             g.date.isoformat(),
+            g.start_time.isoformat() if g.start_time else None,
             g.home_team,
             g.away_team,
             g.home_score,
@@ -181,6 +183,7 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
             """
             INSERT OR REPLACE INTO games (
                 date,
+                start_time,
                 home_team,
                 away_team,
                 home_score,
@@ -194,7 +197,7 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
                 division,
                 conference,
                 notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -232,6 +235,7 @@ def load_games(
 
     query = f"""
         SELECT date,
+               start_time,
                home_team,
                away_team,
                home_score,
@@ -247,7 +251,7 @@ def load_games(
                notes
         FROM games
         {where_clause}
-        ORDER BY date, away_team, home_team
+        ORDER BY COALESCE(start_time, date), away_team, home_team
     """
 
     with closing(sqlite3.connect(Path(db_path))) as conn:
@@ -256,19 +260,20 @@ def load_games(
     return [
         GameResult(
             date=date.fromisoformat(row[0]),
-            home_team=row[1],
-            away_team=row[2],
-            home_score=row[3],
-            away_score=row[4],
-            neutral=bool(row[5]),
-            overtime=bool(row[6]),
-            decision_type=row[7],
-            game_id=row[8],
-            sport=row[9],
-            season=row[10],
-            division=row[11],
-            conference=row[12],
-            notes=row[13],
+            start_time=datetime.fromisoformat(row[1]) if row[1] else None,
+            home_team=row[2],
+            away_team=row[3],
+            home_score=row[4],
+            away_score=row[5],
+            neutral=bool(row[6]),
+            overtime=bool(row[7]),
+            decision_type=row[8],
+            game_id=row[9],
+            sport=row[10],
+            season=row[11],
+            division=row[12],
+            conference=row[13],
+            notes=row[14],
         )
         for row in rows
     ]

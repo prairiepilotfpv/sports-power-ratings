@@ -26,6 +26,10 @@ def normalize_games(rows: Iterable[Any]) -> pd.DataFrame:
             df[score_col] = pd.to_numeric(df[score_col], errors="coerce")
     if "date" in df.columns:
         dt = pd.to_datetime(df["date"], errors="coerce")
+        if "start_time" in df.columns:
+            start_dt = pd.to_datetime(df["start_time"], errors="coerce")
+            if start_dt.notna().any():
+                dt = start_dt.where(start_dt.notna(), dt)
         if dt.notna().any():
             df = (
                 df.assign(_dt=dt)

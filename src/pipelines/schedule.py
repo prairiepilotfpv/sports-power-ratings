@@ -154,20 +154,32 @@ def _safe_date(value: Any) -> str:
     if value is None:
         return ""
     try:
-        return pd.to_datetime(value).date().isoformat()
+        parsed = pd.to_datetime(value)
+        if isinstance(value, date) and not isinstance(value, datetime):
+            return parsed.date().isoformat()
+        text = str(value)
+        if any(token in text for token in ("T", ":", "Z")):
+            return parsed.isoformat()
+        if parsed.time() != datetime.min.time():
+            return parsed.isoformat()
+        return parsed.date().isoformat()
     except Exception:
         return str(value)
 
 
 def _base_schedule_row(row: pd.Series) -> Dict[str, Any]:
     """Normalize the base schedule fields shared by played and upcoming games."""
+    raw_date = row.get("date")
+    start_time = row.get("start_time")
+    sort_source = start_time if pd.notna(start_time) else raw_date
+    sort_dt = pd.to_datetime(sort_source, errors="coerce")
     neutral_raw = row.get("neutral", False)
     overtime_raw = row.get("overtime", False)
     neutral = False if pd.isna(neutral_raw) else bool(neutral_raw)
     overtime = False if pd.isna(overtime_raw) else bool(overtime_raw)
 
     return {
-        "date": _safe_date(row.get("date")),
+        "date": _safe_date(raw_date),
         "home_team": str(row.get("home_team", "")).strip(),
         "away_team": str(row.get("away_team", "")).strip(),
         "home_score": row.get("home_score"),
@@ -175,6 +187,7 @@ def _base_schedule_row(row: pd.Series) -> Dict[str, Any]:
         "neutral": neutral,
         "overtime": overtime,
         "game_id": row.get("game_id"),
+        "_sort_dt": sort_dt,
     }
 
 
@@ -506,11 +519,18 @@ def _build_schedule_dataframe(
 
     schedule_df = pd.DataFrame(schedule_rows)
     if not schedule_df.empty and "date" in schedule_df.columns:
-        schedule_df = (
-            schedule_df.assign(_dt=pd.to_datetime(schedule_df["date"], errors="coerce"))
-            .sort_values(["_dt", "game_id", "away_team", "home_team"])
-            .drop(columns=["_dt"], errors="ignore")
-        )
+        if "_sort_dt" in schedule_df.columns:
+            schedule_df = schedule_df.sort_values(
+                ["_sort_dt", "game_id", "away_team", "home_team"]
+            ).drop(columns=["_sort_dt"], errors="ignore")
+        else:
+            schedule_df = (
+                schedule_df.assign(
+                    _dt=pd.to_datetime(schedule_df["date"], errors="coerce")
+                )
+                .sort_values(["_dt", "game_id", "away_team", "home_team"])
+                .drop(columns=["_dt"], errors="ignore")
+            )
 
     for col in (
         "home_win_prob_raw",
@@ -874,6 +894,8 @@ def _dashboard_rows_for_today(
             total = projected_total
         rows.append(
             {
+                "_sort_dt": pd.to_datetime(row.get("date"), errors="coerce"),
+                "_sort_game_id": row.get("game_id"),
                 "model": model_name,
                 "model_version": metadata.get("model_version"),
                 "params_source": metadata.get("params_source"),
@@ -1199,7 +1221,7 @@ def _build_bets_dataframe(
                     **forecast_blanks,
                     **ml_fields,
                     "market_type": "ML",
-                    "selection": home_team,
+                    "selection": away_team,
                     "model": ml_source_label,
                     "market_forecast_source": ml_source_label,
                 },
@@ -1208,7 +1230,7 @@ def _build_bets_dataframe(
                     **forecast_blanks,
                     **ml_fields,
                     "market_type": "ML",
-                    "selection": away_team,
+                    "selection": home_team,
                     "model": ml_source_label,
                     "market_forecast_source": ml_source_label,
                 },
@@ -1217,7 +1239,7 @@ def _build_bets_dataframe(
                     **forecast_blanks,
                     **spread_fields,
                     "market_type": "spread",
-                    "selection": home_team,
+                    "selection": away_team,
                     "model": spread_source_label,
                     "market_forecast_source": spread_source_label,
                 },
@@ -1226,7 +1248,7 @@ def _build_bets_dataframe(
                     **forecast_blanks,
                     **spread_fields,
                     "market_type": "spread",
-                    "selection": away_team,
+                    "selection": home_team,
                     "model": spread_source_label,
                     "market_forecast_source": spread_source_label,
                 },
@@ -1552,12 +1574,29 @@ def build_schedule_excel_report(
         dashboard_df = pd.DataFrame(dashboard_rows)
         if not dashboard_df.empty:
             model_order = {name: idx for idx, name in enumerate(models)}
+            sort_dt = (
+                dashboard_df["_sort_dt"]
+                if "_sort_dt" in dashboard_df.columns
+                else pd.to_datetime(dashboard_df["date"], errors="coerce")
+            )
+            sort_game_id = (
+                dashboard_df["_sort_game_id"]
+                if "_sort_game_id" in dashboard_df.columns
+                else pd.NA
+            )
             dashboard_df = dashboard_df.assign(
                 _model_order=dashboard_df["model"]
                 .map(model_order)
-                .fillna(len(model_order))
-            ).sort_values(["date", "game", "_model_order", "model"])
-            dashboard_df = dashboard_df.drop(columns=["_model_order"], errors="ignore")
+                .fillna(len(model_order)),
+                _sort_dt=sort_dt,
+                _sort_game_id=sort_game_id,
+            ).sort_values(
+                ["_sort_dt", "_sort_game_id", "game", "_model_order", "model"]
+            )
+            dashboard_df = dashboard_df.drop(
+                columns=["_model_order", "_sort_dt", "_sort_game_id"],
+                errors="ignore",
+            )
         dashboard_df = dashboard_df.reindex(columns=DASHBOARD_COLUMNS)
         dashboard_df.to_excel(writer, sheet_name="dashboard", index=False)
 
