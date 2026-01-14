@@ -31,7 +31,20 @@ def main(argv: list[str] | None = None) -> None:
         print("No games parsed from input.")
         return
 
-    out_path = Path(args.outfile) if args.outfile else Path("outputs/paste_parsed") / (Path(args.infile).stem + ".csv")
+    import os
+
+    if args.outfile:
+        candidate = Path(args.outfile)
+        # If the user provided a path that clearly refers to a directory
+        # (trailing slash or existing dir), treat it as a target directory
+        # and write a file named <infile_stem>.csv inside it.
+        if args.outfile.endswith(os.sep) or args.outfile.endswith("/") or (candidate.exists() and candidate.is_dir()):
+            out_path = candidate / (Path(args.infile).stem + ".csv")
+        else:
+            out_path = candidate
+    else:
+        out_path = Path("outputs/paste_parsed") / (Path(args.infile).stem + ".csv")
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     import csv

@@ -1,5 +1,11 @@
 # TODO
 
+make sure the BETs sheet match for all sports, must not be sports agnostic right now and needs to be
+
+Make ingest easier/more organized
+
+
+
 ## Bet Tracking Suite — OCR & Parsing (Active)
 - [ ] (no open items)
 
