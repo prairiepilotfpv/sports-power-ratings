@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import itertools
 import json
+import os
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -14,7 +15,7 @@ import pandas as pd
 from backtest.runner import load_games_df_from_csv, run_backtest
 from data.repository import save_tuned_params, set_active_tuned_params
 from models.registry import get_backtest_model, normalize_model_name
-from utils.parallel import limit_blas_threads, parallel_map, resolve_jobs
+from utils.parallel import limit_blas_threads, parallel_map
 
 _METRICS = {"log_loss", "brier_score", "mae_margin", "mae_total"}
 
@@ -131,7 +132,7 @@ def run_tuning_pipeline(
         "run_id": run_id,
     }
 
-    resolved_jobs = resolve_jobs(jobs)
+    resolved_jobs = _resolve_jobs(jobs)
     if resolved_jobs == 1:
         for params in candidates:
             params_label = _format_params(params)
@@ -439,6 +440,17 @@ def _resolve_tuning_output_dir(
 
 def list_metrics() -> list[str]:
     return sorted(_METRICS)
+
+
+def _resolve_jobs(jobs: int | None) -> int:
+    if jobs is None:
+        return 1
+    if jobs < 0:
+        raise ValueError("jobs must be >= 0")
+    if jobs == 0:
+        cpu_count = os.cpu_count() or 1
+        return max(cpu_count - 1, 1)
+    return jobs
 
 
 def _eval_candidate(index: int, params: dict[str, Any], context: dict[str, Any], games_df: pd.DataFrame) -> dict[str, Any]:
