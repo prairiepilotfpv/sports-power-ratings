@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import itertools
 import json
-import os
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -15,7 +14,7 @@ import pandas as pd
 from backtest.runner import load_games_df_from_csv, run_backtest
 from data.repository import save_tuned_params, set_active_tuned_params
 from models.registry import get_backtest_model, normalize_model_name
-from joblib import Parallel, delayed
+from utils.parallel import limit_blas_threads, parallel_map, resolve_jobs
 
 _METRICS = {"log_loss", "brier_score", "mae_margin", "mae_total"}
 
@@ -50,7 +49,7 @@ def run_tuning_pipeline(
     apply_best: bool = False,
     require_improvement: bool = True,
     db_path: str | Path | None = None,
-    jobs: int = 1,
+    jobs: int | None = None,
     sport: str | None = None,
     season: str | None = None,
 ) -> TuningOutputs:
@@ -132,7 +131,7 @@ def run_tuning_pipeline(
         "run_id": run_id,
     }
 
-    resolved_jobs = _resolve_jobs(jobs)
+    resolved_jobs = resolve_jobs(jobs)
     if resolved_jobs == 1:
         for params in candidates:
             params_label = _format_params(params)
@@ -171,35 +170,13 @@ def run_tuning_pipeline(
                 }
             )
     else:
-        # Limit BLAS thread usage in child processes to avoid oversubscription.
-        prev_env = {
-            k: os.environ.get(k)
-            for k in (
-                "OMP_NUM_THREADS",
-                "MKL_NUM_THREADS",
-                "OPENBLAS_NUM_THREADS",
-                "NUMEXPR_NUM_THREADS",
+        tasks = list(enumerate(candidates))
+        with limit_blas_threads(1):
+            raw_results = parallel_map(
+                lambda item: _eval_candidate(item[0], item[1], context, games_df),
+                tasks,
+                max_workers=resolved_jobs,
             )
-        }
-        os.environ["OMP_NUM_THREADS"] = "1"
-        os.environ["MKL_NUM_THREADS"] = "1"
-        os.environ["OPENBLAS_NUM_THREADS"] = "1"
-        os.environ["NUMEXPR_NUM_THREADS"] = "1"
-
-        try:
-            # Use joblib with loky backend for process-based parallelism.
-            tasks = [
-                delayed(_eval_candidate)(i, params, context, games_df)
-                for i, params in enumerate(candidates)
-            ]
-            raw_results = Parallel(n_jobs=resolved_jobs, backend="loky")(tasks)
-        finally:
-            # restore previous environment
-            for k, v in prev_env.items():
-                if v is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = v
 
         # Ensure deterministic ordering by sorting on the candidate index.
         raw_results_sorted = sorted(raw_results, key=lambda r: int(r.get("index", 0)))
@@ -313,17 +290,6 @@ def _resolve_param_grid(
         if override:
             return override
     return _default_param_grid(model)
-
-
-def _resolve_jobs(jobs: int) -> int:
-    if jobs is None:
-        return 1
-    if jobs < 0:
-        raise ValueError("jobs must be >= 0")
-    if jobs == 0:
-        cpu_count = os.cpu_count() or 1
-        return max(cpu_count - 1, 1)
-    return jobs
 
 
 def _normalize_grid_override(
