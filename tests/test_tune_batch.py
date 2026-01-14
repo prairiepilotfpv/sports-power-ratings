@@ -42,6 +42,7 @@ def test_tune_batch_defaults_models_from_config(monkeypatch) -> None:
     monkeypatch.setattr(tune_batch, "load_ensemble_config", fake_load_config)
     monkeypatch.setattr(tune_batch, "run_tuning_pipeline", fake_run_tuning_pipeline)
     monkeypatch.setattr(tune_batch, "list_backtest_models", fake_list_backtest_models)
+    monkeypatch.setenv("SPR_TUNE_BATCH_BACKEND", "thread")
 
     results = tune_batch.run_tune_batch(
         sport="nba",
@@ -60,3 +61,33 @@ def test_tune_batch_defaults_models_from_config(monkeypatch) -> None:
 
     leaderboard = tune_batch.summarize_tune_batch(results)
     assert set(leaderboard) == set(tune_batch.DEFAULT_BATCH_METRICS)
+
+
+def test_tune_batch_splits_jobs_across_runs(monkeypatch) -> None:
+    tuning_calls: list[tuple[str, str, int]] = []
+
+    def fake_run_tuning_pipeline(**kwargs):
+        tuning_calls.append((kwargs["model"], kwargs["metric"], kwargs["jobs"]))
+        return _DummyOutputs(kwargs["model"], kwargs["metric"])
+
+    def fake_list_backtest_models():
+        return ["elo", "gssd"]
+
+    monkeypatch.setattr(tune_batch, "run_tuning_pipeline", fake_run_tuning_pipeline)
+    monkeypatch.setattr(tune_batch, "list_backtest_models", fake_list_backtest_models)
+    monkeypatch.setenv("SPR_TUNE_BATCH_BACKEND", "thread")
+
+    results = tune_batch.run_tune_batch(
+        sport="nba",
+        season="2025-26",
+        start_date="2024-11-01",
+        end_date="2024-12-01",
+        csv_path="/tmp/data.csv",
+        db_path="/tmp/db.sqlite",
+        models=["elo", "gssd"],
+        metrics=["log_loss", "mae_total"],
+        jobs=4,
+    )
+
+    assert len(results) == 4
+    assert all(jobs == 1 for _, _, jobs in tuning_calls)
