@@ -1,31 +1,31 @@
 team,rating,points,games,params_source,tuned_metric_used
-Oklahoma City Thunder,13.640096618357482,11.974981227651307,41,db_active,mae_margin
-Houston Rockets,7.975155279503106,7.011578040792577,37,db_active,mae_margin
-Detroit Pistons,6.605263157894733,5.811331380618212,38,db_active,mae_margin
-Boston Celtics,6.477631578947374,5.699505512034859,39,db_active,mae_margin
-Minnesota Timberwolves,5.765476190476193,5.075542418113165,41,db_active,mae_margin
-Denver Nuggets,5.340153452685421,4.702891033761652,40,db_active,mae_margin
-San Antonio Spurs,4.675120772946862,4.120215040395216,41,db_active,mae_margin
-New York Knicks,4.456140350877192,3.9283528374619596,40,db_active,mae_margin
-Phoenix Suns,2.93107769423559,2.5921517371580776,40,db_active,mae_margin
-Golden State Warriors,2.3999999999999986,2.1268419373973635,41,db_active,mae_margin
-Philadelphia 76ers,1.947368421052623,1.73026359932853,38,db_active,mae_margin
-Cleveland Cavaliers,1.9129901960784323,1.7001427240733678,41,db_active,mae_margin
-Miami Heat,1.750000000000007,1.5573369984264387,40,db_active,mae_margin
-Toronto Raptors,1.480861244019131,1.3215279971962826,41,db_active,mae_margin
-Orlando Magic,1.2250000000000014,1.0973522400268345,40,db_active,mae_margin
-Los Angeles Lakers,0.1416666666666586,0.14817734174193894,38,db_active,mae_margin
-Atlanta Hawks,-0.8194444444444429,-0.6939111577620809,42,db_active,mae_margin
-Charlotte Hornets,-1.2192982456140342,-1.0442476418119018,40,db_active,mae_margin
-Los Angeles Clippers,-1.3157894736842124,-1.1287895355862665,39,db_active,mae_margin
-Memphis Grizzlies,-1.3236842105263165,-1.1357065996223497,39,db_active,mae_margin
-Milwaukee Bucks,-2.8909774436090174,-2.5089085027859173,40,db_active,mae_margin
-Portland Trail Blazers,-2.978571428571435,-2.5856549751862903,41,db_active,mae_margin
-Chicago Bulls,-3.598684210526315,-3.1289738860206118,39,db_active,mae_margin
-Dallas Mavericks,-3.9924812030075287,-3.4740036278205353,40,db_active,mae_margin
-Brooklyn Nets,-5.14411764705882,-4.483023078260739,37,db_active,mae_margin
-New Orleans Pelicans,-7.923611111111107,-6.918308086899513,42,db_active,mae_margin
-Indiana Pacers,-8.032828282828277,-7.013999961843151,40,db_active,mae_margin
-Utah Jazz,-8.047619047619051,-7.026959059688541,39,db_active,mae_margin
-Sacramento Kings,-11.050000000000004,-9.657529492078085,40,db_active,mae_margin
-Washington Wizards,-11.21052631578948,-9.7981764608118,38,db_active,mae_margin
+Oklahoma City Thunder,13.640096618357482,11.951144521097252,41,db_active,mae_margin
+Houston Rockets,7.975155279503106,6.984537717900339,37,db_active,mae_margin
+Detroit Pistons,6.605263157894733,5.783516361481153,38,db_active,mae_margin
+Boston Celtics,6.477631578947374,5.6716183151668895,39,db_active,mae_margin
+Minnesota Timberwolves,5.765476190476193,5.047252485806051,41,db_active,mae_margin
+Denver Nuggets,5.428921568627445,4.7521859750450774,41,db_active,mae_margin
+San Antonio Spurs,4.675120772946862,4.091308494389727,41,db_active,mae_margin
+New York Knicks,4.191666666666663,3.667451245098193,41,db_active,mae_margin
+Phoenix Suns,2.93107769423559,2.5622589064644963,40,db_active,mae_margin
+Cleveland Cavaliers,2.6041666666666714,2.27564719480779,42,db_active,mae_margin
+Golden State Warriors,2.3999999999999986,2.0966487736418267,41,db_active,mae_margin
+Toronto Raptors,1.8045454545454476,1.574597719703257,42,db_active,mae_margin
+Miami Heat,1.750000000000007,1.5267762491134773,40,db_active,mae_margin
+Philadelphia 76ers,1.2934210526315724,1.1264811762160163,39,db_active,mae_margin
+Orlando Magic,1.2250000000000014,1.0664945946867226,40,db_active,mae_margin
+Los Angeles Lakers,0.1416666666666586,0.11670705380611932,38,db_active,mae_margin
+Atlanta Hawks,-0.8194444444444429,-0.7259249696417845,42,db_active,mae_margin
+Los Angeles Clippers,-1.0250000000000057,-0.9061410671422114,40,db_active,mae_margin
+Charlotte Hornets,-1.2192982456140342,-1.0764875775106686,40,db_active,mae_margin
+Memphis Grizzlies,-1.3236842105263165,-1.1680055672797314,39,db_active,mae_margin
+Milwaukee Bucks,-2.8909774436090174,-2.542093800222884,40,db_active,mae_margin
+Portland Trail Blazers,-2.978571428571435,-2.618889808444471,41,db_active,mae_margin
+Chicago Bulls,-3.473684210526315,-3.052968533027372,40,db_active,mae_margin
+Dallas Mavericks,-4.171052631578952,-3.664370229383711,41,db_active,mae_margin
+Brooklyn Nets,-5.07222222222223,-4.454449905765359,38,db_active,mae_margin
+New Orleans Pelicans,-7.764444444444443,-6.814793712487075,43,db_active,mae_margin
+Utah Jazz,-7.819548872180448,-6.863105249943394,40,db_active,mae_margin
+Indiana Pacers,-8.26207729468598,-7.251081848879977,41,db_active,mae_margin
+Sacramento Kings,-10.589285714285715,-9.291408213773744,41,db_active,mae_margin
+Washington Wizards,-11.243421052631582,-9.864906300922007,39,db_active,mae_margin
