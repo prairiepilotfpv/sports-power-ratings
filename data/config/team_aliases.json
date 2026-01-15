@@ -1,41 +1,274 @@
 {
   "nba": {
-    "Los Angeles Lakers": ["LA Lakers", "Lakers"],
-    "LA Clippers": ["L.A. Clippers", "Clippers", "LA Clipps"]
+    "Los Angeles Lakers": [
+      "LA Lakers",
+      "Lakers"
+    ],
+    "LA Clippers": [
+      "L.A. Clippers",
+      "Clippers",
+      "LA Clipps"
+    ],
+    "Indiana Pacers": [
+      "Pacers"
+    ],
+    "Toronto Raptors": [
+      "Raptors"
+    ],
+    "Philadelphia 76ers": [
+      "76ers"
+    ],
+    "Cleveland Cavaliers": [
+      "Cavaliers"
+    ],
+    "New Orleans Pelicans": [
+      "Pelicans"
+    ],
+    "Brooklyn Nets": [
+      "Nets"
+    ],
+    "Chicago Bulls": [
+      "Bulls"
+    ],
+    "Utah Jazz": [
+      "Jazz"
+    ],
+    "Dallas Mavericks": [
+      "Mavericks"
+    ],
+    "Denver Nuggets": [
+      "Nuggets"
+    ],
+    "Sacramento Kings": [
+      "Kings"
+    ],
+    "New York Knicks": [
+      "Knicks"
+    ],
+    "Los Angeles Clippers": [
+      "Clippers"
+    ],
+    "Washington Wizards": [
+      "Wizards"
+    ],
+    "Orlando Magic": [
+      "Magic"
+    ],
+    "Memphis Grizzlies": [
+      "Grizzlies"
+    ],
+    "Detroit Pistons": [
+      "Pistons"
+    ],
+    "Phoenix Suns": [
+      "Suns"
+    ],
+    "Miami Heat": [
+      "Heat"
+    ],
+    "Boston Celtics": [
+      "Celtics"
+    ],
+    "Houston Rockets": [
+      "Rockets"
+    ],
+    "Oklahoma City Thunder": [
+      "Thunder"
+    ],
+    "San Antonio Spurs": [
+      "Spurs"
+    ],
+    "Milwaukee Bucks": [
+      "Bucks"
+    ],
+    "Portland Trail Blazers": [
+      "Trail Blazers"
+    ],
+    "Atlanta Hawks": [
+      "Hawks"
+    ],
+    "Golden State Warriors": [
+      "Warriors"
+    ],
+    "Charlotte Hornets": [
+      "Hornets"
+    ]
   },
   "nhl": {
-    "Anaheim Ducks": ["ANA", "Ducks", "Anaheim"],
-    "Arizona Coyotes": ["ARI", "Coyotes", "Arizona"],
-    "Boston Bruins": ["BOS", "Bruins", "Boston"],
-    "Buffalo Sabres": ["BUF", "Sabres", "Buffalo"],
-    "Calgary Flames": ["CGY", "Flames", "Calgary"],
-    "Carolina Hurricanes": ["CAR", "Hurricanes", "Carolina"],
-    "Chicago Blackhawks": ["CHI", "Blackhawks", "Chicago"],
-    "Colorado Avalanche": ["COL", "Avalanche", "Colorado"],
-    "Columbus Blue Jackets": ["CBJ", "Blue Jackets", "Columbus", "BlueJackets"],
-    "Dallas Stars": ["DAL", "Stars", "Dallas"],
-    "Detroit Red Wings": ["DET", "Red Wings", "Detroit"],
-    "Edmonton Oilers": ["EDM", "Oilers", "Edmonton"],
-    "Florida Panthers": ["FLA", "Panthers", "Florida"],
-    "Los Angeles Kings": ["LAK", "LA Kings", "Kings", "Los Angeles"],
-    "Minnesota Wild": ["MIN", "Wild", "Minnesota"],
-    "Montreal Canadiens": ["MTL", "Canadiens", "Montreal", "Habs"],
-    "Nashville Predators": ["NSH", "Predators", "Nashville"],
-    "New Jersey Devils": ["NJD", "Devils", "New Jersey", "NJ Devils"],
-    "New York Islanders": ["NYI", "Islanders", "NY Islanders"],
-    "New York Rangers": ["NYR", "Rangers", "NY Rangers"],
-    "Ottawa Senators": ["OTT", "Senators", "Ottawa"],
-    "Philadelphia Flyers": ["PHI", "Flyers", "Philadelphia"],
-    "Pittsburgh Penguins": ["PIT", "Penguins", "Pittsburgh"],
-    "San Jose Sharks": ["SJS", "Sharks", "San Jose"],
-    "Seattle Kraken": ["SEA", "Kraken", "Seattle"],
-    "St. Louis Blues": ["STL", "Blues", "St Louis Blues", "St Louis", "St. Louis"],
-    "Tampa Bay Lightning": ["TBL", "Lightning", "Tampa Bay", "Tampa"],
-    "Toronto Maple Leafs": ["TOR", "Maple Leafs", "Toronto"],
-    "Utah Mammoth": ["UTA", "Utah Hockey Club", "Utah", "Mammoth", "Utah HC"],
-    "Vancouver Canucks": ["VAN", "Canucks", "Vancouver"],
-    "Vegas Golden Knights": ["VGK", "Golden Knights", "Vegas", "Vegas Knights"],
-    "Washington Capitals": ["WSH", "Capitals", "Washington"],
-    "Winnipeg Jets": ["WPG", "Jets", "Winnipeg"]
+    "Anaheim Ducks": [
+      "ANA",
+      "Ducks",
+      "Anaheim"
+    ],
+    "Arizona Coyotes": [
+      "ARI",
+      "Coyotes",
+      "Arizona"
+    ],
+    "Boston Bruins": [
+      "BOS",
+      "Bruins",
+      "Boston"
+    ],
+    "Buffalo Sabres": [
+      "BUF",
+      "Sabres",
+      "Buffalo"
+    ],
+    "Calgary Flames": [
+      "CGY",
+      "Flames",
+      "Calgary"
+    ],
+    "Carolina Hurricanes": [
+      "CAR",
+      "Hurricanes",
+      "Carolina"
+    ],
+    "Chicago Blackhawks": [
+      "CHI",
+      "Blackhawks",
+      "Chicago"
+    ],
+    "Colorado Avalanche": [
+      "COL",
+      "Avalanche",
+      "Colorado"
+    ],
+    "Columbus Blue Jackets": [
+      "CBJ",
+      "Blue Jackets",
+      "Columbus",
+      "BlueJackets"
+    ],
+    "Dallas Stars": [
+      "DAL",
+      "Stars",
+      "Dallas"
+    ],
+    "Detroit Red Wings": [
+      "DET",
+      "Red Wings",
+      "Detroit"
+    ],
+    "Edmonton Oilers": [
+      "EDM",
+      "Oilers",
+      "Edmonton"
+    ],
+    "Florida Panthers": [
+      "FLA",
+      "Panthers",
+      "Florida"
+    ],
+    "Los Angeles Kings": [
+      "LAK",
+      "LA Kings",
+      "Kings",
+      "Los Angeles"
+    ],
+    "Minnesota Wild": [
+      "MIN",
+      "Wild",
+      "Minnesota"
+    ],
+    "Montreal Canadiens": [
+      "MTL",
+      "Canadiens",
+      "Montreal",
+      "Habs"
+    ],
+    "Nashville Predators": [
+      "NSH",
+      "Predators",
+      "Nashville"
+    ],
+    "New Jersey Devils": [
+      "NJD",
+      "Devils",
+      "New Jersey",
+      "NJ Devils"
+    ],
+    "New York Islanders": [
+      "NYI",
+      "Islanders",
+      "NY Islanders"
+    ],
+    "New York Rangers": [
+      "NYR",
+      "Rangers",
+      "NY Rangers"
+    ],
+    "Ottawa Senators": [
+      "OTT",
+      "Senators",
+      "Ottawa"
+    ],
+    "Philadelphia Flyers": [
+      "PHI",
+      "Flyers",
+      "Philadelphia"
+    ],
+    "Pittsburgh Penguins": [
+      "PIT",
+      "Penguins",
+      "Pittsburgh"
+    ],
+    "San Jose Sharks": [
+      "SJS",
+      "Sharks",
+      "San Jose"
+    ],
+    "Seattle Kraken": [
+      "SEA",
+      "Kraken",
+      "Seattle"
+    ],
+    "St. Louis Blues": [
+      "STL",
+      "Blues",
+      "St Louis Blues",
+      "St Louis",
+      "St. Louis"
+    ],
+    "Tampa Bay Lightning": [
+      "TBL",
+      "Lightning",
+      "Tampa Bay",
+      "Tampa"
+    ],
+    "Toronto Maple Leafs": [
+      "TOR",
+      "Maple Leafs",
+      "Toronto"
+    ],
+    "Utah Mammoth": [
+      "UTA",
+      "Utah Hockey Club",
+      "Utah",
+      "Mammoth",
+      "Utah HC"
+    ],
+    "Vancouver Canucks": [
+      "VAN",
+      "Canucks",
+      "Vancouver"
+    ],
+    "Vegas Golden Knights": [
+      "VGK",
+      "Golden Knights",
+      "Vegas",
+      "Vegas Knights"
+    ],
+    "Washington Capitals": [
+      "WSH",
+      "Capitals",
+      "Washington"
+    ],
+    "Winnipeg Jets": [
+      "WPG",
+      "Jets",
+      "Winnipeg"
+    ]
   }
 }

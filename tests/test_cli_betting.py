@@ -123,6 +123,25 @@ def test_betting_clv_csv_parsing(monkeypatch):
     assert args.no_update_bets is True
 
 
+def test_market_review_auto_match_parsing(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prog",
+            "market-review",
+            "--sport",
+            "nba",
+            "--season",
+            "2025-26",
+            "--auto-match",
+        ],
+    )
+    args = pl._parse_args()
+    assert args.command == "market-review"
+    assert args.auto_match is True
+
+
 def test_betting_market_csv_parsing(monkeypatch):
     monkeypatch.setattr(
         sys,
@@ -151,6 +170,29 @@ def test_betting_market_csv_parsing(monkeypatch):
     assert args.snapshot_run_id == "run-csv"
     assert args.default_book == "dn"
     assert args.commit_matched is False
+
+
+def test_betting_market_csv_auto_commit_flag(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prog",
+            "betting",
+            "market-csv",
+            "--sport",
+            "nba",
+            "--season",
+            "2025-26",
+            "--csv",
+            "markets.csv",
+            "--auto-commit",
+        ],
+    )
+    args = pl._parse_args()
+    assert args.command == "betting"
+    assert args.betting_cmd == "market-csv"
+    assert args.auto_commit is True
 
 
 def test_betting_market_csv_ingestion_counts_and_placement(tmp_path, monkeypatch, capsys):

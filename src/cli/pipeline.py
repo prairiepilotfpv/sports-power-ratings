@@ -266,6 +266,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     market_review_parser.add_argument(
+        "--auto-match",
+        action="store_true",
+        help="Attempt to auto-match staging rows using team/date heuristics (skips accept/reject).",
+    )
+    market_review_parser.add_argument(
         "--limit",
         type=int,
         help="Limit number of staging rows when listing.",
@@ -1116,6 +1121,20 @@ def _run_market_review(args: argparse.Namespace) -> None:
     if accept_id and reject_id:
         raise ValueError("Provide only one of --accept or --reject.")
 
+    if getattr(args, "auto_match", False):
+        if accept_id or reject_id:
+            raise ValueError("--auto-match cannot be combined with --accept/--reject.")
+        summary = review_pipeline.auto_match_rows(
+            db_path,
+            sport=args.sport,
+            season=args.season,
+        )
+        print(
+            "market-review: auto-match "
+            f"matched={summary.get('matched')} skipped={summary.get('skipped')} total={summary.get('total')}"
+        )
+        return
+
     if accept_id is not None:
         if not args.game_id:
             raise ValueError("--game-id is required when accepting a staging row.")
@@ -1764,6 +1783,30 @@ def _run_betting(args: argparse.Namespace) -> None:
             f"staged={result.get('staged')} "
             f"rejected={result.get('rejected')}"
         )
+        if bool(getattr(args, "auto_commit", False)):
+            auto_summary = br.auto_match_staging_rows(
+                db_path,
+                sport=args.sport,
+                season=args.season,
+            )
+            matched_ids = auto_summary.get("matched_ids", [])
+            committed_auto = 0
+            if matched_ids:
+                commit_snapshot_run_id = snapshot_run_id or br.default_snapshot_run_id(
+                    sport=args.sport,
+                    season=args.season,
+                )
+                committed_auto = br.commit_market_snapshots(
+                    db_path,
+                    snapshot_run_id=commit_snapshot_run_id,
+                    staging_ids=matched_ids,
+                )
+            print(
+                "market-csv: auto-match "
+                f"matched={auto_summary.get('matched')} "
+                f"skipped={auto_summary.get('skipped')} "
+                f"committed={committed_auto}"
+            )
 
     elif cmd == "clv-csv":
         if db_path is None:

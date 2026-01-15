@@ -279,6 +279,9 @@ python -m src.cli.pipeline market-review --sport nba --season 2025-26 --accept 1
 python -m src.cli.pipeline market-review --sport nba --season 2025-26 --reject 12
 ```
 
+Flags:
+- `--auto-match`: auto-resolve staging rows whose team/date pair only matches one game before falling back to manual accept/reject.
+-
 Notes: `--status` accepts comma-separated values (e.g., `matched,needs_review`); `--game-id` is required when accepting.
 
 ## market-bets — pivot reviewed staging rows into bets
@@ -334,6 +337,7 @@ Flags:
 - `--snapshot-run-id`: snapshot run id to attach to imported rows (optional; defaults to a stable id derived from sport/season/date).
 - `--default-book`: fallback book name when the CSV omits it.
 - `--no-commit-matched`: keep matched rows in staging for manual review instead of committing to `market_snapshots`.
+- `--auto-commit`: when set, the command will auto-match staging rows whose teams/dates uniquely identify a game before committing them (using the provided snapshot run id or a default).
 
 CSV expectations: `market_type`, `selection`, `line`, `odds`, `team_home` (or `home_team`), `team_away` (or `away_team`), `game_date` (YYYY-MM-DD). Optional: `game_id`, `book`, `source`, `captured_at`. Invalid rows are rejected and counted.
 Wide format is also supported: a single row can contain `home_ml`/`away_ml`, `home_spread`/`away_spread` with corresponding odds (ex: `home_spread_odds`), and `total` with `over_odds`/`under_odds` to emit ML, spread, and total rows.

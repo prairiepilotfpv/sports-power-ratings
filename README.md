@@ -638,12 +638,14 @@ If you work with market data (lines/odds) and bets, this repo exposes a lightwei
    ```
    - If `game_id` is provided the row skips the resolver and commits immediately.
    - Rows that cannot match are left in `market_snapshot_staging` with `match_status=unmatched` or `needs_review`. The import reports `committed`, `staged`, and `rejected` counts.
-   - `--commit-matched` (default) ensures automatically matched rows land in `market_snapshots`; use `--no-commit-matched` to inspect them first.
+    - `--commit-matched` (default) ensures automatically matched rows land in `market_snapshots`; use `--no-commit-matched` to inspect them first.
+    - `--auto-commit` (new) runs `market-review --auto-match` and then commits any staging row whose team/date pair maps to exactly one game, so clean CSVs skip manual acceptance.
 
 2. **Review staging rows** when you see entries stuck in staging. The `market-review` command lists `needs_review` rows and allows you to accept/reject them, setting `game_id` on accepted rows.
-   ```bash
-   python -m src.cli.pipeline betting market-review --sport nba --season 2025-26 --status needs_review --limit 20
-   ```
+    ```bash
+    python -m src.cli.pipeline betting market-review --sport nba --season 2025-26 --status needs_review --limit 20
+    ```
+    - `--auto-match` is available when your CSV already matches teams/dates; it will mark these rows as matched without requiring an explicit staging ID.
 
 3. **Commit matched rows** into `market_snapshots`. Provide the snapshot run ID you want to tag (`default_snapshot_run_id` can be reused for consistency).
    ```bash

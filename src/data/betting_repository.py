@@ -26,6 +26,7 @@ from typing import Iterable, Sequence, List, Dict, Any, Optional
 from datetime import datetime, timezone
 import logging
 import uuid
+from difflib import SequenceMatcher
 
 from .paths import db_path_for
 from . import repository as base_repo
@@ -289,6 +290,137 @@ def resolve_staging_to_game(
         "game_id": best_game_id,
         "match_confidence": round(float(best_score), 3),
         "match_status": status,
+    }
+
+
+def _normalize_game_date_for_matching(raw_date: str | None) -> str | None:
+    """Return a normalized YYYY-MM-DD date string usable for precise matching."""
+    if not raw_date:
+        return None
+    value = str(raw_date).strip()
+    if not value:
+        return None
+    if "T" in value:
+        value = value.split("T", 1)[0]
+    if " " in value:
+        value = value.split(" ", 1)[0]
+    value = value.replace("/", "-")
+    try:
+        return datetime.fromisoformat(value).date().isoformat()
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d", "%m-%d-%Y", "%Y%m%d"):
+        try:
+            return datetime.strptime(value, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def _fetch_games_on_date(conn: sqlite3.Connection, sport: str, season: str, game_date: str) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT game_id, home_team, away_team
+        FROM games
+        WHERE sport = ? AND season = ? AND date = ?
+        """,
+        (sport, season, game_date),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def auto_match_staging_rows(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+) -> dict:
+    """Auto-match staging rows to games when a unique team/date combination exists."""
+    from src.utils import identity as idu
+
+    MATCH_THRESHOLD = 0.6
+    UNIQUENESS_DELTA = 0.12
+
+    init_db(db_path)
+    alias_map = idu.load_alias_map(sport)
+    matched_ids: list[int] = []
+    total = 0
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        conn.row_factory = sqlite3.Row
+        statuses = ("unmatched", "needs_review")
+        rows = conn.execute(
+            "SELECT id, team_home_raw, team_away_raw, game_date FROM market_snapshot_staging WHERE match_status IN (?, ?)",
+            statuses,
+        ).fetchall()
+        total = len(rows)
+
+        def _record_alias(raw: str | None, canonical: str | None) -> None:
+            if not raw or not canonical:
+                return
+            normalized_raw = idu.normalize_team_name(raw)
+            normalized_canonical = idu.normalize_team_name(canonical)
+            if not normalized_raw or normalized_raw == normalized_canonical:
+                return
+            current_aliases = alias_map.setdefault(canonical, [])
+            if raw not in current_aliases:
+                current_aliases.append(raw)
+                idu.save_team_alias(sport, canonical, raw)
+
+        def _team_similarity(raw: str | None, canonical: str | None) -> float:
+            if not raw or not canonical:
+                return 0.0
+            normalized_raw = idu.normalize_team_name(raw)
+            normalized_canonical = idu.normalize_team_name(canonical)
+            best_ratio = SequenceMatcher(None, normalized_raw, normalized_canonical).ratio()
+            for token in canonical.split():
+                token_norm = idu.normalize_team_name(token)
+                if not token_norm:
+                    continue
+                best_ratio = max(best_ratio, SequenceMatcher(None, normalized_raw, token_norm).ratio())
+            return best_ratio
+
+        def _score_candidate(row_home: str | None, row_away: str | None, candidate: dict) -> float:
+            home_score = _team_similarity(row_home, candidate.get("home_team"))
+            away_score = _team_similarity(row_away, candidate.get("away_team"))
+            swapped_home = _team_similarity(row_home, candidate.get("away_team"))
+            swapped_away = _team_similarity(row_away, candidate.get("home_team"))
+            direct = min(home_score, away_score)
+            swapped = min(swapped_home, swapped_away) - 0.05
+            return max(direct, swapped)
+
+        for row in rows:
+            iso_date = _normalize_game_date_for_matching(row["game_date"])
+            if not iso_date:
+                continue
+            candidates = _fetch_games_on_date(conn, sport, season, iso_date)
+            if not candidates:
+                continue
+            scored = []
+            for cand in candidates:
+                score = _score_candidate(row["team_home_raw"], row["team_away_raw"], cand)
+                scored.append((score, cand))
+            scored.sort(key=lambda item: item[0], reverse=True)
+            best_score, best_candidate = scored[0]
+            second_score = scored[1][0] if len(scored) > 1 else 0.0
+            if best_score < MATCH_THRESHOLD:
+                continue
+            if len(scored) > 1 and (best_score - second_score) < UNIQUENESS_DELTA:
+                continue
+            canonical_home = best_candidate.get("home_team")
+            canonical_away = best_candidate.get("away_team")
+            conn.execute(
+                "UPDATE market_snapshot_staging SET match_status = 'matched', match_confidence = ?, game_id = ? WHERE id = ?",
+                (round(best_score, 3), best_candidate["game_id"], row["id"]),
+            )
+            _record_alias(row["team_home_raw"], canonical_home)
+            _record_alias(row["team_away_raw"], canonical_away)
+            matched_ids.append(row["id"])
+        conn.commit()
+    return {
+        "total": total,
+        "matched": len(matched_ids),
+        "skipped": total - len(matched_ids),
+        "matched_ids": matched_ids,
     }
 
 
@@ -630,6 +762,7 @@ __all__ = [
     "update_staging_match",
     "tag_staging_hold",
     "resolve_staging_to_game",
+    "auto_match_staging_rows",
     "get_opportunities_with_game_info",
     "get_prediction_exclusions",
     "add_clv_snapshot",

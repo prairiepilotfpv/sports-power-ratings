@@ -46,6 +46,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     market_csv.add_argument("--default-book", dest="default_book", help="Fallback book name when the CSV omits it")
     market_csv.add_argument("--commit-matched", dest="commit_matched", action="store_true", default=True, help="Commit matched rows into market_snapshots (default)")
     market_csv.add_argument("--no-commit-matched", dest="commit_matched", action="store_false", help="Leave matched rows in staging for review")
+    market_csv.add_argument("--auto-commit", action="store_true", help="Auto-match staging rows and commit them after import")
 
     clv_csv = sub.add_parser("clv-csv", help="Import closing lines/odds from a CSV and backfill bets")
     clv_csv.add_argument("--sport", required=True)

@@ -50,8 +50,14 @@ def reject_match(db_path: str | Path, *, staging_id: int) -> dict:
     )
 
 
+def auto_match_rows(db_path: str | Path, *, sport: str, season: str) -> dict:
+    """Try to auto-match staging rows using deterministic team/date heuristics."""
+    return br.auto_match_staging_rows(db_path, sport=sport, season=season)
+
+
 __all__ = [
     "list_staging_rows",
     "accept_match",
     "reject_match",
+    "auto_match_rows",
 ]
