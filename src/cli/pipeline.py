@@ -1783,6 +1783,25 @@ def _run_betting(args: argparse.Namespace) -> None:
             f"rejected={result.get('rejected')}"
         )
 
+    elif cmd == "action-import":
+        csv_path = getattr(args, "csv", None)
+        if not csv_path:
+            raise ValueError("--csv is required for action-import")
+        if db_path is None:
+            raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
+        _echo_db_path(Path(db_path))
+        from src.pipelines.action_import import import_from_csv
+
+        result = import_from_csv(
+            csv_path,
+            db_path,
+            sport=args.sport,
+            season=args.season,
+            snapshot_run_id=getattr(args, "snapshot_run_id", None),
+            book=getattr(args, "book", None),
+        )
+        print(f"action-import: inserted={result.get('inserted')} staged={result.get('staged')} rejected={result.get('rejected')}")
+
     elif cmd == "review-generate":
         _run_review_generate(args)
 

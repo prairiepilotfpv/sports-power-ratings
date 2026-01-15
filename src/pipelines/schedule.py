@@ -1029,6 +1029,9 @@ def _build_bets_dataframe(
     model_name: str,
     as_of_date: date,
     review_run_id: str,
+    db_path: str | Path | None = None,
+    sport: str | None = None,
+    season: str | None = None,
 ) -> pd.DataFrame:
     include_calibrated = (
         "home_win_prob_calibrated" in schedule_df.columns
@@ -1214,64 +1217,167 @@ def _build_bets_dataframe(
 
         home_team = row.get("home_team")
         away_team = row.get("away_team")
-        rows.extend(
-            [
+
+        # Lookup latest market snapshot for each market/selection as-of the workbook date
+        # only when a db_path is provided; otherwise leave line/odds blank.
+        br = None
+        staging_rows: list[dict] | None = None
+        if db_path is not None:
+            try:
+                from src.data import betting_repository as br
+                # load staging rows once to allow permissive population of BETS
+                try:
+                    staging_rows = br.list_staging_rows(db_path) or []
+                except Exception:
+                    staging_rows = []
+
+                # Attempt to resolve staging rows to games in-memory (do not persist).
+                # Use resolve_staging_to_game when sport/season available to improve matching accuracy.
+                try:
+                    if sport and season:
+                        for s in staging_rows:
+                            try:
+                                if s.get("game_id"):
+                                    continue
+                                res = br.resolve_staging_to_game(
+                                    db_path,
+                                    sport=sport,
+                                    season=season,
+                                    team_home_raw=s.get("team_home_raw"),
+                                    team_away_raw=s.get("team_away_raw"),
+                                    game_date=s.get("game_date"),
+                                )
+                                if res and res.get("match_confidence") is not None and float(res.get("match_confidence")) >= 0.75:
+                                    s["game_id"] = res.get("game_id")
+                                    s["match_confidence"] = res.get("match_confidence")
+                                    s["match_status"] = res.get("match_status")
+                            except Exception:
+                                continue
+                except Exception:
+                    pass
+            except Exception:
+                br = None
+
+        for mtype, sel, mlabel in [
+            ("ML", away_team, ml_source_label),
+            ("ML", home_team, ml_source_label),
+            ("spread", away_team, spread_source_label),
+            ("spread", home_team, spread_source_label),
+            ("total", "Over", total_source_label),
+            ("total", "Under", total_source_label),
+        ]:
+            snap = None
+            if br is not None:
+                try:
+                    snap = br.get_latest_market_snapshot(db_path, game_id=row.get("game_id"), market_type=mtype, selection=sel, as_of=as_of_date.isoformat())
+                except Exception:
+                    snap = None
+
+            # If no committed snapshot, try permissive match from staging rows (parser imports).
+            staged_match = None
+            if snap is None and staging_rows is not None:
+                try:
+                    # determine iso date for matching
+                    gdate = base.get("date")
+                    if hasattr(gdate, "isoformat"):
+                        gdate_str = gdate.isoformat()
+                    else:
+                        gdate_str = str(row.get("date"))[:10]
+
+                    sel_norm = (str(sel) or "").lower()
+                    home_norm = (str(home_team) or "").lower()
+                    away_norm = (str(away_team) or "").lower()
+
+                    for s in staging_rows:
+                        try:
+                            if not s:
+                                continue
+                            if s.get("market_type") != mtype:
+                                continue
+                            # date must match
+                            if not s.get("game_date") or str(s.get("game_date"))[:10] != gdate_str:
+                                continue
+                            # (fallback) prefer staging rows that already resolved to this game_id
+                            # NOTE: do not accept a generic game_id match for ML/spread before trying selection-side matching
+                            # direct selection match for non-total markets (team names etc.)
+                            if mtype != "total" and str(s.get("selection") or "").lower() == sel_norm:
+                                staged_match = s
+                                break
+                            # for team-based markets (ML/spread) prefer matching the correct side (home vs away)
+                            if mtype in ("ML", "spread"):
+                                th = str(s.get("team_home_raw") or "").lower()
+                                ta = str(s.get("team_away_raw") or "").lower()
+                                s_sel = str(s.get("selection") or "").lower()
+
+                                def _matches_team(team_norm: str) -> bool:
+                                    if not team_norm:
+                                        return False
+                                    if s_sel and (
+                                        s_sel == team_norm
+                                        or s_sel in team_norm
+                                        or team_norm in s_sel
+                                    ):
+                                        return True
+                                    return team_norm in th or team_norm in ta
+
+                                # If the schedule selection is the home team, prefer staging rows that reference the home team
+                                if sel_norm == home_norm and _matches_team(home_norm):
+                                    staged_match = s
+                                    break
+                                # If the schedule selection is the away team, prefer staging rows that reference the away team
+                                if sel_norm == away_norm and _matches_team(away_norm):
+                                    staged_match = s
+                                    break
+                                # fallback: exact selection match
+                                if s_sel == sel_norm:
+                                    staged_match = s
+                                    break
+                            # totals: ensure the staging row references the same pairing (home+away)
+                            if mtype == "total":
+                                th = str(s.get("team_home_raw") or "").lower()
+                                ta = str(s.get("team_away_raw") or "").lower()
+                                # require both teams to appear in the staging row (order-insensitive)
+                                if ((home_norm in th or home_norm in ta) and (away_norm in th or away_norm in ta)):
+                                    staged_match = s
+                                    break
+
+                            # fallback: if the staging row is already resolved to this game, accept for totals or unspecified selections
+                            s_sel = str(s.get("selection") or "").lower()
+                            if s.get("game_id") and str(s.get("game_id")) == str(row.get("game_id")):
+                                if mtype == "total" or s_sel in ("", "over", "under"):
+                                    staged_match = s
+                                    break
+                        except Exception:
+                            continue
+                except Exception:
+                    staged_match = None
+
+            rows.append(
                 {
                     **base,
                     **forecast_blanks,
-                    **ml_fields,
-                    "market_type": "ML",
-                    "selection": away_team,
-                    "model": ml_source_label,
-                    "market_forecast_source": ml_source_label,
-                },
-                {
-                    **base,
-                    **forecast_blanks,
-                    **ml_fields,
-                    "market_type": "ML",
-                    "selection": home_team,
-                    "model": ml_source_label,
-                    "market_forecast_source": ml_source_label,
-                },
-                {
-                    **base,
-                    **forecast_blanks,
-                    **spread_fields,
-                    "market_type": "spread",
-                    "selection": away_team,
-                    "model": spread_source_label,
-                    "market_forecast_source": spread_source_label,
-                },
-                {
-                    **base,
-                    **forecast_blanks,
-                    **spread_fields,
-                    "market_type": "spread",
-                    "selection": home_team,
-                    "model": spread_source_label,
-                    "market_forecast_source": spread_source_label,
-                },
-                {
-                    **base,
-                    **forecast_blanks,
-                    **total_fields,
-                    "market_type": "total",
-                    "selection": "Over",
-                    "model": total_source_label,
-                    "market_forecast_source": total_source_label,
-                },
-                {
-                    **base,
-                    **forecast_blanks,
-                    **total_fields,
-                    "market_type": "total",
-                    "selection": "Under",
-                    "model": total_source_label,
-                    "market_forecast_source": total_source_label,
-                },
-            ]
-        )
+                    **(ml_fields if mtype == "ML" else (spread_fields if mtype == "spread" else total_fields)),
+                    "market_type": mtype,
+                    "selection": sel,
+                    "model": mlabel,
+                    "market_forecast_source": mlabel,
+                    "line": (
+                        snap.get("line")
+                        if snap and snap.get("line") is not None
+                        else (staged_match.get("line") if staged_match and staged_match.get("line") is not None else "")
+                    ),
+                    "odds": (
+                        int(snap.get("odds"))
+                        if snap and snap.get("odds") is not None
+                        else (int(staged_match.get("odds")) if staged_match and staged_match.get("odds") is not None else "")
+                    ),
+                    "source_market_snapshot_id": (
+                        snap.get("id")
+                        if snap and snap.get("id") is not None
+                        else (staged_match.get("id") if staged_match and staged_match.get("id") is not None else "")
+                    ),
+                }
+            )
 
     return pd.DataFrame(rows, columns=bets_columns)
 
@@ -1947,6 +2053,9 @@ def build_schedule_excel_report(
             model_name=bets_model_name,
             as_of_date=resolved_as_of_date,
             review_run_id=review_run_id,
+            db_path=db_path,
+            sport=sport,
+            season=season,
         )
         bets_df.to_excel(writer, sheet_name="BETS", index=False)
 

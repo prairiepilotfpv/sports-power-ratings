@@ -91,6 +91,16 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
         "daily-workbook",
         help="Build a unified daily workbook (projections, snapshots, OCR, EV, BETS).",
     )
+    action_import = sub.add_parser(
+        "action-import",
+        help="Import parser-generated CSV of market rows into snapshots/staging",
+    )
+    action_import.add_argument("--csv", required=True, help="CSV produced by action parser")
+    action_import.add_argument("--sport", required=True)
+    action_import.add_argument("--season", required=True)
+    action_import.add_argument("--db", help="Optional DB path override")
+    action_import.add_argument("--snapshot-run-id", help="Optional snapshot_run_id to attach to inserted snapshots")
+    action_import.add_argument("--book", help="Optional book name to attach to inserted snapshots")
     daily_workbook.add_argument("--sport", required=True)
     daily_workbook.add_argument("--season", required=True)
     daily_workbook.add_argument("--date", required=True, help="Target date (YYYY-MM-DD)")

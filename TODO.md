@@ -3,7 +3,10 @@
 make sure the BETs sheet match for all sports, must not be sports agnostic right now and needs to be
 
 Make ingest easier/more organized
+ - one big import? like everything is one folder and it all gets nabbed every morning? NO, probably not, that's a like of error checking
 
+ - clean up the Dashboard sheet in the schedule output - hasn't been updated to represent the ensembles
+ 
 
 
 ## Bet Tracking Suite — OCR & Parsing (Active)

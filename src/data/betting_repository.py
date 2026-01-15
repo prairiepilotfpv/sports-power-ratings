@@ -951,6 +951,56 @@ def get_latest_clv(db_path: str | Path, *, game_id: str, market_type: str, selec
         return {"close_line": row[0], "close_odds": row[1], "captured_at": row[2]}
 
 
+    def get_latest_market_snapshot(db_path: str | Path, *, game_id: str, market_type: str, selection: str, as_of: str | None = None) -> dict | None:
+        """Return the most recent market_snapshot (id, line, odds, captured_at) for the keys, or None.
+
+        If `as_of` is provided it will only consider snapshots with `captured_at` <= as_of.
+        """
+        init_db(db_path)
+        with closing(sqlite3.connect(Path(db_path))) as conn:
+            cur = conn.cursor()
+            if as_of is None:
+                q = "SELECT id, line, odds, captured_at FROM market_snapshots WHERE game_id = ? AND market_type = ? AND selection = ? ORDER BY datetime(captured_at) DESC LIMIT 1"
+                params = (game_id, market_type, selection)
+            else:
+                q = "SELECT id, line, odds, captured_at FROM market_snapshots WHERE game_id = ? AND market_type = ? AND selection = ? AND datetime(captured_at) <= datetime(?) ORDER BY datetime(captured_at) DESC LIMIT 1"
+                params = (game_id, market_type, selection, as_of)
+            cur.execute(q, params)
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {"id": row[0], "line": row[1], "odds": row[2], "captured_at": row[3]}
+
+
+    def add_market_snapshot(
+        db_path: str | Path,
+        *,
+        snapshot_run_id: str | None,
+        captured_at: str | None,
+        book: str | None,
+        market_type: str,
+        selection: str,
+        line: float | None,
+        odds: int | None,
+        game_id: str | None,
+        source_staging_id: int | None = None,
+    ) -> int:
+        """Insert a market_snapshot row and return its id.
+
+        `snapshot_run_id` may be a review-run id when persisting manual workbook lines.
+        """
+        init_db(db_path)
+        if captured_at is None:
+            captured_at = _utcnow_iso()
+        with closing(sqlite3.connect(Path(db_path))) as conn:
+            cur = conn.execute(
+                "INSERT OR REPLACE INTO market_snapshots (snapshot_run_id, captured_at, book, market_type, selection, line, odds, game_id, source_staging_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (snapshot_run_id, captured_at, book, market_type, selection, line, odds, game_id, source_staging_id, _utcnow_iso()),
+            )
+            conn.commit()
+            return cur.lastrowid
+
+
 def update_bets_with_clv(
     db_path: str | Path,
     *,

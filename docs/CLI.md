@@ -144,6 +144,52 @@ python -m src.cli.pipeline betting log-bets --workbook outputs/review/nba-2025-2
 # Settle bets up to completed games
 python -m src.cli.pipeline betting settle-bets --sport nba --season 2025-26 --db data/db/nba/2025-26.db
 
+**BETS Workflow (lines in workbook → DB)**
+
+- **Generate schedule/workbook with `BETS` sheet:** the schedule/daily-workbook/review workbooks include a `BETS` sheet. Example:
+
+```bash
+# Generate the review workbook (schedule export with BETS). `--model` is optional — omit it to include default projections.
+python -m src.cli.pipeline schedule --sport nba --season 2025-26 --output outputs/review/nba-2025-26-review.xlsx --db data/db/nba/2025-26.db
+```
+
+- **Populate missing `game_id` (optional):** if you have pasted market rows (OCR/paste) you can attempt to fill `game_id` from staging via the helper in `src/utils/review_helpers.py`:
+
+```bash
+python -m src.utils.review_helpers --workbook outputs/review/nba-2025-26-review.xlsx --db data/db/nba/2025-26.db
+```
+
+- **Edit the `BETS` sheet in Excel:** fill rows you want to log. Recognized columns:
+  - **Required for logging:** `game_id`, `market_type`, `selection`, `stake` (non-empty)
+  - **Lines/odds:** `line` and either `odds` or `price` (either accepted)
+  - **Optional:** `book`, `opportunity_id`, `notes`
+
+- **Dry-run parse the workbook (validate only):**
+
+```bash
+python -m src.cli.pipeline betting log-bets --workbook outputs/review/nba-2025-26-review.xlsx --db data/db/nba/2025-26.db --dry-run
+```
+
+- **Persist bets and workbook lines to DB (writeback):**
+
+```bash
+python -m src.cli.pipeline betting log-bets --workbook outputs/review/nba-2025-26-review.xlsx --db data/db/nba/2025-26.db --writeback
+```
+
+Notes on behavior:
+- When generating the `BETS` sheet the pipeline will populate `line`, `odds`, and `source_market_snapshot_id` when a `market_snapshots` row exists for the game/market/selection as-of the workbook `as_of_date`. If none exist those cells are blank.
+- When you run `log-bets --writeback` and a `BETS` row contains `line`/`odds` that differ from the latest `market_snapshots`, the system will insert a new `market_snapshots` row with `snapshot_run_id = review_run_id` and `book = 'manual'` (this is skipped for `--dry-run`). The `bets` row is then upserted as before and `bet_id`/`logged_at` will be written back into the workbook.
+
+Quick DB checks (sqlite):
+
+```bash
+sqlite3 data/db/nba/2025-26.db "SELECT id, snapshot_run_id, book, market_type, selection, line, odds, game_id, captured_at FROM market_snapshots ORDER BY datetime(captured_at) DESC LIMIT 10;"
+
+sqlite3 data/db/nba/2025-26.db "SELECT id, review_run_id, game_id, market_type, selection, line, odds, stake, logged_at FROM bets ORDER BY datetime(logged_at) DESC LIMIT 10;"
+```
+
+If you want, I can also add a short smoke-test script that automates: generate workbook → edit a single BETS row → run `log-bets --writeback` → assert DB rows exist. Ask and I will add it.
+
 # Import closing lines/odds and backfill CLV
 python -m src.cli.pipeline betting clv-csv --sport nba --season 2025-26 --csv data/raw/nba_closing_lines.csv --default-market-type ML
 
