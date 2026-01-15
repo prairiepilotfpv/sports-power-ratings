@@ -45,19 +45,20 @@ def resolve_team_alias(name: str, alias_map: dict) -> str | None:
     """Return canonical team name if `name` matches an alias in `alias_map`.
 
     alias_map is expected as {canonical: [aliases...]}
-    Exact (case-sensitive) alias match or exact canonical match will return the
-    canonical name.
+    Matching is case-insensitive using normalized forms.
     """
     if not name:
         return None
+    needle = normalize_team_name(name)
     # direct canonical
     for canon, aliases in alias_map.items():
-        if name == canon:
+        if normalize_team_name(canon) == needle:
             return canon
     # check aliases
     for canon, aliases in alias_map.items():
-        if name in aliases:
-            return canon
+        for alias in aliases:
+            if normalize_team_name(alias) == needle:
+                return canon
     return None
 
 

@@ -691,6 +691,21 @@ def _clean_line_field(raw: str | float | None) -> float | None:
             return None
 
 
+def _get_csv_value(row: dict, *keys: str) -> str | None:
+    """Return the first non-empty string value for any of the provided keys."""
+    for k in keys:
+        v = row.get(k)
+        if v is None:
+            continue
+        try:
+            s = str(v).strip()
+        except Exception:
+            continue
+        if s:
+            return s
+    return None
+
+
 def import_market_csv(
     db_path: str | Path,
     *,
@@ -731,17 +746,35 @@ def import_market_csv(
     with open(csv_path, newline='', encoding='utf-8') as fh:
         reader = csv.DictReader(fh)
         for row in reader:
-            source = row.get('source') or 'csv'
-            captured_at = row.get('captured_at')
-            book = row.get('book') or default_book
-            market_type = row.get('market_type')
-            selection = row.get('selection')
-            line = _clean_line_field(row.get('line'))
-            odds = _clean_odds_field(row.get('odds'))
-            team_home_raw = row.get('team_home') or row.get('home_team')
-            team_away_raw = row.get('team_away') or row.get('away_team')
+            source = _get_csv_value(row, 'source') or 'csv'
+            captured_at = _get_csv_value(row, 'captured_at')
+            book = _get_csv_value(row, 'book') or default_book
+            market_type = _get_csv_value(row, 'market_type', 'market', 'type')
+            selection = _get_csv_value(row, 'selection', 'sel', 'side')
+            line = _clean_line_field(_get_csv_value(row, 'line', 'spread', 'total_line'))
+            odds = _clean_odds_field(_get_csv_value(row, 'odds', 'price'))
+            team_home_raw = _get_csv_value(row, 'team_home', 'home_team', 'team_home_raw')
+            team_away_raw = _get_csv_value(row, 'team_away', 'team_away_raw', 'away_team')
             game_date = row.get('game_date')
             game_id = row.get('game_id')
+
+            alias_map = None
+            try:
+                from src.utils import identity as idu
+                alias_map = idu.load_alias_map(sport)
+            except Exception:
+                alias_map = None
+
+            if alias_map:
+                resolved = idu.resolve_team_alias(selection or "", alias_map)
+                if resolved:
+                    selection = resolved
+                resolved = idu.resolve_team_alias(team_home_raw or "", alias_map)
+                if resolved:
+                    team_home_raw = resolved
+                resolved = idu.resolve_team_alias(team_away_raw or "", alias_map)
+                if resolved:
+                    team_away_raw = resolved
 
             # Basic validation
             if not selection or not team_home_raw or not team_away_raw:
