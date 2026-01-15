@@ -1744,13 +1744,15 @@ def _run_betting(args: argparse.Namespace) -> None:
     elif cmd == "market-csv":
         if db_path is None:
             raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
-        _require_snapshot_run_id_format(args.snapshot_run_id)
-        print(f"snapshot_run_id: {args.snapshot_run_id}")
+        snapshot_run_id = getattr(args, "snapshot_run_id", None)
+        if snapshot_run_id:
+            _require_snapshot_run_id_format(snapshot_run_id)
+            print(f"snapshot_run_id: {snapshot_run_id}")
         _echo_db_path(Path(db_path))
         result = br.import_market_csv(
             db_path,
             csv_path=args.csv_path,
-            snapshot_run_id=args.snapshot_run_id,
+            snapshot_run_id=snapshot_run_id,
             sport=args.sport,
             season=args.season,
             default_book=getattr(args, "default_book", None),

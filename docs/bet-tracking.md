@@ -71,11 +71,13 @@ If you already have a CSV of market lines, use the CSV import command instead of
 
 ```powershell
 python -m src.cli.pipeline betting market-csv --sport nba --season 2025-26 \
-  --csv data/raw/nba_markets.csv --snapshot-run-id run_20251201 \
+  --csv data/raw/nba_markets.csv \
   --default-book dn
 ```
 
 Expected CSV columns: `market_type`, `selection`, `line`, `odds`, `team_home` (or `home_team`), `team_away` (or `away_team`), `game_date` (YYYY-MM-DD). Optional: `game_id`, `book`, `source`, `captured_at`. Invalid rows are rejected and counted.
+Wide format is also supported: a single row can contain `home_ml`/`away_ml`, `home_spread`/`away_spread` with corresponding odds (ex: `home_spread_odds`), and `total` with `over_odds`/`under_odds` to emit ML, spread, and total rows.
+Note: `--snapshot-run-id` is optional; if omitted, a stable id is derived from sport/season/date.
 
 2. Commit matched staging rows into `market_snapshots` (optional, used when snapshots are desired):
 

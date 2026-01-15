@@ -628,6 +628,35 @@ See [TESTING.md](TESTING.md) for more detail. `make test` is also available as a
 - No completed games: rankings/projections require finished games; ingest more results or allow future games only for schedule exports.
 - Overwriting outputs: pass `--overwrite` for rankings; for schedule/report/backtest/tune, specify a new `--output`/`--output-dir` or let the CLI append numeric suffixes when available.
 
+## Betting and Market Ingestion Workflow
+
+If you work with market data (lines/odds) and bets, this repo exposes a lightweight, sport-agnostic workflow built on top of the schedule/RANK pipeline.
+
+1. **Import a CSV** (rows with `market_type`, `selection`, `line`, `odds`, `team_home|home_team`, `team_away|away_team`, `game_date`). The `betting market-csv` command reuses the identity resolver to match teams and game dates; when a row resolves with `match_status=matched` it is committed directly into `market_snapshots` (snapshot run ID is optional and defaulted). Wide rows (one row with `home_ml`/`away_ml`, `home_spread`/`away_spread`, `total`, etc.) are also supported and expanded into the canonical markets.
+   ```bash
+   python -m src.cli.pipeline betting market-csv --sport nba --season 2025-26 --csv data/raw/nba_markets.csv --default-book dn
+   ```
+   - If `game_id` is provided the row skips the resolver and commits immediately.
+   - Rows that cannot match are left in `market_snapshot_staging` with `match_status=unmatched` or `needs_review`. The import reports `committed`, `staged`, and `rejected` counts.
+   - `--commit-matched` (default) ensures automatically matched rows land in `market_snapshots`; use `--no-commit-matched` to inspect them first.
+
+2. **Review staging rows** when you see entries stuck in staging. The `market-review` command lists `needs_review` rows and allows you to accept/reject them, setting `game_id` on accepted rows.
+   ```bash
+   python -m src.cli.pipeline betting market-review --sport nba --season 2025-26 --status needs_review --limit 20
+   ```
+
+3. **Commit matched rows** into `market_snapshots`. Provide the snapshot run ID you want to tag (`default_snapshot_run_id` can be reused for consistency).
+   ```bash
+   python -m src.cli.pipeline betting market-commit --sport nba --season 2025-26 --snapshot-run-id snap-20260114
+   ```
+   - This looks up staging rows with `match_status=matched` (or `needs_review` when `--force` is supplied) and upserts them into `market_snapshots`.
+
+4. **Populate the schedule workbook’s `BETS` sheet**. The `schedule` pipeline already looks up the latest committed markets per game/market/selection (and falls back to permissively matched staging rows) so line/odds show up in the workbook whenever available. When no snapshot exists the cells stay blank, letting you fill them manually before running `betting log-bets --writeback`.
+
+5. **Log bets** via the review workbook (`betting review-generate` → edit `BETS` → `betting log-bets`). The workbook’s `BETS` sheet expects `game_id`, `market_type`, `selection`, `line`, `odds`, and `stake`; `log-bets` writes `bet_id`/`logged_at` back when `--writeback` is used.
+
+Repeat as needed: ingest new CSVs, review staging, commit matched rows, and refresh the schedule workbook so the latest odds propagate into `BETS`.
+
 ## License
 
 This project is provided as-is for internal analytics workflows.

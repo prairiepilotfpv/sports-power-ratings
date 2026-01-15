@@ -62,6 +62,13 @@ def import_from_csv(
         line = row.get("line") if "line" in row else None
         odds = row.get("odds") if "odds" in row else None
         captured_at = row.get(capture_field) if capture_field in row else None
+        effective_snapshot_run_id = snapshot_run_id or br.default_snapshot_run_id(
+            sport=sport,
+            season=season,
+            game_date=str(game_date) if game_date is not None else None,
+            captured_at=str(captured_at) if captured_at is not None else None,
+            prefix="action-import",
+        )
 
         try:
             # attempt to resolve to a game_id
@@ -84,7 +91,7 @@ def import_from_csv(
                 # insert into market_snapshots
                 snap_id = br.add_market_snapshot(
                     db_path,
-                    snapshot_run_id=snapshot_run_id or f"action-import-{_utcnow_iso()}",
+                    snapshot_run_id=effective_snapshot_run_id,
                     captured_at=captured_at or _utcnow_iso(),
                     book=book or "parser",
                     market_type=str(market_type),
