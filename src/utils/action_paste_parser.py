@@ -150,7 +150,11 @@ def parse_action_paste(text: str) -> List[GameMarkets]:
         under_line = float(under_token[1:])
         under_odds = int(_pop("odds"))
 
-        ml_home_odds = int(_pop("odds"))
+        # Home moneyline may be missing in some paste formats; default to 0
+        try:
+            ml_home_odds = int(_pop("odds"))
+        except ValueError:
+            ml_home_odds = 0
 
         # validate totals equal
         if abs(over_line - under_line) > 1e-6:
