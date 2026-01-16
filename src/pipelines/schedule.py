@@ -1099,6 +1099,23 @@ def _build_bets_dataframe(
     )
     df = df[df["status"] == "scheduled"]
     df = df[df["_date"] == as_of_date]
+    # Ensure deterministic ordering so selection rows list the away team above
+    # the home team (matches schedule sheet presentation). Sort by date,
+    # game_id, and away_team to guarantee away-first ordering per game.
+    sort_cols: list[str] = []
+    if "date" in df.columns:
+        sort_cols.append("date")
+    if "game_id" in df.columns:
+        sort_cols.append("game_id")
+    # final tie-breaker: away_team first
+    if "away_team" in df.columns:
+        sort_cols.append("away_team")
+    if sort_cols:
+        try:
+            df = df.sort_values(by=sort_cols, kind="mergesort")
+        except Exception:
+            # best-effort: ignore sorting failures and continue
+            pass
     if df.empty:
         return pd.DataFrame(columns=bets_columns)
 
