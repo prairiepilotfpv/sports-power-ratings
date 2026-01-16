@@ -32,3 +32,5 @@
 	- [x] Weekly/monthly aggregations + formatted Excel writer
 	- [x] OCR fallback path detection for Windows installs
 	- [x] `market-ocr` CLI accepts `--json-output` to skip DB writes
+
+	need to clean up GIT and all the crazy versoin I've got going on :/
