@@ -11,10 +11,18 @@ from typing import Tuple, Dict, Iterable
 import json
 import re
 from difflib import SequenceMatcher
+import os
 from pathlib import Path
 
 CONFIG_TEAM_ALIASES = Path("data/config/team_aliases.json")
 CONFIG_IDENTITY = Path("data/config/identity.json")
+
+
+def _alias_config_path() -> Path:
+    env_path = os.environ.get("TEAM_ALIAS_FILE")
+    if env_path:
+        return Path(env_path)
+    return CONFIG_TEAM_ALIASES
 
 
 def _load_json(path: Path) -> dict:
@@ -45,19 +53,20 @@ def resolve_team_alias(name: str, alias_map: dict) -> str | None:
     """Return canonical team name if `name` matches an alias in `alias_map`.
 
     alias_map is expected as {canonical: [aliases...]}
-    Exact (case-sensitive) alias match or exact canonical match will return the
-    canonical name.
+    Matching is case-insensitive using normalized forms.
     """
     if not name:
         return None
+    needle = normalize_team_name(name)
     # direct canonical
     for canon, aliases in alias_map.items():
-        if name == canon:
+        if normalize_team_name(canon) == needle:
             return canon
     # check aliases
     for canon, aliases in alias_map.items():
-        if name in aliases:
-            return canon
+        for alias in aliases:
+            if normalize_team_name(alias) == needle:
+                return canon
     return None
 
 
@@ -88,8 +97,21 @@ def fuzzy_match_team(raw: str, candidates: Iterable[str]) -> Tuple[str | None, f
 
 
 def load_alias_map(sport: str) -> dict:
-    data = _load_json(CONFIG_TEAM_ALIASES)
+    data = _load_json(_alias_config_path())
     return data.get(sport, {})
+
+
+def save_team_alias(sport: str, canonical: str, alias: str) -> None:
+    if not canonical or not alias or canonical.strip() == "" or alias.strip() == "":
+        return
+    path = _alias_config_path()
+    data = _load_json(path)
+    sport_map = data.setdefault(sport, {})
+    aliases = sport_map.setdefault(canonical, [])
+    if alias not in aliases:
+        aliases.append(alias)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2))
 
 
 def load_identity_config() -> dict:

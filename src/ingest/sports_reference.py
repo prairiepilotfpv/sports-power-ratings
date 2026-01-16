@@ -228,6 +228,7 @@ def _parse_sr_dataframe(
 
     sport_key = (sport or "").lower()
     date_col = _find_column(df, "date", "game date")
+    start_col = _find_column(df, "start", "start (et)", "start time", "time", "tip")
     away_col = _find_column(
         df, "visitor/neutral", "visitor", "away", "away/neutral", "road", "road team"
     )
@@ -306,9 +307,19 @@ def _parse_sr_dataframe(
         if notes_col and pd.notna(row.get(notes_col)):
             notes = str(row.get(notes_col)).strip()
 
+        start_time = None
+        if start_col and pd.notna(row.get(start_col)):
+            raw_start = str(row.get(start_col)).strip()
+            if raw_start:
+                combined = f"{raw_date} {raw_start}"
+                parsed_start = pd.to_datetime(combined, errors="coerce")
+                if not pd.isna(parsed_start):
+                    start_time = parsed_start.to_pydatetime()
+
         games.append(
             GameResult(
                 date=parsed_date.date(),
+                start_time=start_time,
                 home_team=home_team,
                 away_team=away_team,
                 home_score=home_score,

@@ -19,15 +19,18 @@ CRUD and transaction helpers will be added as pipelines are implemented.
 from __future__ import annotations
 
 import sqlite3
+import re
 from contextlib import closing
 from pathlib import Path
 from typing import Iterable, Sequence, List, Dict, Any, Optional
 from datetime import datetime, timezone
 import logging
 import uuid
+from difflib import SequenceMatcher
 
 from .paths import db_path_for
 from . import repository as base_repo
+from .market_lines import import_market_csv
 from .migrations import apply_migrations
 
 
@@ -288,6 +291,137 @@ def resolve_staging_to_game(
         "game_id": best_game_id,
         "match_confidence": round(float(best_score), 3),
         "match_status": status,
+    }
+
+
+def _normalize_game_date_for_matching(raw_date: str | None) -> str | None:
+    """Return a normalized YYYY-MM-DD date string usable for precise matching."""
+    if not raw_date:
+        return None
+    value = str(raw_date).strip()
+    if not value:
+        return None
+    if "T" in value:
+        value = value.split("T", 1)[0]
+    if " " in value:
+        value = value.split(" ", 1)[0]
+    value = value.replace("/", "-")
+    try:
+        return datetime.fromisoformat(value).date().isoformat()
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d", "%m-%d-%Y", "%Y%m%d"):
+        try:
+            return datetime.strptime(value, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def _fetch_games_on_date(conn: sqlite3.Connection, sport: str, season: str, game_date: str) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT game_id, home_team, away_team
+        FROM games
+        WHERE sport = ? AND season = ? AND date = ?
+        """,
+        (sport, season, game_date),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def auto_match_staging_rows(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+) -> dict:
+    """Auto-match staging rows to games when a unique team/date combination exists."""
+    from src.utils import identity as idu
+
+    MATCH_THRESHOLD = 0.6
+    UNIQUENESS_DELTA = 0.12
+
+    init_db(db_path)
+    alias_map = idu.load_alias_map(sport)
+    matched_ids: list[int] = []
+    total = 0
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        conn.row_factory = sqlite3.Row
+        statuses = ("unmatched", "needs_review")
+        rows = conn.execute(
+            "SELECT id, team_home_raw, team_away_raw, game_date FROM market_snapshot_staging WHERE match_status IN (?, ?)",
+            statuses,
+        ).fetchall()
+        total = len(rows)
+
+        def _record_alias(raw: str | None, canonical: str | None) -> None:
+            if not raw or not canonical:
+                return
+            normalized_raw = idu.normalize_team_name(raw)
+            normalized_canonical = idu.normalize_team_name(canonical)
+            if not normalized_raw or normalized_raw == normalized_canonical:
+                return
+            current_aliases = alias_map.setdefault(canonical, [])
+            if raw not in current_aliases:
+                current_aliases.append(raw)
+                idu.save_team_alias(sport, canonical, raw)
+
+        def _team_similarity(raw: str | None, canonical: str | None) -> float:
+            if not raw or not canonical:
+                return 0.0
+            normalized_raw = idu.normalize_team_name(raw)
+            normalized_canonical = idu.normalize_team_name(canonical)
+            best_ratio = SequenceMatcher(None, normalized_raw, normalized_canonical).ratio()
+            for token in canonical.split():
+                token_norm = idu.normalize_team_name(token)
+                if not token_norm:
+                    continue
+                best_ratio = max(best_ratio, SequenceMatcher(None, normalized_raw, token_norm).ratio())
+            return best_ratio
+
+        def _score_candidate(row_home: str | None, row_away: str | None, candidate: dict) -> float:
+            home_score = _team_similarity(row_home, candidate.get("home_team"))
+            away_score = _team_similarity(row_away, candidate.get("away_team"))
+            swapped_home = _team_similarity(row_home, candidate.get("away_team"))
+            swapped_away = _team_similarity(row_away, candidate.get("home_team"))
+            direct = min(home_score, away_score)
+            swapped = min(swapped_home, swapped_away) - 0.05
+            return max(direct, swapped)
+
+        for row in rows:
+            iso_date = _normalize_game_date_for_matching(row["game_date"])
+            if not iso_date:
+                continue
+            candidates = _fetch_games_on_date(conn, sport, season, iso_date)
+            if not candidates:
+                continue
+            scored = []
+            for cand in candidates:
+                score = _score_candidate(row["team_home_raw"], row["team_away_raw"], cand)
+                scored.append((score, cand))
+            scored.sort(key=lambda item: item[0], reverse=True)
+            best_score, best_candidate = scored[0]
+            second_score = scored[1][0] if len(scored) > 1 else 0.0
+            if best_score < MATCH_THRESHOLD:
+                continue
+            if len(scored) > 1 and (best_score - second_score) < UNIQUENESS_DELTA:
+                continue
+            canonical_home = best_candidate.get("home_team")
+            canonical_away = best_candidate.get("away_team")
+            conn.execute(
+                "UPDATE market_snapshot_staging SET match_status = 'matched', match_confidence = ?, game_id = ? WHERE id = ?",
+                (round(best_score, 3), best_candidate["game_id"], row["id"]),
+            )
+            _record_alias(row["team_home_raw"], canonical_home)
+            _record_alias(row["team_away_raw"], canonical_away)
+            matched_ids.append(row["id"])
+        conn.commit()
+    return {
+        "total": total,
+        "matched": len(matched_ids),
+        "skipped": total - len(matched_ids),
+        "matched_ids": matched_ids,
     }
 
 
@@ -629,11 +763,16 @@ __all__ = [
     "update_staging_match",
     "tag_staging_hold",
     "resolve_staging_to_game",
+    "auto_match_staging_rows",
     "get_opportunities_with_game_info",
     "get_prediction_exclusions",
     "add_clv_snapshot",
     "get_latest_clv",
+    "get_latest_market_snapshot",
+    "add_market_snapshot",
+    "default_snapshot_run_id",
     "import_clv_csv",
+    "import_market_csv",
     "add_prediction_exclusions",
     "update_bets_with_clv",
 ]
@@ -691,111 +830,25 @@ def _clean_line_field(raw: str | float | None) -> float | None:
             return None
 
 
-def import_market_csv(
-    db_path: str | Path,
+def default_snapshot_run_id(
     *,
-    csv_path: str | Path,
-    snapshot_run_id: str,
     sport: str,
     season: str,
-    default_book: str | None = None,
-    commit_matched: bool = True,
-) -> dict:
-    """Import a CSV of markets. Returns summary dict.
-
-    Expected CSV columns (some optional):
-    - source (optional)
-    - captured_at (optional)
-    - book (optional)
-    - market_type (ML/spread/total)
-    - selection
-    - line
-    - odds
-    - team_home
-    - team_away
-    - game_date (YYYY-MM-DD)
-    - game_id (optional)
-
-    Behavior:
-    - Validate numeric fields (odds integer in [-1000,1000], line float)
-    - If game_id supplied, insert into market_snapshots directly
-    - Otherwise resolve via identity subsystem; matched rows inserted into market_snapshots if commit_matched=True, others go to market_snapshot_staging with match_status set
-    - Returns counts: {committed: N, staged: M, rejected: K}
-    """
-    import csv
-
-    init_db(db_path)
-    committed = 0
-    staged = 0
-    rejected = 0
-    with open(csv_path, newline='', encoding='utf-8') as fh:
-        reader = csv.DictReader(fh)
-        for row in reader:
-            source = row.get('source') or 'csv'
-            captured_at = row.get('captured_at')
-            book = row.get('book') or default_book
-            market_type = row.get('market_type')
-            selection = row.get('selection')
-            line = _clean_line_field(row.get('line'))
-            odds = _clean_odds_field(row.get('odds'))
-            team_home_raw = row.get('team_home') or row.get('home_team')
-            team_away_raw = row.get('team_away') or row.get('away_team')
-            game_date = row.get('game_date')
-            game_id = row.get('game_id')
-
-            # Basic validation
-            if not selection or not team_home_raw or not team_away_raw:
-                rejected += 1
-                continue
-            if odds is None or odds == 0 or odds < -1000 or odds > 1000:
-                rejected += 1
-                continue
-            if line is None:
-                rejected += 1
-                continue
-
-            if game_id:
-                # insert directly to market_snapshots
-                with closing(sqlite3.connect(Path(db_path))) as conn:
-                    conn.execute(
-                        "INSERT OR REPLACE INTO market_snapshots (snapshot_run_id, captured_at, book, market_type, selection, line, odds, game_id, source_staging_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (snapshot_run_id, captured_at or _utcnow_iso(), book, market_type, selection, line, odds, game_id, None, _utcnow_iso()),
-                    )
-                    conn.commit()
-                    committed += 1
-            else:
-                # attempt resolve
-                res = resolve_staging_to_game(db_path, sport=sport, season=season, team_home_raw=team_home_raw, team_away_raw=team_away_raw, game_date=game_date)
-                if res.get('match_status') == 'matched' and commit_matched:
-                    with closing(sqlite3.connect(Path(db_path))) as conn:
-                        conn.execute(
-                            "INSERT OR REPLACE INTO market_snapshots (snapshot_run_id, captured_at, book, market_type, selection, line, odds, game_id, source_staging_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            (snapshot_run_id, captured_at or _utcnow_iso(), book, market_type, selection, line, odds, res.get('game_id'), None, _utcnow_iso()),
-                        )
-                        conn.commit()
-                        committed += 1
-                else:
-                    # insert into staging for review
-                    add_staging_row(
-                        db_path,
-                        source=source,
-                        captured_at=captured_at or _utcnow_iso(),
-                        image_path=None,
-                        raw_text=None,
-                        book=book,
-                        market_type=market_type,
-                        selection=selection,
-                        line=line,
-                        odds=odds,
-                        team_home_raw=team_home_raw,
-                        team_away_raw=team_away_raw,
-                        game_date=game_date,
-                        match_status=res.get('match_status') if res else 'unmatched',
-                        match_confidence=res.get('match_confidence') if res else 0.0,
-                        game_id=res.get('game_id') if res else None,
-                    )
-                    staged += 1
-    return {"committed": committed, "staged": staged, "rejected": rejected}
+    game_date: str | None = None,
+    captured_at: str | None = None,
+    prefix: str = "market",
+) -> str:
+    """Return a stable snapshot_run_id for market imports when none is provided."""
+    date_token = None
+    if game_date:
+        date_token = str(game_date)[:10]
+    elif captured_at:
+        date_token = str(captured_at)[:10]
+    base = f"{prefix}-{sport}-{season}"
+    if date_token:
+        base = f"{base}-{date_token}"
+    cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "-", base).strip("-")
+    return cleaned or f"{prefix}-{sport}-{season}"
 
 
 def get_opportunities_with_game_info(db_path: str | Path, *, review_run_id: str) -> list[dict]:
@@ -949,6 +1002,112 @@ def get_latest_clv(db_path: str | Path, *, game_id: str, market_type: str, selec
         if not row:
             return None
         return {"close_line": row[0], "close_odds": row[1], "captured_at": row[2]}
+
+
+def get_latest_market_snapshot(
+    db_path: str | Path,
+    *,
+    game_id: str,
+    market_type: str,
+    selection: str,
+    as_of: str | None = None,
+) -> dict | None:
+    """Return the most recent market_snapshot (id, line, odds, captured_at) for the keys, or None.
+
+    If `as_of` is provided it will only consider snapshots with `captured_at` <= as_of.
+    """
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        cur = conn.cursor()
+        if as_of is None:
+            q = "SELECT id, line, odds, captured_at FROM market_snapshots WHERE game_id = ? AND market_type = ? AND selection = ? ORDER BY datetime(captured_at) DESC LIMIT 1"
+            params = (game_id, market_type, selection)
+        else:
+            q = "SELECT id, line, odds, captured_at FROM market_snapshots WHERE game_id = ? AND market_type = ? AND selection = ? AND datetime(captured_at) <= datetime(?) ORDER BY datetime(captured_at) DESC LIMIT 1"
+            params = (game_id, market_type, selection, as_of)
+        cur.execute(q, params)
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {"id": row[0], "line": row[1], "odds": row[2], "captured_at": row[3]}
+
+
+def get_latest_market_line(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    game_id: str,
+    market_type: str,
+    selection_team_id: int | None = None,
+    selection: str | None = None,
+    as_of: str | None = None,
+) -> dict | None:
+    """Return the most recent market_line row for the keys, or None."""
+    init_db(db_path)
+    filters = [
+        "sport = ?",
+        "season = ?",
+        "game_id = ?",
+        "market_type = ?",
+    ]
+    params: list[object] = [sport, season, game_id, market_type]
+    if selection_team_id is not None:
+        filters.append("selection_team_id = ?")
+        params.append(selection_team_id)
+    elif selection is not None:
+        filters.append("selection = ?")
+        params.append(selection)
+    else:
+        filters.append("selection_team_id IS NULL")
+        filters.append("selection IS NULL")
+    if as_of is not None:
+        filters.append("datetime(imported_at) <= datetime(?)")
+        params.append(as_of)
+    where_clause = " AND ".join(filters)
+    query = f"""
+        SELECT id, line, odds, book, imported_at
+        FROM market_lines
+        WHERE {where_clause}
+        ORDER BY datetime(imported_at) DESC, id DESC
+        LIMIT 1
+    """
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        cur = conn.cursor()
+        cur.execute(query, params)
+        row = cur.fetchone()
+    if not row:
+        return None
+    return {"id": row[0], "line": row[1], "odds": row[2], "book": row[3], "imported_at": row[4]}
+
+
+def add_market_snapshot(
+    db_path: str | Path,
+    *,
+    snapshot_run_id: str | None,
+    captured_at: str | None,
+    book: str | None,
+    market_type: str,
+    selection: str,
+    line: float | None,
+    odds: int | None,
+    game_id: str | None,
+    source_staging_id: int | None = None,
+) -> int:
+    """Insert a market_snapshot row and return its id.
+
+    `snapshot_run_id` may be a review-run id when persisting manual workbook lines.
+    """
+    init_db(db_path)
+    if captured_at is None:
+        captured_at = _utcnow_iso()
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        cur = conn.execute(
+            "INSERT OR REPLACE INTO market_snapshots (snapshot_run_id, captured_at, book, market_type, selection, line, odds, game_id, source_staging_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (snapshot_run_id, captured_at, book, market_type, selection, line, odds, game_id, source_staging_id, _utcnow_iso()),
+        )
+        conn.commit()
+        return cur.lastrowid
 
 
 def update_bets_with_clv(

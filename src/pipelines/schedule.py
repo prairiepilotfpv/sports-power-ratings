@@ -7,6 +7,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 import re
+import sqlite3
 
 import pandas as pd
 from openpyxl import load_workbook
@@ -22,6 +23,7 @@ from data.repository import (
     load_games,
     load_model_metrics,
 )
+from data import teams as team_repo
 from pipelines.model_params import (
     resolve_active_model_market_params,
     resolve_active_ensemble_weights,
@@ -154,20 +156,32 @@ def _safe_date(value: Any) -> str:
     if value is None:
         return ""
     try:
-        return pd.to_datetime(value).date().isoformat()
+        parsed = pd.to_datetime(value)
+        if isinstance(value, date) and not isinstance(value, datetime):
+            return parsed.date().isoformat()
+        text = str(value)
+        if any(token in text for token in ("T", ":", "Z")):
+            return parsed.isoformat()
+        if parsed.time() != datetime.min.time():
+            return parsed.isoformat()
+        return parsed.date().isoformat()
     except Exception:
         return str(value)
 
 
 def _base_schedule_row(row: pd.Series) -> Dict[str, Any]:
     """Normalize the base schedule fields shared by played and upcoming games."""
+    raw_date = row.get("date")
+    start_time = row.get("start_time")
+    sort_source = start_time if pd.notna(start_time) else raw_date
+    sort_dt = pd.to_datetime(sort_source, errors="coerce")
     neutral_raw = row.get("neutral", False)
     overtime_raw = row.get("overtime", False)
     neutral = False if pd.isna(neutral_raw) else bool(neutral_raw)
     overtime = False if pd.isna(overtime_raw) else bool(overtime_raw)
 
     return {
-        "date": _safe_date(row.get("date")),
+        "date": _safe_date(raw_date),
         "home_team": str(row.get("home_team", "")).strip(),
         "away_team": str(row.get("away_team", "")).strip(),
         "home_score": row.get("home_score"),
@@ -175,6 +189,7 @@ def _base_schedule_row(row: pd.Series) -> Dict[str, Any]:
         "neutral": neutral,
         "overtime": overtime,
         "game_id": row.get("game_id"),
+        "_sort_dt": sort_dt,
     }
 
 
@@ -506,11 +521,18 @@ def _build_schedule_dataframe(
 
     schedule_df = pd.DataFrame(schedule_rows)
     if not schedule_df.empty and "date" in schedule_df.columns:
-        schedule_df = (
-            schedule_df.assign(_dt=pd.to_datetime(schedule_df["date"], errors="coerce"))
-            .sort_values(["_dt", "game_id", "away_team", "home_team"])
-            .drop(columns=["_dt"], errors="ignore")
-        )
+        if "_sort_dt" in schedule_df.columns:
+            schedule_df = schedule_df.sort_values(
+                ["_sort_dt", "game_id", "away_team", "home_team"]
+            ).drop(columns=["_sort_dt"], errors="ignore")
+        else:
+            schedule_df = (
+                schedule_df.assign(
+                    _dt=pd.to_datetime(schedule_df["date"], errors="coerce")
+                )
+                .sort_values(["_dt", "game_id", "away_team", "home_team"])
+                .drop(columns=["_dt"], errors="ignore")
+            )
 
     for col in (
         "home_win_prob_raw",
@@ -874,6 +896,8 @@ def _dashboard_rows_for_today(
             total = projected_total
         rows.append(
             {
+                "_sort_dt": pd.to_datetime(row.get("date"), errors="coerce"),
+                "_sort_game_id": row.get("game_id"),
                 "model": model_name,
                 "model_version": metadata.get("model_version"),
                 "params_source": metadata.get("params_source"),
@@ -1007,6 +1031,9 @@ def _build_bets_dataframe(
     model_name: str,
     as_of_date: date,
     review_run_id: str,
+    db_path: str | Path | None = None,
+    sport: str | None = None,
+    season: str | None = None,
 ) -> pd.DataFrame:
     include_calibrated = (
         "home_win_prob_calibrated" in schedule_df.columns
@@ -1072,8 +1099,47 @@ def _build_bets_dataframe(
     )
     df = df[df["status"] == "scheduled"]
     df = df[df["_date"] == as_of_date]
+    # Ensure deterministic ordering so selection rows list the away team above
+    # the home team (matches schedule sheet presentation). Sort by date,
+    # game_id, and away_team to guarantee away-first ordering per game.
+    sort_cols: list[str] = []
+    if "date" in df.columns:
+        sort_cols.append("date")
+    if "game_id" in df.columns:
+        sort_cols.append("game_id")
+    # final tie-breaker: away_team first
+    if "away_team" in df.columns:
+        sort_cols.append("away_team")
+    if sort_cols:
+        try:
+            df = df.sort_values(by=sort_cols, kind="mergesort")
+        except Exception:
+            # best-effort: ignore sorting failures and continue
+            pass
     if df.empty:
         return pd.DataFrame(columns=bets_columns)
+
+    team_id_cache: dict[tuple[str | None, str | None, str], int | None] = {}
+
+    def _resolve_team_id_for(name: str | None) -> int | None:
+        if not name or db_path is None or not sport or not season:
+            return None
+        key = (sport, season, name)
+        if key in team_id_cache:
+            return team_id_cache[key]
+        team_id = None
+        try:
+            with sqlite3.connect(Path(db_path)) as team_conn:
+                team_id = team_repo.get_team_id(
+                    team_conn,
+                    sport=sport,
+                    season=season,
+                    canonical_name=name,
+                )
+        except Exception:
+            team_id = None
+        team_id_cache[key] = team_id
+        return team_id
 
     rows: list[dict[str, Any]] = []
     for _, row in df.iterrows():
@@ -1192,64 +1258,198 @@ def _build_bets_dataframe(
 
         home_team = row.get("home_team")
         away_team = row.get("away_team")
-        rows.extend(
-            [
+        home_team_id = _resolve_team_id_for(home_team)
+        away_team_id = _resolve_team_id_for(away_team)
+
+        # Lookup latest market snapshot for each market/selection as-of the workbook date
+        # only when a db_path is provided; otherwise leave line/odds blank.
+        br = None
+        staging_rows: list[dict] | None = None
+        if db_path is not None:
+            try:
+                from src.data import betting_repository as br
+                # load staging rows once to allow permissive population of BETS
+                try:
+                    staging_rows = br.list_staging_rows(db_path) or []
+                except Exception:
+                    staging_rows = []
+
+                # Attempt to resolve staging rows to games in-memory (do not persist).
+                # Use resolve_staging_to_game when sport/season available to improve matching accuracy.
+                try:
+                    if sport and season:
+                        for s in staging_rows:
+                            try:
+                                if s.get("game_id"):
+                                    continue
+                                res = br.resolve_staging_to_game(
+                                    db_path,
+                                    sport=sport,
+                                    season=season,
+                                    team_home_raw=s.get("team_home_raw"),
+                                    team_away_raw=s.get("team_away_raw"),
+                                    game_date=s.get("game_date"),
+                                )
+                                if res and res.get("match_confidence") is not None and float(res.get("match_confidence")) >= 0.75:
+                                    s["game_id"] = res.get("game_id")
+                                    s["match_confidence"] = res.get("match_confidence")
+                                    s["match_status"] = res.get("match_status")
+                            except Exception:
+                                continue
+                except Exception:
+                    pass
+            except Exception:
+                br = None
+
+        for mtype, sel, mlabel in [
+            ("ML", away_team, ml_source_label),
+            ("ML", home_team, ml_source_label),
+            ("spread", away_team, spread_source_label),
+            ("spread", home_team, spread_source_label),
+            ("total", "Over", total_source_label),
+            ("total", "Under", total_source_label),
+        ]:
+            snap = None
+            if br is not None:
+                try:
+                    selection_team_id = None
+                    selection_value = None
+                    if mtype in ("ML", "spread"):
+                        if sel == home_team:
+                            selection_team_id = home_team_id
+                        elif sel == away_team:
+                            selection_team_id = away_team_id
+                    else:
+                        selection_value = sel
+                    if sport and season and row.get("game_id"):
+                        if selection_team_id is not None:
+                            snap = br.get_latest_market_line(
+                                db_path,
+                                sport=sport,
+                                season=season,
+                                game_id=str(row.get("game_id")),
+                                market_type=mtype,
+                                selection_team_id=selection_team_id,
+                                as_of=as_of_date.isoformat(),
+                            )
+                        elif selection_value is not None:
+                            snap = br.get_latest_market_line(
+                                db_path,
+                                sport=sport,
+                                season=season,
+                                game_id=str(row.get("game_id")),
+                                market_type=mtype,
+                                selection=selection_value,
+                                as_of=as_of_date.isoformat(),
+                            )
+                except Exception:
+                    snap = None
+
+            # If no committed snapshot, try permissive match from staging rows (parser imports).
+            staged_match = None
+            if snap is None and staging_rows is not None:
+                try:
+                    # determine iso date for matching
+                    gdate = base.get("date")
+                    if hasattr(gdate, "isoformat"):
+                        gdate_str = gdate.isoformat()
+                    else:
+                        gdate_str = str(row.get("date"))[:10]
+
+                    sel_norm = (str(sel) or "").lower()
+                    home_norm = (str(home_team) or "").lower()
+                    away_norm = (str(away_team) or "").lower()
+
+                    for s in staging_rows:
+                        try:
+                            if not s:
+                                continue
+                            if s.get("market_type") != mtype:
+                                continue
+                            # date must match
+                            if not s.get("game_date") or str(s.get("game_date"))[:10] != gdate_str:
+                                continue
+                            # (fallback) prefer staging rows that already resolved to this game_id
+                            # NOTE: do not accept a generic game_id match for ML/spread before trying selection-side matching
+                            # direct selection match for non-total markets (team names etc.)
+                            if mtype != "total" and str(s.get("selection") or "").lower() == sel_norm:
+                                staged_match = s
+                                break
+                            # for team-based markets (ML/spread) prefer matching the correct side (home vs away)
+                            if mtype in ("ML", "spread"):
+                                th = str(s.get("team_home_raw") or "").lower()
+                                ta = str(s.get("team_away_raw") or "").lower()
+                                s_sel = str(s.get("selection") or "").lower()
+
+                                def _matches_team(team_norm: str) -> bool:
+                                    if not team_norm:
+                                        return False
+                                    if s_sel and (
+                                        s_sel == team_norm
+                                        or s_sel in team_norm
+                                        or team_norm in s_sel
+                                    ):
+                                        return True
+                                    return team_norm in th or team_norm in ta
+
+                                # If the schedule selection is the home team, prefer staging rows that reference the home team
+                                if sel_norm == home_norm and _matches_team(home_norm):
+                                    staged_match = s
+                                    break
+                                # If the schedule selection is the away team, prefer staging rows that reference the away team
+                                if sel_norm == away_norm and _matches_team(away_norm):
+                                    staged_match = s
+                                    break
+                                # fallback: exact selection match
+                                if s_sel == sel_norm:
+                                    staged_match = s
+                                    break
+                            # totals: ensure the staging row references the same pairing (home+away)
+                            if mtype == "total":
+                                th = str(s.get("team_home_raw") or "").lower()
+                                ta = str(s.get("team_away_raw") or "").lower()
+                                # require both teams to appear in the staging row (order-insensitive)
+                                if ((home_norm in th or home_norm in ta) and (away_norm in th or away_norm in ta)):
+                                    staged_match = s
+                                    break
+
+                            # fallback: if the staging row is already resolved to this game, accept for totals or unspecified selections
+                            s_sel = str(s.get("selection") or "").lower()
+                            if s.get("game_id") and str(s.get("game_id")) == str(row.get("game_id")):
+                                if mtype == "total" or s_sel in ("", "over", "under"):
+                                    staged_match = s
+                                    break
+                        except Exception:
+                            continue
+                except Exception:
+                    staged_match = None
+
+            rows.append(
                 {
                     **base,
                     **forecast_blanks,
-                    **ml_fields,
-                    "market_type": "ML",
-                    "selection": home_team,
-                    "model": ml_source_label,
-                    "market_forecast_source": ml_source_label,
-                },
-                {
-                    **base,
-                    **forecast_blanks,
-                    **ml_fields,
-                    "market_type": "ML",
-                    "selection": away_team,
-                    "model": ml_source_label,
-                    "market_forecast_source": ml_source_label,
-                },
-                {
-                    **base,
-                    **forecast_blanks,
-                    **spread_fields,
-                    "market_type": "spread",
-                    "selection": home_team,
-                    "model": spread_source_label,
-                    "market_forecast_source": spread_source_label,
-                },
-                {
-                    **base,
-                    **forecast_blanks,
-                    **spread_fields,
-                    "market_type": "spread",
-                    "selection": away_team,
-                    "model": spread_source_label,
-                    "market_forecast_source": spread_source_label,
-                },
-                {
-                    **base,
-                    **forecast_blanks,
-                    **total_fields,
-                    "market_type": "total",
-                    "selection": "Over",
-                    "model": total_source_label,
-                    "market_forecast_source": total_source_label,
-                },
-                {
-                    **base,
-                    **forecast_blanks,
-                    **total_fields,
-                    "market_type": "total",
-                    "selection": "Under",
-                    "model": total_source_label,
-                    "market_forecast_source": total_source_label,
-                },
-            ]
-        )
+                    **(ml_fields if mtype == "ML" else (spread_fields if mtype == "spread" else total_fields)),
+                    "market_type": mtype,
+                    "selection": sel,
+                    "model": mlabel,
+                    "market_forecast_source": mlabel,
+                    "line": (
+                        snap.get("line")
+                        if snap and snap.get("line") is not None
+                        else (staged_match.get("line") if staged_match and staged_match.get("line") is not None else "")
+                    ),
+                    "odds": (
+                        int(snap.get("odds"))
+                        if snap and snap.get("odds") is not None
+                        else (int(staged_match.get("odds")) if staged_match and staged_match.get("odds") is not None else "")
+                    ),
+                    "source_market_snapshot_id": (
+                        snap.get("id")
+                        if snap and snap.get("id") is not None
+                        else (staged_match.get("id") if staged_match and staged_match.get("id") is not None else "")
+                    ),
+                }
+            )
 
     return pd.DataFrame(rows, columns=bets_columns)
 
@@ -1552,12 +1752,29 @@ def build_schedule_excel_report(
         dashboard_df = pd.DataFrame(dashboard_rows)
         if not dashboard_df.empty:
             model_order = {name: idx for idx, name in enumerate(models)}
+            sort_dt = (
+                dashboard_df["_sort_dt"]
+                if "_sort_dt" in dashboard_df.columns
+                else pd.to_datetime(dashboard_df["date"], errors="coerce")
+            )
+            sort_game_id = (
+                dashboard_df["_sort_game_id"]
+                if "_sort_game_id" in dashboard_df.columns
+                else pd.NA
+            )
             dashboard_df = dashboard_df.assign(
                 _model_order=dashboard_df["model"]
                 .map(model_order)
-                .fillna(len(model_order))
-            ).sort_values(["date", "game", "_model_order", "model"])
-            dashboard_df = dashboard_df.drop(columns=["_model_order"], errors="ignore")
+                .fillna(len(model_order)),
+                _sort_dt=sort_dt,
+                _sort_game_id=sort_game_id,
+            ).sort_values(
+                ["_sort_dt", "_sort_game_id", "game", "_model_order", "model"]
+            )
+            dashboard_df = dashboard_df.drop(
+                columns=["_model_order", "_sort_dt", "_sort_game_id"],
+                errors="ignore",
+            )
         dashboard_df = dashboard_df.reindex(columns=DASHBOARD_COLUMNS)
         dashboard_df.to_excel(writer, sheet_name="dashboard", index=False)
 
@@ -1908,6 +2125,9 @@ def build_schedule_excel_report(
             model_name=bets_model_name,
             as_of_date=resolved_as_of_date,
             review_run_id=review_run_id,
+            db_path=db_path,
+            sport=sport,
+            season=season,
         )
         bets_df.to_excel(writer, sheet_name="BETS", index=False)
 

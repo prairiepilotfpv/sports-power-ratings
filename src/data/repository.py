@@ -6,12 +6,13 @@ import json
 import math
 import sqlite3
 from contextlib import closing
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable, List
 
 from config import DEFAULT_WIN_PROB_K
 from ingest.schema import GameResult
+from . import teams as team_repo
 from .migrations import apply_migrations
 
 
@@ -20,6 +21,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS games (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     date TEXT NOT NULL,
+    start_time TEXT,
     home_team TEXT NOT NULL,
     away_team TEXT NOT NULL,
     home_score INTEGER,
@@ -34,6 +36,25 @@ CREATE TABLE IF NOT EXISTS games (
     conference TEXT,
     notes TEXT,
     UNIQUE(game_id, sport, season)
+);
+
+CREATE TABLE IF NOT EXISTS teams (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    canonical_name TEXT NOT NULL,
+    UNIQUE(sport, season, canonical_name)
+);
+
+CREATE TABLE IF NOT EXISTS team_aliases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    team_id INTEGER NOT NULL,
+    alias_text TEXT NOT NULL,
+    source TEXT NOT NULL,
+    FOREIGN KEY(team_id) REFERENCES teams(id),
+    UNIQUE(sport, season, alias_text)
 );
 
 CREATE TABLE IF NOT EXISTS model_metrics (
@@ -140,6 +161,43 @@ CREATE TABLE IF NOT EXISTS ensemble_market_active_weights (
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(sport, season, market, ensemble_id)
 );
+
+CREATE TABLE IF NOT EXISTS market_lines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    game_id TEXT NOT NULL,
+    game_date TEXT NOT NULL,
+    market_type TEXT NOT NULL,
+    selection_team_id INTEGER,
+    selection TEXT,
+    line REAL,
+    odds INTEGER NOT NULL,
+    book TEXT,
+    imported_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_market_lines_key
+    ON market_lines(
+        sport,
+        season,
+        game_id,
+        market_type,
+        COALESCE(selection_team_id, -1),
+        COALESCE(selection, ''),
+        COALESCE(line, -9999),
+        COALESCE(book, '')
+    );
+
+CREATE TABLE IF NOT EXISTS market_line_import_errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    row_data TEXT NOT NULL,
+    failure_reason TEXT NOT NULL,
+    failure_details TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -159,6 +217,7 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
     rows = [
         (
             g.date.isoformat(),
+            g.start_time.isoformat() if g.start_time else None,
             g.home_team,
             g.away_team,
             g.home_score,
@@ -177,10 +236,12 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
     ]
 
     with closing(sqlite3.connect(Path(db_path))) as conn:
+        team_repo.ensure_teams_for_games(conn, games)
         conn.executemany(
             """
             INSERT OR REPLACE INTO games (
                 date,
+                start_time,
                 home_team,
                 away_team,
                 home_score,
@@ -194,7 +255,7 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
                 division,
                 conference,
                 notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -232,6 +293,7 @@ def load_games(
 
     query = f"""
         SELECT date,
+               start_time,
                home_team,
                away_team,
                home_score,
@@ -247,7 +309,7 @@ def load_games(
                notes
         FROM games
         {where_clause}
-        ORDER BY date, away_team, home_team
+        ORDER BY COALESCE(start_time, date), away_team, home_team
     """
 
     with closing(sqlite3.connect(Path(db_path))) as conn:
@@ -256,19 +318,20 @@ def load_games(
     return [
         GameResult(
             date=date.fromisoformat(row[0]),
-            home_team=row[1],
-            away_team=row[2],
-            home_score=row[3],
-            away_score=row[4],
-            neutral=bool(row[5]),
-            overtime=bool(row[6]),
-            decision_type=row[7],
-            game_id=row[8],
-            sport=row[9],
-            season=row[10],
-            division=row[11],
-            conference=row[12],
-            notes=row[13],
+            start_time=datetime.fromisoformat(row[1]) if row[1] else None,
+            home_team=row[2],
+            away_team=row[3],
+            home_score=row[4],
+            away_score=row[5],
+            neutral=bool(row[6]),
+            overtime=bool(row[7]),
+            decision_type=row[8],
+            game_id=row[9],
+            sport=row[10],
+            season=row[11],
+            division=row[12],
+            conference=row[13],
+            notes=row[14],
         )
         for row in rows
     ]

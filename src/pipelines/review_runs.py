@@ -39,9 +39,9 @@ def _load_ocr_raw_rows(db_path: str | Path, review_run_id: str) -> list[dict]:
         conn.row_factory = sqlite3.Row
         q = """
             SELECT DISTINCT
-                ms.id AS source_market_snapshot_id,
+                COALESCE(ml.id, ms.id) AS source_market_snapshot_id,
                 ms.snapshot_run_id AS snapshot_run_id,
-                COALESCE(st.game_id, ms.game_id) AS game_id,
+                COALESCE(ml.game_id, ms.game_id) AS game_id,
                 ms.source_staging_id AS source_staging_id,
                 st.source AS staging_source,
                 st.image_path AS image_path,
@@ -52,17 +52,18 @@ def _load_ocr_raw_rows(db_path: str | Path, review_run_id: str) -> list[dict]:
                 st.match_status AS match_status,
                 st.match_confidence AS match_confidence,
                 st.hold_reason AS hold_reason,
-                COALESCE(st.captured_at, ms.captured_at) AS captured_at,
-                COALESCE(st.book, ms.book) AS book,
-                COALESCE(st.market_type, ms.market_type) AS market_type,
-                COALESCE(st.selection, ms.selection) AS selection,
-                COALESCE(st.line, ms.line) AS line,
-                COALESCE(st.odds, ms.odds) AS odds
+                COALESCE(ml.imported_at, ms.captured_at) AS captured_at,
+                COALESCE(ml.book, ms.book) AS book,
+                COALESCE(ml.market_type, ms.market_type) AS market_type,
+                COALESCE(ml.selection, ms.selection) AS selection,
+                COALESCE(ml.line, ms.line) AS line,
+                COALESCE(ml.odds, ms.odds) AS odds
             FROM opportunities o
-            JOIN market_snapshots ms ON o.source_market_snapshot_id = ms.id
+            LEFT JOIN market_lines ml ON o.source_market_snapshot_id = ml.id
+            LEFT JOIN market_snapshots ms ON o.source_market_snapshot_id = ms.id
             LEFT JOIN market_snapshot_staging st ON ms.source_staging_id = st.id
             WHERE o.review_run_id = ?
-            ORDER BY COALESCE(st.captured_at, ms.captured_at), ms.market_type, ms.selection
+            ORDER BY COALESCE(ml.imported_at, ms.captured_at), COALESCE(ml.market_type, ms.market_type), COALESCE(ml.selection, ms.selection)
         """
         rows = conn.execute(q, (review_run_id,)).fetchall()
         return [dict(r) for r in rows]

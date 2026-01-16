@@ -41,11 +41,14 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     market_csv.add_argument("--sport", required=True)
     market_csv.add_argument("--season", required=True)
     market_csv.add_argument("--csv", dest="csv_path", required=True, help="CSV of market lines (selection, odds, line, teams)")
-    market_csv.add_argument("--snapshot-run-id", required=True, help="Snapshot run id to attach to imported rows")
     market_csv.add_argument("--db", help="Optional DB path override")
     market_csv.add_argument("--default-book", dest="default_book", help="Fallback book name when the CSV omits it")
-    market_csv.add_argument("--commit-matched", dest="commit_matched", action="store_true", default=True, help="Commit matched rows into market_snapshots (default)")
-    market_csv.add_argument("--no-commit-matched", dest="commit_matched", action="store_false", help="Leave matched rows in staging for review")
+    market_csv.add_argument(
+        "--date-filter",
+        dest="date_filter",
+        action="append",
+        help="Optional game date (YYYY-MM-DD) to limit imports; can be repeated.",
+    )
 
     clv_csv = sub.add_parser("clv-csv", help="Import closing lines/odds from a CSV and backfill bets")
     clv_csv.add_argument("--sport", required=True)
@@ -91,6 +94,16 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
         "daily-workbook",
         help="Build a unified daily workbook (projections, snapshots, OCR, EV, BETS).",
     )
+    action_import = sub.add_parser(
+        "action-import",
+        help="Import parser-generated CSV of market rows into snapshots/staging",
+    )
+    action_import.add_argument("--csv", required=True, help="CSV produced by action parser")
+    action_import.add_argument("--sport", required=True)
+    action_import.add_argument("--season", required=True)
+    action_import.add_argument("--db", help="Optional DB path override")
+    action_import.add_argument("--snapshot-run-id", help="Optional snapshot_run_id to attach to inserted snapshots")
+    action_import.add_argument("--book", help="Optional book name to attach to inserted snapshots")
     daily_workbook.add_argument("--sport", required=True)
     daily_workbook.add_argument("--season", required=True)
     daily_workbook.add_argument("--date", required=True, help="Target date (YYYY-MM-DD)")

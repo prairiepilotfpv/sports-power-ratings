@@ -100,6 +100,8 @@ def _add_games_metadata_columns(conn: sqlite3.Connection) -> None:
     cols = [row[1] for row in conn.execute("PRAGMA table_info(games)")]
     if not cols:
         return
+    if "start_time" not in cols:
+        conn.execute("ALTER TABLE games ADD COLUMN start_time TEXT")
     if "division" not in cols:
         conn.execute("ALTER TABLE games ADD COLUMN division TEXT")
     if "conference" not in cols:
@@ -154,6 +156,14 @@ def _add_model_metrics_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE model_metrics ADD COLUMN tuned_params_metric TEXT")
     if "tuned_params_updated_at" not in cols:
         conn.execute("ALTER TABLE model_metrics ADD COLUMN tuned_params_updated_at TEXT")
+
+
+def _add_games_start_time(conn: sqlite3.Connection) -> None:
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(games)")]
+    if not cols:
+        return
+    if "start_time" not in cols:
+        conn.execute("ALTER TABLE games ADD COLUMN start_time TEXT")
 
 
 def _add_market_tuning_tables(conn: sqlite3.Connection) -> None:
@@ -243,6 +253,80 @@ def _add_market_tuning_tables(conn: sqlite3.Connection) -> None:
     )
 
 
+def _add_team_identity_and_market_lines(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS teams (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sport TEXT NOT NULL,
+            season TEXT NOT NULL,
+            canonical_name TEXT NOT NULL,
+            UNIQUE(sport, season, canonical_name)
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS team_aliases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sport TEXT NOT NULL,
+            season TEXT NOT NULL,
+            team_id INTEGER NOT NULL,
+            alias_text TEXT NOT NULL,
+            source TEXT NOT NULL,
+            FOREIGN KEY(team_id) REFERENCES teams(id),
+            UNIQUE(sport, season, alias_text)
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS market_lines (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sport TEXT NOT NULL,
+            season TEXT NOT NULL,
+            game_id TEXT NOT NULL,
+            game_date TEXT NOT NULL,
+            market_type TEXT NOT NULL,
+            selection_team_id INTEGER,
+            selection TEXT,
+            line REAL,
+            odds INTEGER NOT NULL,
+            book TEXT,
+            imported_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_market_lines_key
+        ON market_lines(
+            sport,
+            season,
+            game_id,
+            market_type,
+            COALESCE(selection_team_id, -1),
+            COALESCE(selection, ''),
+            COALESCE(line, -9999),
+            COALESCE(book, '')
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS market_line_import_errors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sport TEXT NOT NULL,
+            season TEXT NOT NULL,
+            row_data TEXT NOT NULL,
+            failure_reason TEXT NOT NULL,
+            failure_details TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        """
+    )
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "add_hold_reason_to_staging", _add_hold_reason_to_staging),
     Migration(2, "add_clv_snapshots_table", _add_clv_snapshots_table),
@@ -250,6 +334,8 @@ MIGRATIONS: list[Migration] = [
     Migration(4, "add_games_metadata_columns", _add_games_metadata_columns),
     Migration(5, "add_model_metrics_columns", _add_model_metrics_columns),
     Migration(6, "add_market_tuning_tables", _add_market_tuning_tables),
+    Migration(7, "add_games_start_time", _add_games_start_time),
+    Migration(8, "add_team_identity_and_market_lines", _add_team_identity_and_market_lines),
 ]
 
 LATEST_SCHEMA_VERSION = max((m.version for m in MIGRATIONS), default=0)

@@ -8,6 +8,7 @@ import pandas as pd
 from src.pipelines.daily_workbook import build_daily_workbook
 from src.data import betting_repository as br
 from src.data import repository as repo
+from src.data import teams as team_repo
 
 
 def test_daily_workbook_creates_sheets_and_rows():
@@ -46,7 +47,7 @@ def test_daily_workbook_creates_sheets_and_rows():
             created_at="2025-11-10T08:00:00Z",
         )
 
-        snapshot_id = None
+        market_line_id = None
         staging_id = br.add_staging_row(
             db_path,
             source="screenshot",
@@ -67,26 +68,34 @@ def test_daily_workbook_creates_sheets_and_rows():
         )
 
         with sqlite3.connect(db_path) as conn:
+            home_team_id = team_repo.get_team_id(
+                conn,
+                sport="nba",
+                season="2025-26",
+                canonical_name="Los Angeles Lakers",
+            )
             cur = conn.execute(
                 """
-                INSERT INTO market_snapshots (
-                    snapshot_run_id, captured_at, book, market_type, selection, line,
-                    odds, game_id, source_staging_id, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                INSERT INTO market_lines (
+                    sport, season, game_id, game_date, market_type,
+                    selection_team_id, selection, line, odds, book, imported_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    "snap1",
-                    "2025-11-10T09:00:00Z",
-                    "dn",
+                    "nba",
+                    "2025-26",
+                    "2025-11-10-lakers-clippers",
+                    "2025-11-10",
                     "ML",
+                    home_team_id,
                     "Los Angeles Lakers",
                     0.0,
                     -110,
-                    "2025-11-10-lakers-clippers",
-                    staging_id,
+                    "dn",
+                    "2025-11-10T09:00:00Z",
                 ),
             )
-            snapshot_id = cur.lastrowid
+            market_line_id = cur.lastrowid
             conn.execute(
                 """
                 INSERT INTO opportunities (
@@ -105,7 +114,7 @@ def test_daily_workbook_creates_sheets_and_rows():
                     0.58,
                     0.06,
                     0.09,
-                    snapshot_id,
+                    market_line_id,
                 ),
             )
             conn.commit()
@@ -134,11 +143,12 @@ def test_daily_workbook_creates_sheets_and_rows():
         assert "game_id" in bets.columns
         assert "source_market_snapshot_id" in bets.columns
         assert "source_market_snapshot_id" in market.columns
+        assert int(ocr.loc[0, "source_market_snapshot_id"]) == market_line_id
         assert ev.loc[0, "game_id"] == "2025-11-10-lakers-clippers"
         assert bets.loc[0, "game_id"] == "2025-11-10-lakers-clippers"
-        assert int(ev.loc[0, "source_market_snapshot_id"]) == snapshot_id
-        assert int(bets.loc[0, "source_market_snapshot_id"]) == snapshot_id
-        assert int(market.loc[0, "source_market_snapshot_id"]) == snapshot_id
+        assert int(ev.loc[0, "source_market_snapshot_id"]) == market_line_id
+        assert int(bets.loc[0, "source_market_snapshot_id"]) == market_line_id
+        assert int(market.loc[0, "source_market_snapshot_id"]) == market_line_id
     finally:
         import shutil, errno
 

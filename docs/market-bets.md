@@ -3,8 +3,8 @@
 This lightweight CLI turns reviewed staging rows into `bets` entries with stake presets and duplicate safeguards. Use it after resolving matches via `market-review`.
 
 ## Workflow
-1. Run OCR or CSV import so rows land in `market_snapshot_staging`.
-2. Resolve matches with `market-review` (accept/reject) so rows are `matched` and have a `game_id`.
+1. Run OCR (`market-ocr`) for staging rows or the new CSV importer (`betting market-csv`) that writes resolved rows straight into `market_lines` (unmatched rows are logged in `market_line_import_errors` with failure reasons).
+2. Resolve matches with `market-review` when you are working from OCR staging rows (accept/reject so `match_status=matched` and `game_id` is populated). CSV-imported lines already map to a game and do not require staging review.
 3. Pivot into bets:
    ```bash
    python -m src.cli.pipeline market-bets --sport nba --season 2025-26 --stake-preset unit --unit-stake 1.0

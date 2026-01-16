@@ -44,6 +44,35 @@ python -m src.cli.pipeline import --sport nba --season 2025-26 --input data/raw/
 - Input resolution: if path does not exist, the CLI also checks `data/raw/<value>`.
 - Output: `data/db/<sport>/<season>.db` unless `--db` overrides it.
 
+## action-paste — convert Action paste blocks into CSV or Excel-paste text
+
+When you have the middle section copied from Action (matchup table), use the deterministic parser to produce either a CSV compatible with the staging workflow or the exact 6-lines-per-game tab-separated block you paste into Excel columns H:I.
+
+CSV (writes one row per required paste line — 6 rows per game):
+
+```bash
+python -m src.cli.action_paste --in markettest.txt --out outputs/paste_parsed/mymarkets.csv
+```
+
+Excel-paste block (exactly 6 lines per game, each `line<TAB>odds`):
+
+```bash
+python tools/action_to_bets_paste.py --in markettest.txt --out bets_paste.txt
+# or write to stdout for quick copy:
+python tools/action_to_bets_paste.py --in markettest.txt
+```
+
+Optional: also persist opens (open spread/total) to JSON for later review:
+
+```bash
+python -m src.cli.action_paste --in markettest.txt --out outputs/paste_parsed/mymarkets.csv --include-opens-json opens.json
+```
+
+Notes:
+- The parser expects header lines of the form `<AWAY> at <HOME> Odds` and the specific positional token layout described in `docs/action_paste.md`.
+- The CSV produced matches the staging columns so you can paste or import into the existing workflows.
+
+
 ## rank — build power ratings and store calibration
 
 ```bash
@@ -115,11 +144,57 @@ python -m src.cli.pipeline betting log-bets --workbook outputs/review/nba-2025-2
 # Settle bets up to completed games
 python -m src.cli.pipeline betting settle-bets --sport nba --season 2025-26 --db data/db/nba/2025-26.db
 
+**BETS Workflow (lines in workbook → DB)**
+
+- **Generate schedule/workbook with `BETS` sheet:** the schedule/daily-workbook/review workbooks include a `BETS` sheet. Example:
+
+```bash
+# Generate the review workbook (schedule export with BETS). `--model` is optional — omit it to include default projections.
+python -m src.cli.pipeline schedule --sport nba --season 2025-26 --output outputs/review/nba-2025-26-review.xlsx --db data/db/nba/2025-26.db
+```
+
+- **Populate missing `game_id` (optional):** if you have pasted market rows (OCR/paste) you can attempt to fill `game_id` from staging via the helper in `src/utils/review_helpers.py`:
+
+```bash
+python -m src.utils.review_helpers --workbook outputs/review/nba-2025-26-review.xlsx --db data/db/nba/2025-26.db
+```
+
+- **Edit the `BETS` sheet in Excel:** fill rows you want to log. Recognized columns:
+  - **Required for logging:** `game_id`, `market_type`, `selection`, `stake` (non-empty)
+  - **Lines/odds:** `line` and either `odds` or `price` (either accepted)
+  - **Optional:** `book`, `opportunity_id`, `notes`
+
+- **Dry-run parse the workbook (validate only):**
+
+```bash
+python -m src.cli.pipeline betting log-bets --workbook outputs/review/nba-2025-26-review.xlsx --db data/db/nba/2025-26.db --dry-run
+```
+
+- **Persist bets and workbook lines to DB (writeback):**
+
+```bash
+python -m src.cli.pipeline betting log-bets --workbook outputs/review/nba-2025-26-review.xlsx --db data/db/nba/2025-26.db --writeback
+```
+
+Notes on behavior:
+- When generating the `BETS` sheet the pipeline will populate `line`, `odds`, and `source_market_snapshot_id` when a `market_snapshots` row exists for the game/market/selection as-of the workbook `as_of_date`. If none exist those cells are blank.
+- When you run `log-bets --writeback` and a `BETS` row contains `line`/`odds` that differ from the latest `market_snapshots`, the system will insert a new `market_snapshots` row with `snapshot_run_id = review_run_id` and `book = 'manual'` (this is skipped for `--dry-run`). The `bets` row is then upserted as before and `bet_id`/`logged_at` will be written back into the workbook.
+
+Quick DB checks (sqlite):
+
+```bash
+sqlite3 data/db/nba/2025-26.db "SELECT id, snapshot_run_id, book, market_type, selection, line, odds, game_id, captured_at FROM market_snapshots ORDER BY datetime(captured_at) DESC LIMIT 10;"
+
+sqlite3 data/db/nba/2025-26.db "SELECT id, review_run_id, game_id, market_type, selection, line, odds, stake, logged_at FROM bets ORDER BY datetime(logged_at) DESC LIMIT 10;"
+```
+
+If you want, I can also add a short smoke-test script that automates: generate workbook → edit a single BETS row → run `log-bets --writeback` → assert DB rows exist. Ask and I will add it.
+
 # Import closing lines/odds and backfill CLV
 python -m src.cli.pipeline betting clv-csv --sport nba --season 2025-26 --csv data/raw/nba_closing_lines.csv --default-market-type ML
 
 # Import market lines from CSV (commit matched rows automatically)
-python -m src.cli.pipeline betting market-csv --sport nba --season 2025-26 --csv data/raw/nba_markets.csv --snapshot-run-id run_20251201 --default-book dn
+python -m src.cli.pipeline betting market-csv --sport nba --season 2025-26 --csv data/raw/nba_markets.csv --default-book dn
 
 # Generate aggregated betting reports (daily/weekly/monthly)
 python -m src.cli.pipeline betting report --sport nba --season 2025-26 --type weekly --start 2025-11-01 --end 2026-01-01 --output outputs/reports/nba-weekly.xlsx
@@ -133,10 +208,8 @@ python -m src.cli.pipeline betting validate --sport nba --season 2025-26 --model
 
 # End-to-end OCR ingest to report
 python -m src.cli.pipeline betting market-ocr --sport nba --season 2025-26 --images screenshots/ --book DK --captured-at 2025-12-01T14:30:00Z --json-output tmp/lines.json
-# Review/accept matches (optional when using DB mode)
-python -m src.cli.pipeline market-review --sport nba --season 2025-26 --status all --limit 20
-# Commit staging to market_snapshots (DB mode only)
-python -m src.cli.pipeline betting market-commit --sport nba --season 2025-26 --snapshot-run-id run_20251201
+> ⚠️ `market-review` and `market-commit` have been retired and now raise an error directing you to `betting market-csv` + `market_lines`. Rely on `market-csv` for ingestion and skip these commands.
+
 # Generate weekly report
 python -m src.cli.pipeline betting report --sport nba --season 2025-26 --type weekly --start 2025-12-01 --end 2025-12-31 --format xlsx --output outputs/reports/bets-nba-dec.xlsx
 ```
@@ -147,7 +220,7 @@ Notes:
 - `--format` overrides output type; otherwise the CLI infers format from the `--output` extension.
 - Betting report workbooks include three sheets: the main period sheet (`daily`, `weekly`, or `monthly`), an `edge_buckets` summary, and a `clv` summary.
 - `clv-csv` resolves games via `game_id` or `team_home`/`team_away` + `game_date`; invalid rows are skipped and counted. See [docs/market-clv.md](docs/market-clv.md) for the expected CSV schema and flags.
-- `market-csv` ingests market lines into `market_snapshots`/`market_snapshot_staging` using `snapshot_run_id`, optionally leaving matched rows staged with `--no-commit-matched`.
+- `market-csv` resolves team/date aliases, writes validated rows to `market_lines`, and reports unmatched rows with failure reasons/examples. Use `--date-filter` to scope the import to specific dates.
 - `review-generate` requires `--snapshot-run-id`; optionally add `--snapshot-date` to constrain snapshots by captured date.
 - `review-generate --formula-workbook` (alias `--formula`) writes formulas in the `EV` and `BETS` sheets for `implied_prob`, `edge`, and `ev`.
   - Formula-driven columns: `implied_prob`, `edge`, `ev`.
@@ -188,23 +261,9 @@ Notes: `--json-output` switches the command to JSON-only mode (no DB writes). Wi
 python -m src.cli.pipeline import --sport nba --season 2025-26 --input data/raw/nba.csv
 ```
 
-## market-review — review staging rows
+## market-review — retired
 
-List or resolve OCR/CSV staging rows stored in `market_snapshot_staging`.
-
-```bash
-# List pending rows (default: needs_review only)
-python -m src.cli.pipeline market-review --sport nba --season 2025-26
-
-# Show all statuses and limit to 20 rows
-python -m src.cli.pipeline market-review --sport nba --season 2025-26 --status all --limit 20
-
-# Accept or reject a specific staging row
-python -m src.cli.pipeline market-review --sport nba --season 2025-26 --accept 12 --game-id 2024-12-01-lal-lac --match-confidence 0.95
-python -m src.cli.pipeline market-review --sport nba --season 2025-26 --reject 12
-```
-
-Notes: `--status` accepts comma-separated values (e.g., `matched,needs_review`); `--game-id` is required when accepting.
+`market-review` no longer supports manual staging review. The command now raises a `ValueError` telling you to use `betting market-csv` and `market_lines` for ingestion/diagnostics. The staging table still exists for compatibility, but every modern workflow should rely on the CSV import path instead.
 
 ## market-bets — pivot reviewed staging rows into bets
 
@@ -247,20 +306,19 @@ CSV expectations (aliases allowed): `market_type`, `selection`, `close_odds` (or
 
 ## market-csv - ingest market lines from CSV
 
-Import market lines into snapshots and staging, resolving games by `game_id` when supplied or by `team_home`/`team_away` + `game_date` when not.
+Import market lines into the sport/season database. Each row must include `team_home{_raw}`, `team_away{_raw}`, `market_type`, `selection`, `line`, `odds`, and `game_date`. The command resolves aliases/dates, upserts valid rows into the new `market_lines` table, and reports unmatched rows grouped by failure reason while storing their serialized payloads in `market_line_import_errors`.
 
 ```bash
 python -m src.cli.pipeline betting market-csv --sport nba --season 2025-26 \
-  --csv data/raw/nba_markets.csv --snapshot-run-id run_20251201 --default-book dn
+  --csv data/raw/nba_markets.csv --default-book dn
 ```
 
 Flags:
 - `--csv`: path to the market CSV. Required.
-- `--snapshot-run-id`: snapshot run id to attach to imported rows. Required.
+- `--date-filter`: limit the import to this ISO date (YYYY-MM-DD); repeatable for multiple dates.
 - `--default-book`: fallback book name when the CSV omits it.
-- `--no-commit-matched`: keep matched rows in staging for manual review instead of committing to `market_snapshots`.
 
-CSV expectations: `market_type`, `selection`, `line`, `odds`, `team_home` (or `home_team`), `team_away` (or `away_team`), `game_date` (YYYY-MM-DD). Optional: `game_id`, `book`, `source`, `captured_at`. Invalid rows are rejected and counted.
+CSV expectations: `market_type` (ML/spread/total), `selection`, `line` (nullable for ML), `odds`, `team_home{_raw}`, `team_away{_raw}`, `game_date`. Optional: `game_id`, `book`. Invalid or unmatched rows are counted, diagnosed, and stored for inspection.
 
 ## backtest — evaluate models on historical games
 

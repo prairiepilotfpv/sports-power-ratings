@@ -132,6 +132,52 @@ def log_bets(
             clv_line = clv.get("close_line") if clv else None
             clv_odds = clv.get("close_odds") if clv else None
 
+            # If workbook provided a line/odds and they differ from latest market snapshot,
+            # persist them as a new market_snapshot with snapshot_run_id = review_run_id.
+            try:
+                provided_line = None if pd.isna(line) or line == "" else float(line)
+            except Exception:
+                provided_line = None
+            try:
+                provided_odds = None if odds is None or odds == "" or pd.isna(odds) else int(odds)
+            except Exception:
+                provided_odds = None
+
+            try:
+                latest_snap = br.get_latest_market_snapshot(resolved_db, game_id=game_id or "", market_type=market_type or "", selection=selection or "")
+            except Exception:
+                latest_snap = None
+
+            if not dry_run and (provided_line is not None or provided_odds is not None):
+                different = True
+                if latest_snap is not None:
+                    # Compare numeric values; if both equal, treat as same
+                    try:
+                        snap_line = latest_snap.get("line")
+                        snap_odds = latest_snap.get("odds")
+                        if (snap_line is None and provided_line is None) or (snap_line is not None and provided_line is not None and float(snap_line) == float(provided_line)):
+                            if (snap_odds is None and provided_odds is None) or (snap_odds is not None and provided_odds is not None and int(snap_odds) == int(provided_odds)):
+                                different = False
+                    except Exception:
+                        different = True
+                if different:
+                    try:
+                        br.add_market_snapshot(
+                            resolved_db,
+                            snapshot_run_id=review_run_id,
+                            captured_at=logged_at,
+                            book="manual",
+                            market_type=market_type,
+                            selection=selection,
+                            line=provided_line,
+                            odds=provided_odds,
+                            game_id=game_id,
+                            source_staging_id=None,
+                        )
+                    except Exception:
+                        # best-effort: do not fail logging if snapshot insert fails
+                        pass
+
             # Upsert (INSERT OR REPLACE) to maintain idempotency on unique key
             cur.execute(
                 """

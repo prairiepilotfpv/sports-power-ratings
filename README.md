@@ -628,6 +628,60 @@ See [TESTING.md](TESTING.md) for more detail. `make test` is also available as a
 - No completed games: rankings/projections require finished games; ingest more results or allow future games only for schedule exports.
 - Overwriting outputs: pass `--overwrite` for rankings; for schedule/report/backtest/tune, specify a new `--output`/`--output-dir` or let the CLI append numeric suffixes when available.
 
+## Betting and Market Ingestion Workflow
+
+If you work with market data (lines/odds) and bets, this repo exposes a lightweight, sport-agnostic workflow built on top of the schedule/RANK pipeline.
+
+1. **Import a CSV** (every row requires `market_type`, `selection`, `line`, `odds`, `team_home|team_home_raw`, `team_away|team_away_raw`, and `game_date`). The `betting market-csv` command resolves dates and aliases in a sport/season-agnostic way, upserts validated rows into the new `market_lines` table, and records any failures in `market_line_import_errors` with the failure reason and details. The CLI summarizes rows processed, inserted, unmatched reason counts, and prints up to 10 examples for quick triage. Use `--date-filter` to focus on a specific day when needed.
+   ```bash
+   python -m src.cli.pipeline betting market-csv --sport nba --season 2025-26 --csv data/raw/nba_markets.csv --default-book dn
+   ```
+   - If a `game_id` is provided in the CSV the resolver is skipped and the row is upserted directly into `market_lines`.
+   - Unmatched rows are still reported and stored in `market_line_import_errors`; inspect the CLI output for `management` counts and the sample rows it prints.
+
+2. **Retired review/commit steps.** `market-review` and `market-commit` now raise an immediate error pointing to `betting market-csv` and the new `market_lines` pipeline, so you don't need to run staging review before generating workbooks.
+
+Repeat as needed: ingest new CSVs and trust the rest of the flow to pick up the latest `market_lines` rows automatically.
+
+## Market Line CSV Import Guide
+
+The modern workflow now avoids the old `market-review`/`market-commit` loop: `betting market-csv` resolves dates/aliases, writes validated rows straight into `market_lines`, and tracks any failures in `market_line_import_errors`. The schedule/daily workbook pipelines read the latest odds from `market_lines` automatically, so no manual staging review is required. If you still invoke `market-review` or `market-commit`, the CLI will explain that those commands have been retired.
+
+1. **Prepare the CSV** with at least these columns:
+   - `team_home_raw`, `team_away_raw`, `game_date` (any reasonable ISO/MM/DD variant)
+   - `market_type` (`ML`, `spread`, or `total`)
+   - `selection` (team name for ML/spread, Over/Under/O/U for totals)
+   - `line` (nullable for moneylines, required for spread/totals)
+   - `odds` (American odds integer)
+   - optional: `book`, `game_id` (to bypass resolver), `captured_at`
+
+2. **Run the import command** with explicit sport/season and an optional book/date filter:
+
+   ```bash
+   python -m src.cli.pipeline betting market-csv \
+     --sport nba --season 2025-26 \
+     --csv data/raw/nba_markets.csv \
+     --default-book dk \
+     --date-filter 2026-01-15
+   ```
+
+   The CLI prints loaded/inserted/unmatched counts, groups unmatched rows by reason, and surfaces up to 10 example rows. Every failure is persisted in `market_line_import_errors` along with the serialized row and `failure_reason`, so you can query the database when troubleshooting (`SELECT * FROM market_line_import_errors ORDER BY created_at DESC LIMIT 20`).
+
+3. **Verify the imported lines** via the new `market_lines` table:
+
+   ```sql
+   SELECT sport, season, game_id, market_type, selection, line, odds, book, imported_at
+   FROM market_lines
+   WHERE sport = 'nba' AND season = '2025-26'
+   ORDER BY imported_at DESC
+   ```
+
+   Forecast commands (`pipelines.schedule`, `daily_workbook`, etc.) automatically read these rows for their `BETS`/market snapshots output.
+
+4. **Handle diagnostics** by revisiting the CSV, fixing the raw data, and re-running the import. If you need to understand why a row failed, use the `failure_reason` column or the CLI output that lists categories such as `date_parse_failed`, `team_unmatched`, `game_unmatched`, `selection_invalid`, and `market_invalid`.
+
+Every import is idempotent: running the same CSV twice updates odds/timestamps on the existing unique key (sport, season, game_id, market_type, selection/selection_team_id, line, book) so you can refresh the latest lines without duplicates.
+
 ## License
 
 This project is provided as-is for internal analytics workflows.
