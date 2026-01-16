@@ -12,6 +12,7 @@ from typing import Iterable, List
 
 from config import DEFAULT_WIN_PROB_K
 from ingest.schema import GameResult
+from . import teams as team_repo
 from .migrations import apply_migrations
 
 
@@ -35,6 +36,25 @@ CREATE TABLE IF NOT EXISTS games (
     conference TEXT,
     notes TEXT,
     UNIQUE(game_id, sport, season)
+);
+
+CREATE TABLE IF NOT EXISTS teams (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    canonical_name TEXT NOT NULL,
+    UNIQUE(sport, season, canonical_name)
+);
+
+CREATE TABLE IF NOT EXISTS team_aliases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    team_id INTEGER NOT NULL,
+    alias_text TEXT NOT NULL,
+    source TEXT NOT NULL,
+    FOREIGN KEY(team_id) REFERENCES teams(id),
+    UNIQUE(sport, season, alias_text)
 );
 
 CREATE TABLE IF NOT EXISTS model_metrics (
@@ -141,6 +161,43 @@ CREATE TABLE IF NOT EXISTS ensemble_market_active_weights (
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(sport, season, market, ensemble_id)
 );
+
+CREATE TABLE IF NOT EXISTS market_lines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    game_id TEXT NOT NULL,
+    game_date TEXT NOT NULL,
+    market_type TEXT NOT NULL,
+    selection_team_id INTEGER,
+    selection TEXT,
+    line REAL,
+    odds INTEGER NOT NULL,
+    book TEXT,
+    imported_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_market_lines_key
+    ON market_lines(
+        sport,
+        season,
+        game_id,
+        market_type,
+        COALESCE(selection_team_id, -1),
+        COALESCE(selection, ''),
+        COALESCE(line, -9999),
+        COALESCE(book, '')
+    );
+
+CREATE TABLE IF NOT EXISTS market_line_import_errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    row_data TEXT NOT NULL,
+    failure_reason TEXT NOT NULL,
+    failure_details TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -179,6 +236,7 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
     ]
 
     with closing(sqlite3.connect(Path(db_path))) as conn:
+        team_repo.ensure_teams_for_games(conn, games)
         conn.executemany(
             """
             INSERT OR REPLACE INTO games (

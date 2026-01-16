@@ -222,7 +222,7 @@ Notes:
 - `--format` overrides output type; otherwise the CLI infers format from the `--output` extension.
 - Betting report workbooks include three sheets: the main period sheet (`daily`, `weekly`, or `monthly`), an `edge_buckets` summary, and a `clv` summary.
 - `clv-csv` resolves games via `game_id` or `team_home`/`team_away` + `game_date`; invalid rows are skipped and counted. See [docs/market-clv.md](docs/market-clv.md) for the expected CSV schema and flags.
-- `market-csv` ingests market lines into `market_snapshots`/`market_snapshot_staging`, optionally leaving matched rows staged with `--no-commit-matched`.
+- `market-csv` resolves team/date aliases, writes validated rows to `market_lines`, and reports unmatched rows with failure reasons/examples. Use `--date-filter` to scope the import to specific dates.
 - `review-generate` requires `--snapshot-run-id`; optionally add `--snapshot-date` to constrain snapshots by captured date.
 - `review-generate --formula-workbook` (alias `--formula`) writes formulas in the `EV` and `BETS` sheets for `implied_prob`, `edge`, and `ev`.
   - Formula-driven columns: `implied_prob`, `edge`, `ev`.
@@ -325,7 +325,7 @@ CSV expectations (aliases allowed): `market_type`, `selection`, `close_odds` (or
 
 ## market-csv - ingest market lines from CSV
 
-Import market lines into snapshots and staging, resolving games by `game_id` when supplied or by `team_home`/`team_away` + `game_date` when not.
+Import market lines into the sport/season database. Each row must include `team_home{_raw}`, `team_away{_raw}`, `market_type`, `selection`, `line`, `odds`, and `game_date`. The command resolves aliases/dates, upserts valid rows into the new `market_lines` table, and reports unmatched rows grouped by failure reason while storing their serialized payloads in `market_line_import_errors`.
 
 ```bash
 python -m src.cli.pipeline betting market-csv --sport nba --season 2025-26 \
@@ -334,13 +334,10 @@ python -m src.cli.pipeline betting market-csv --sport nba --season 2025-26 \
 
 Flags:
 - `--csv`: path to the market CSV. Required.
-- `--snapshot-run-id`: snapshot run id to attach to imported rows (optional; defaults to a stable id derived from sport/season/date).
+- `--date-filter`: limit the import to this ISO date (YYYY-MM-DD); repeatable for multiple dates.
 - `--default-book`: fallback book name when the CSV omits it.
-- `--no-commit-matched`: keep matched rows in staging for manual review instead of committing to `market_snapshots`.
-- `--auto-commit`: when set, the command will auto-match staging rows whose teams/dates uniquely identify a game before committing them (using the provided snapshot run id or a default).
 
-CSV expectations: `market_type`, `selection`, `line`, `odds`, `team_home` (or `home_team`), `team_away` (or `away_team`), `game_date` (YYYY-MM-DD). Optional: `game_id`, `book`, `source`, `captured_at`. Invalid rows are rejected and counted.
-Wide format is also supported: a single row can contain `home_ml`/`away_ml`, `home_spread`/`away_spread` with corresponding odds (ex: `home_spread_odds`), and `total` with `over_odds`/`under_odds` to emit ML, spread, and total rows.
+CSV expectations: `market_type` (ML/spread/total), `selection`, `line` (nullable for ML), `odds`, `team_home{_raw}`, `team_away{_raw}`, `game_date`. Optional: `game_id`, `book`. Invalid or unmatched rows are counted, diagnosed, and stored for inspection.
 
 ## backtest — evaluate models on historical games
 

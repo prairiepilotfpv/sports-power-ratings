@@ -6,24 +6,22 @@ DB='data/db/nhl/2025-26.db'
 res = import_market_csv(
     db_path=DB,
     csv_path='data/raw/nhlToday.csv',
-    snapshot_run_id='snap-20260114',
     sport='nhl',
     season='2025-26',
     default_book='DK',
-    commit_matched=True,
 )
 print('IMPORT_RESULT:', res)
 conn=sqlite3.connect(DB)
 cur=conn.cursor()
-cur.execute("SELECT COUNT(1) FROM market_snapshots WHERE snapshot_run_id = ?", ('snap-20260114',))
+cur.execute("SELECT COUNT(1) FROM market_lines WHERE sport = ? AND season = ?", ('nhl', '2025-26'))
 a=cur.fetchone()[0]
-print('market_snapshots_committed_for_snap-20260114:', a)
-cur.execute("SELECT COUNT(1) FROM market_snapshot_staging")
+print('market_lines_rows:', a)
+cur.execute("SELECT COUNT(1) FROM market_line_import_errors")
 b=cur.fetchone()[0]
-print('total_staging_rows:', b)
-cur.execute("SELECT id, match_status, game_id, market_type, selection, line, odds, hold_reason FROM market_snapshot_staging ORDER BY id DESC LIMIT 5")
+print('import_errors:', b)
+cur.execute("SELECT failure_reason FROM market_line_import_errors ORDER BY id DESC LIMIT 5")
 rows=cur.fetchall()
-print('recent_staging_rows (up to 5):')
+print('recent_import_errors (up to 5):')
 for r in rows:
     print(r)
 conn.close()

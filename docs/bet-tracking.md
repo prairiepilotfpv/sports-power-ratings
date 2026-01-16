@@ -75,9 +75,7 @@ python -m src.cli.pipeline betting market-csv --sport nba --season 2025-26 \
   --default-book dn
 ```
 
-Expected CSV columns: `market_type`, `selection`, `line`, `odds`, `team_home` (or `home_team`), `team_away` (or `away_team`), `game_date` (YYYY-MM-DD). Optional: `game_id`, `book`, `source`, `captured_at`. Invalid rows are rejected and counted.
-Wide format is also supported: a single row can contain `home_ml`/`away_ml`, `home_spread`/`away_spread` with corresponding odds (ex: `home_spread_odds`), and `total` with `over_odds`/`under_odds` to emit ML, spread, and total rows.
-Note: `--snapshot-run-id` is optional; if omitted, a stable id is derived from sport/season/date.
+Expected CSV columns: `market_type` (ML/spread/total), `selection`, `line` (nullable for ML), `odds`, `team_home` (or `team_home_raw`), `team_away` (or `team_away_raw`), `game_date` (YYYY-MM-DD). Optional: `game_id`, `book`. Invalid rows or unmatched team/date pairs are logged in `market_line_import_errors` with failure details; the CLI also summarizes the counts and prints sample failures. Use `--date-filter` to limit the import to a specific date.
 
 2. Commit matched staging rows into `market_snapshots` (optional, used when snapshots are desired):
 

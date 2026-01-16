@@ -30,6 +30,7 @@ from difflib import SequenceMatcher
 
 from .paths import db_path_for
 from . import repository as base_repo
+from .market_lines import import_market_csv
 from .migrations import apply_migrations
 
 
@@ -829,300 +830,6 @@ def _clean_line_field(raw: str | float | None) -> float | None:
             return None
 
 
-def _get_csv_value(row: dict, *keys: str) -> str | None:
-    """Return the first non-empty string value for any of the provided keys."""
-    for k in keys:
-        v = row.get(k)
-        if v is None:
-            continue
-        try:
-            s = str(v).strip()
-        except Exception:
-            continue
-        if s:
-            return s
-    return None
-
-
-def _normalize_header_name(name: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", str(name).lower())
-
-
-def _normalize_market_type(value: str | None) -> str | None:
-    if value is None:
-        return None
-    normalized = str(value).strip().lower()
-    if normalized in {"ml", "moneyline", "money line", "money_line"}:
-        return "ML"
-    if normalized in {"spread", "spreads", "pointspread", "point spread", "handicap"}:
-        return "spread"
-    if normalized in {"total", "totals", "overunder", "over/under", "ou", "o/u"}:
-        return "total"
-    return None
-
-
-def _normalize_total_selection(value: str | None) -> str | None:
-    if value is None:
-        return None
-    normalized = str(value).strip().lower()
-    if normalized in {"over", "o", "ov"}:
-        return "Over"
-    if normalized in {"under", "u", "un"}:
-        return "Under"
-    return str(value).strip() if str(value).strip() else None
-
-
-def _find_value_by_terms(
-    row_norm: dict[str, Any],
-    include_terms: Sequence[str],
-    exclude_terms: Sequence[str] | None = None,
-    parser=None,
-):
-    excludes = exclude_terms or []
-    for key, value in row_norm.items():
-        if value is None:
-            continue
-        if not all(term in key for term in include_terms):
-            continue
-        if any(term in key for term in excludes):
-            continue
-        if parser:
-            parsed = parser(value)
-            if parsed is None:
-                continue
-            return parsed
-        return value
-    return None
-
-
-def _find_value_any(
-    row_norm: dict[str, Any],
-    include_sets: Sequence[Sequence[str]],
-    exclude_terms: Sequence[str] | None = None,
-    parser=None,
-):
-    for include_terms in include_sets:
-        val = _find_value_by_terms(row_norm, include_terms, exclude_terms=exclude_terms, parser=parser)
-        if val is not None:
-            return val
-    return None
-
-
-def _normalize_selection(
-    selection: str | None,
-    *,
-    team_home: str | None,
-    team_away: str | None,
-    market_type: str | None,
-) -> str | None:
-    if selection is None:
-        return None
-    raw = str(selection).strip()
-    if not raw:
-        return None
-    normalized = raw.lower()
-    if normalized in {"home", "h"}:
-        return team_home or raw
-    if normalized in {"away", "a"}:
-        return team_away or raw
-    if market_type == "total":
-        return _normalize_total_selection(raw)
-    return raw
-
-
-def _extract_base_fields(
-    row: dict,
-    row_norm: dict[str, Any],
-    *,
-    default_book: str | None,
-) -> dict:
-    source = _get_csv_value(row, "source", "src") or "csv"
-    captured_at = (
-        _get_csv_value(row, "captured_at", "capturedat", "captured")
-        or _find_value_any(row_norm, [["timestamp"], ["time"]], exclude_terms=["timezone"])
-    )
-    book = _get_csv_value(row, "book", "sportsbook", "book_name") or default_book
-    game_id = _get_csv_value(row, "game_id", "gameid")
-    game_date = (
-        _get_csv_value(row, "game_date", "gamedate", "date", "match_date", "event_date")
-        or _find_value_any(
-            row_norm,
-            [["gamedate"], ["matchdate"], ["eventdate"], ["date"]],
-            exclude_terms=["created", "captured", "updated", "timestamp", "time"],
-        )
-    )
-    team_home_raw = (
-        _get_csv_value(row, "team_home", "home_team", "team_home_raw", "home")
-        or _find_value_any(
-            row_norm,
-            [["hometeam"], ["teamhome"], ["home"]],
-            exclude_terms=["odds", "price", "spread", "total", "ml", "moneyline", "line"],
-        )
-    )
-    team_away_raw = (
-        _get_csv_value(row, "team_away", "away_team", "team_away_raw", "away")
-        or _find_value_any(
-            row_norm,
-            [["awayteam"], ["teamaway"], ["away"]],
-            exclude_terms=["odds", "price", "spread", "total", "ml", "moneyline", "line"],
-        )
-    )
-    return {
-        "source": source,
-        "captured_at": captured_at,
-        "book": book,
-        "game_id": game_id,
-        "game_date": game_date,
-        "team_home_raw": team_home_raw,
-        "team_away_raw": team_away_raw,
-    }
-
-
-def _expand_market_rows_from_csv(
-    row: dict,
-    row_norm: dict[str, Any],
-    *,
-    base: dict,
-) -> list[dict]:
-    market_rows: list[dict] = []
-
-    market_type = _normalize_market_type(_get_csv_value(row, "market_type", "market", "type", "bet_type"))
-    selection = _get_csv_value(row, "selection", "sel", "side", "pick", "team")
-    odds = _clean_odds_field(_get_csv_value(row, "odds", "price"))
-    line = _clean_line_field(_get_csv_value(row, "line", "spread", "total_line", "handicap", "total"))
-    selection = _normalize_selection(
-        selection,
-        team_home=base.get("team_home_raw"),
-        team_away=base.get("team_away_raw"),
-        market_type=market_type,
-    )
-
-    if market_type and selection and odds is not None:
-        if market_type == "ML" and line is None:
-            line = 0.0
-        market_rows.append(
-            {
-                "market_type": market_type,
-                "selection": selection,
-                "line": line,
-                "odds": odds,
-            }
-        )
-        return market_rows
-
-    home = base.get("team_home_raw")
-    away = base.get("team_away_raw")
-
-    ml_home_odds = _find_value_any(
-        row_norm,
-        [["home", "ml"], ["home", "moneyline"], ["moneyline", "home"]],
-        parser=_clean_odds_field,
-    )
-    ml_away_odds = _find_value_any(
-        row_norm,
-        [["away", "ml"], ["away", "moneyline"], ["moneyline", "away"]],
-        parser=_clean_odds_field,
-    )
-    if home and ml_home_odds is not None:
-        market_rows.append(
-            {"market_type": "ML", "selection": home, "line": 0.0, "odds": ml_home_odds}
-        )
-    if away and ml_away_odds is not None:
-        market_rows.append(
-            {"market_type": "ML", "selection": away, "line": 0.0, "odds": ml_away_odds}
-        )
-
-    spread_home_line = _find_value_any(
-        row_norm,
-        [["home", "spread"], ["spread", "home"], ["home", "handicap"], ["handicap", "home"]],
-        exclude_terms=["odds", "price"],
-        parser=_clean_line_field,
-    )
-    spread_away_line = _find_value_any(
-        row_norm,
-        [["away", "spread"], ["spread", "away"], ["away", "handicap"], ["handicap", "away"]],
-        exclude_terms=["odds", "price"],
-        parser=_clean_line_field,
-    )
-    spread_home_odds = _find_value_any(
-        row_norm,
-        [
-            ["spread", "home", "odds"],
-            ["spread", "home", "price"],
-            ["handicap", "home", "odds"],
-            ["handicap", "home", "price"],
-        ],
-        parser=_clean_odds_field,
-    )
-    spread_away_odds = _find_value_any(
-        row_norm,
-        [
-            ["spread", "away", "odds"],
-            ["spread", "away", "price"],
-            ["handicap", "away", "odds"],
-            ["handicap", "away", "price"],
-        ],
-        parser=_clean_odds_field,
-    )
-    spread_line = _find_value_any(
-        row_norm,
-        [["spread"], ["handicap"]],
-        exclude_terms=["home", "away", "odds", "price"],
-        parser=_clean_line_field,
-    )
-    if spread_home_line is None and spread_line is not None:
-        spread_home_line = spread_line
-    if spread_away_line is None and spread_home_line is not None:
-        spread_away_line = -float(spread_home_line)
-    if home and spread_home_line is not None and spread_home_odds is not None:
-        market_rows.append(
-            {
-                "market_type": "spread",
-                "selection": home,
-                "line": spread_home_line,
-                "odds": spread_home_odds,
-            }
-        )
-    if away and spread_away_line is not None and spread_away_odds is not None:
-        market_rows.append(
-            {
-                "market_type": "spread",
-                "selection": away,
-                "line": spread_away_line,
-                "odds": spread_away_odds,
-            }
-        )
-
-    total_line = _find_value_any(
-        row_norm,
-        [["total"], ["ou"], ["overunder"]],
-        exclude_terms=["odds", "price", "over", "under"],
-        parser=_clean_line_field,
-    )
-    over_odds = _find_value_any(
-        row_norm,
-        [["over", "odds"], ["over", "price"], ["over"]],
-        exclude_terms=["line", "total", "under"],
-        parser=_clean_odds_field,
-    )
-    under_odds = _find_value_any(
-        row_norm,
-        [["under", "odds"], ["under", "price"], ["under"]],
-        exclude_terms=["line", "total", "over"],
-        parser=_clean_odds_field,
-    )
-    if total_line is not None and over_odds is not None:
-        market_rows.append(
-            {"market_type": "total", "selection": "Over", "line": total_line, "odds": over_odds}
-        )
-    if total_line is not None and under_odds is not None:
-        market_rows.append(
-            {"market_type": "total", "selection": "Under", "line": total_line, "odds": under_odds}
-        )
-
-    return market_rows
-
-
 def default_snapshot_run_id(
     *,
     sport: str,
@@ -1142,184 +849,6 @@ def default_snapshot_run_id(
         base = f"{base}-{date_token}"
     cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "-", base).strip("-")
     return cleaned or f"{prefix}-{sport}-{season}"
-
-
-def import_market_csv(
-    db_path: str | Path,
-    *,
-    csv_path: str | Path,
-    snapshot_run_id: str | None,
-    sport: str,
-    season: str,
-    default_book: str | None = None,
-    commit_matched: bool = True,
-) -> dict:
-    """Import a CSV of markets. Returns summary dict.
-
-    Expected CSV columns (some optional):
-    - source (optional)
-    - captured_at (optional)
-    - book (optional)
-    - market_type (ML/spread/total)
-    - selection
-    - line
-    - odds
-    - team_home
-    - team_away
-    - game_date (YYYY-MM-DD)
-    - game_id (optional)
-    Wide format (single row per game) is also supported with columns like:
-    - home_ml / away_ml
-    - home_spread / away_spread with corresponding odds (ex: home_spread_odds)
-    - total with over_odds / under_odds
-
-    Behavior:
-    - Validate numeric fields (odds integer in [-1000,1000], line float)
-    - If game_id supplied, insert into market_snapshots directly
-    - Otherwise resolve via identity subsystem; matched rows inserted into market_snapshots if commit_matched=True, others go to market_snapshot_staging with match_status set
-    - snapshot_run_id is optional; when omitted a stable id is derived from sport/season/date
-    - Returns counts: {committed: N, staged: M, rejected: K}
-    """
-    import csv
-
-    init_db(db_path)
-    committed = 0
-    staged = 0
-    rejected = 0
-    alias_map = None
-    try:
-        from src.utils import identity as idu
-        alias_map = idu.load_alias_map(sport)
-    except Exception:
-        alias_map = None
-    with open(csv_path, newline='', encoding='utf-8') as fh:
-        reader = csv.DictReader(fh)
-        for row in reader:
-            row_norm = {_normalize_header_name(k): v for k, v in row.items()}
-            base = _extract_base_fields(row, row_norm, default_book=default_book)
-            market_rows = _expand_market_rows_from_csv(row, row_norm, base=base)
-            if not market_rows:
-                rejected += 1
-                continue
-
-            if alias_map:
-                if base.get("team_home_raw"):
-                    resolved = idu.resolve_team_alias(base.get("team_home_raw") or "", alias_map)
-                    if resolved:
-                        base["team_home_raw"] = resolved
-                if base.get("team_away_raw"):
-                    resolved = idu.resolve_team_alias(base.get("team_away_raw") or "", alias_map)
-                    if resolved:
-                        base["team_away_raw"] = resolved
-
-            for market in market_rows:
-                selection = _normalize_selection(
-                    market.get("selection"),
-                    team_home=base.get("team_home_raw"),
-                    team_away=base.get("team_away_raw"),
-                    market_type=market.get("market_type"),
-                )
-                market_type = market.get("market_type")
-                line = market.get("line")
-                odds = market.get("odds")
-
-                if alias_map and selection:
-                    resolved = idu.resolve_team_alias(selection or "", alias_map)
-                    if resolved:
-                        selection = resolved
-
-                if market_type == "ML" and line is None:
-                    line = 0.0
-
-                if not selection or not market_type:
-                    rejected += 1
-                    continue
-                if odds is None or odds == 0 or odds < -1000 or odds > 1000:
-                    rejected += 1
-                    continue
-                if market_type != "ML" and line is None:
-                    rejected += 1
-                    continue
-
-                effective_snapshot_run_id = snapshot_run_id or default_snapshot_run_id(
-                    sport=sport,
-                    season=season,
-                    game_date=base.get("game_date"),
-                    captured_at=base.get("captured_at"),
-                )
-
-                game_id = base.get("game_id")
-                if game_id:
-                    with closing(sqlite3.connect(Path(db_path))) as conn:
-                        conn.execute(
-                            "INSERT OR REPLACE INTO market_snapshots (snapshot_run_id, captured_at, book, market_type, selection, line, odds, game_id, source_staging_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            (
-                                effective_snapshot_run_id,
-                                base.get("captured_at") or _utcnow_iso(),
-                                base.get("book"),
-                                market_type,
-                                selection,
-                                line,
-                                odds,
-                                game_id,
-                                None,
-                                _utcnow_iso(),
-                            ),
-                        )
-                        conn.commit()
-                        committed += 1
-                else:
-                    if not base.get("team_home_raw") or not base.get("team_away_raw"):
-                        rejected += 1
-                        continue
-                    res = resolve_staging_to_game(
-                        db_path,
-                        sport=sport,
-                        season=season,
-                        team_home_raw=base.get("team_home_raw"),
-                        team_away_raw=base.get("team_away_raw"),
-                        game_date=base.get("game_date"),
-                    )
-                    if res.get('match_status') == 'matched' and commit_matched:
-                        with closing(sqlite3.connect(Path(db_path))) as conn:
-                            conn.execute(
-                                "INSERT OR REPLACE INTO market_snapshots (snapshot_run_id, captured_at, book, market_type, selection, line, odds, game_id, source_staging_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                (
-                                    effective_snapshot_run_id,
-                                    base.get("captured_at") or _utcnow_iso(),
-                                    base.get("book"),
-                                    market_type,
-                                    selection,
-                                    line,
-                                    odds,
-                                    res.get('game_id'),
-                                    None,
-                                    _utcnow_iso(),
-                                ),
-                            )
-                            conn.commit()
-                            committed += 1
-                    else:
-                        add_staging_row(
-                            db_path,
-                            source=base.get("source"),
-                            captured_at=base.get("captured_at") or _utcnow_iso(),
-                            image_path=None,
-                            raw_text=None,
-                            book=base.get("book"),
-                            market_type=market_type,
-                            selection=selection,
-                            line=line,
-                            odds=odds,
-                            team_home_raw=base.get("team_home_raw"),
-                            team_away_raw=base.get("team_away_raw"),
-                            game_date=base.get("game_date"),
-                            match_status=res.get('match_status') if res else 'unmatched',
-                            match_confidence=res.get('match_confidence') if res else 0.0,
-                            game_id=res.get('game_id') if res else None,
-                        )
-                        staged += 1
-    return {"committed": committed, "staged": staged, "rejected": rejected}
 
 
 def get_opportunities_with_game_info(db_path: str | Path, *, review_run_id: str) -> list[dict]:
@@ -1501,6 +1030,55 @@ def get_latest_market_snapshot(
         if not row:
             return None
         return {"id": row[0], "line": row[1], "odds": row[2], "captured_at": row[3]}
+
+
+def get_latest_market_line(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    game_id: str,
+    market_type: str,
+    selection_team_id: int | None = None,
+    selection: str | None = None,
+    as_of: str | None = None,
+) -> dict | None:
+    """Return the most recent market_line row for the keys, or None."""
+    init_db(db_path)
+    filters = [
+        "sport = ?",
+        "season = ?",
+        "game_id = ?",
+        "market_type = ?",
+    ]
+    params: list[object] = [sport, season, game_id, market_type]
+    if selection_team_id is not None:
+        filters.append("selection_team_id = ?")
+        params.append(selection_team_id)
+    elif selection is not None:
+        filters.append("selection = ?")
+        params.append(selection)
+    else:
+        filters.append("selection_team_id IS NULL")
+        filters.append("selection IS NULL")
+    if as_of is not None:
+        filters.append("datetime(imported_at) <= datetime(?)")
+        params.append(as_of)
+    where_clause = " AND ".join(filters)
+    query = f"""
+        SELECT id, line, odds, book, imported_at
+        FROM market_lines
+        WHERE {where_clause}
+        ORDER BY datetime(imported_at) DESC, id DESC
+        LIMIT 1
+    """
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        cur = conn.cursor()
+        cur.execute(query, params)
+        row = cur.fetchone()
+    if not row:
+        return None
+    return {"id": row[0], "line": row[1], "odds": row[2], "book": row[3], "imported_at": row[4]}
 
 
 def add_market_snapshot(

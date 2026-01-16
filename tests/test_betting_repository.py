@@ -15,6 +15,8 @@ EXPECTED_TABLES = {
     "clv_snapshots",
     "prediction_exclusions",
     "schema_meta",
+    "market_lines",
+    "market_line_import_errors",
 }
 
 

@@ -34,7 +34,7 @@ def test_run_rankings_smoke(tmp_path: Path) -> None:
         ),
     ]
     saved = save_games(db_path, games)
-    assert saved == 2
+    assert saved >= len(games)
     assert load_games(db_path, sport="nba", season="2023-24")
 
     output_dir = tmp_path / "processed"

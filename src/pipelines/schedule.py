@@ -7,6 +7,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 import re
+import sqlite3
 
 import pandas as pd
 from openpyxl import load_workbook
@@ -22,6 +23,7 @@ from data.repository import (
     load_games,
     load_model_metrics,
 )
+from data import teams as team_repo
 from pipelines.model_params import (
     resolve_active_model_market_params,
     resolve_active_ensemble_weights,
@@ -1100,6 +1102,28 @@ def _build_bets_dataframe(
     if df.empty:
         return pd.DataFrame(columns=bets_columns)
 
+    team_id_cache: dict[tuple[str | None, str | None, str], int | None] = {}
+
+    def _resolve_team_id_for(name: str | None) -> int | None:
+        if not name or db_path is None or not sport or not season:
+            return None
+        key = (sport, season, name)
+        if key in team_id_cache:
+            return team_id_cache[key]
+        team_id = None
+        try:
+            with sqlite3.connect(Path(db_path)) as team_conn:
+                team_id = team_repo.get_team_id(
+                    team_conn,
+                    sport=sport,
+                    season=season,
+                    canonical_name=name,
+                )
+        except Exception:
+            team_id = None
+        team_id_cache[key] = team_id
+        return team_id
+
     rows: list[dict[str, Any]] = []
     for _, row in df.iterrows():
         projected_home_score = row.get("projected_home_score")
@@ -1217,6 +1241,8 @@ def _build_bets_dataframe(
 
         home_team = row.get("home_team")
         away_team = row.get("away_team")
+        home_team_id = _resolve_team_id_for(home_team)
+        away_team_id = _resolve_team_id_for(away_team)
 
         # Lookup latest market snapshot for each market/selection as-of the workbook date
         # only when a db_path is provided; otherwise leave line/odds blank.
@@ -1269,7 +1295,36 @@ def _build_bets_dataframe(
             snap = None
             if br is not None:
                 try:
-                    snap = br.get_latest_market_snapshot(db_path, game_id=row.get("game_id"), market_type=mtype, selection=sel, as_of=as_of_date.isoformat())
+                    selection_team_id = None
+                    selection_value = None
+                    if mtype in ("ML", "spread"):
+                        if sel == home_team:
+                            selection_team_id = home_team_id
+                        elif sel == away_team:
+                            selection_team_id = away_team_id
+                    else:
+                        selection_value = sel
+                    if sport and season and row.get("game_id"):
+                        if selection_team_id is not None:
+                            snap = br.get_latest_market_line(
+                                db_path,
+                                sport=sport,
+                                season=season,
+                                game_id=str(row.get("game_id")),
+                                market_type=mtype,
+                                selection_team_id=selection_team_id,
+                                as_of=as_of_date.isoformat(),
+                            )
+                        elif selection_value is not None:
+                            snap = br.get_latest_market_line(
+                                db_path,
+                                sport=sport,
+                                season=season,
+                                game_id=str(row.get("game_id")),
+                                market_type=mtype,
+                                selection=selection_value,
+                                as_of=as_of_date.isoformat(),
+                            )
                 except Exception:
                     snap = None
 

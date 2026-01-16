@@ -81,40 +81,53 @@ def load_market_snapshots(
     snapshot_run_id: str | None = None,
     snapshot_date: str | None = None,
 ) -> pd.DataFrame:
-    """Load market_snapshots for a snapshot run id or captured date (YYYY-MM-DD)."""
+    """Load the latest market_lines per game/market/selection for the requested filters."""
     if snapshot_run_id is None and snapshot_date is None:
         raise ValueError("Provide snapshot_run_id or snapshot_date to load market snapshots.")
 
     br.init_db(db_path)
-    conditions = ["ms.game_id IS NOT NULL", "g.sport = ?", "g.season = ?"]
+    filters = ["sport = ?", "season = ?"]
     params: list[object] = [sport, season]
-    if snapshot_run_id is not None:
-        conditions.append("ms.snapshot_run_id = ?")
-        params.append(snapshot_run_id)
     if snapshot_date is not None:
-        conditions.append("date(ms.captured_at) = date(?)")
+        filters.append("date(game_date) = date(?)")
         params.append(snapshot_date)
+    filter_clause = " AND ".join(filters)
 
-    where_clause = " AND ".join(conditions)
     query = f"""
+        WITH latest_lines AS (
+            SELECT *
+            FROM (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY sport, season, game_id, market_type,
+                                        COALESCE(selection_team_id, -1),
+                                        COALESCE(selection, ''),
+                                        COALESCE(line, -9999),
+                                        COALESCE(book, '')
+                           ORDER BY datetime(imported_at) DESC, id DESC
+                       ) AS rn
+                FROM market_lines
+                WHERE {filter_clause}
+            )
+            WHERE rn = 1
+        )
         SELECT
-            ms.id AS source_market_snapshot_id,
-            ms.snapshot_run_id,
-            ms.captured_at,
-            ms.book,
-            ms.market_type,
-            ms.selection,
-            ms.line,
-            ms.odds,
-            ms.game_id,
+            latest_lines.id AS source_market_snapshot_id,
+            '' AS snapshot_run_id,
+            latest_lines.imported_at AS captured_at,
+            latest_lines.book,
+            latest_lines.market_type,
+            COALESCE(latest_lines.selection, '') AS selection,
+            latest_lines.line,
+            latest_lines.odds,
+            latest_lines.game_id,
             g.home_team,
             g.away_team,
             g.sport,
             g.season
-        FROM market_snapshots ms
-        LEFT JOIN games g ON ms.game_id = g.game_id
-        WHERE {where_clause}
-        ORDER BY ms.captured_at, ms.game_id
+        FROM latest_lines
+        LEFT JOIN games g ON latest_lines.game_id = g.game_id
+        ORDER BY latest_lines.imported_at DESC, latest_lines.game_id
     """
     with closing(sqlite3.connect(Path(db_path))) as conn:
         cur = conn.execute(query, params)

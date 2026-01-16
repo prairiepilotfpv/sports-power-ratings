@@ -9,6 +9,7 @@ from src.pipelines.review_runs import build_review_workbook, create_and_build_re
 from src.pipelines import opportunities as opportunities_pipeline
 from src.data import betting_repository as br
 from src.data import repository as repo
+from src.data import teams as team_repo
 
 
 def test_build_review_workbook_creates_file_and_meta():
@@ -263,22 +264,31 @@ def test_review_workbook_includes_exclusions_sheet_when_guardrails_filter_predic
         br.init_db(db_path)
         rid = br.create_review_run(db_path, sport="nba", season="2025-26", model="elo", notes="test")
         with sqlite3.connect(db_path) as conn:
+            team_id = team_repo.get_team_id(
+                conn,
+                sport="nba",
+                season="2025-26",
+                canonical_name="Los Angeles Lakers",
+            )
             conn.execute(
                 """
-                INSERT INTO market_snapshots (
-                    snapshot_run_id, captured_at, book, market_type, selection, line, odds, game_id, source_staging_id, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                INSERT INTO market_lines (
+                    sport, season, game_id, game_date, market_type,
+                    selection_team_id, selection, line, odds, book, imported_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    "snap1",
-                    "2025-11-10T12:00:00Z",
-                    "dn",
+                    "nba",
+                    "2025-26",
+                    "2025-11-10-lakers-clippers",
+                    "2025-11-10",
                     "ML",
+                    team_id,
                     "Los Angeles Lakers",
                     0.0,
                     -110,
-                    "2025-11-10-lakers-clippers",
-                    None,
+                    "dn",
+                    "2025-11-10T12:00:00Z",
                 ),
             )
             conn.commit()

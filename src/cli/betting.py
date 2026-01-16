@@ -41,12 +41,14 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     market_csv.add_argument("--sport", required=True)
     market_csv.add_argument("--season", required=True)
     market_csv.add_argument("--csv", dest="csv_path", required=True, help="CSV of market lines (selection, odds, line, teams)")
-    market_csv.add_argument("--snapshot-run-id", help="Optional snapshot run id to attach to imported rows")
     market_csv.add_argument("--db", help="Optional DB path override")
     market_csv.add_argument("--default-book", dest="default_book", help="Fallback book name when the CSV omits it")
-    market_csv.add_argument("--commit-matched", dest="commit_matched", action="store_true", default=True, help="Commit matched rows into market_snapshots (default)")
-    market_csv.add_argument("--no-commit-matched", dest="commit_matched", action="store_false", help="Leave matched rows in staging for review")
-    market_csv.add_argument("--auto-commit", action="store_true", help="Auto-match staging rows and commit them after import")
+    market_csv.add_argument(
+        "--date-filter",
+        dest="date_filter",
+        action="append",
+        help="Optional game date (YYYY-MM-DD) to limit imports; can be repeated.",
+    )
 
     clv_csv = sub.add_parser("clv-csv", help="Import closing lines/odds from a CSV and backfill bets")
     clv_csv.add_argument("--sport", required=True)

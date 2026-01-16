@@ -54,16 +54,13 @@ def run_preflight_validation(
 
         snapshot_query = """
             SELECT COUNT(*)
-            FROM market_snapshots ms
-            LEFT JOIN games g ON ms.game_id = g.game_id
+            FROM market_lines ml
+            LEFT JOIN games g ON ml.game_id = g.game_id
             WHERE g.sport = ? AND g.season = ?
         """
         snapshot_params: list[object] = [sport, season]
-        if snapshot_run_id is not None:
-            snapshot_query += " AND ms.snapshot_run_id = ?"
-            snapshot_params.append(snapshot_run_id)
         if snapshot_date is not None:
-            snapshot_query += " AND date(ms.captured_at) = date(?)"
+            snapshot_query += " AND date(ml.game_date) = date(?)"
             snapshot_params.append(snapshot_date)
         snapshot_count = conn.execute(snapshot_query, snapshot_params).fetchone()[0] or 0
         results["snapshots"] = {

@@ -1587,7 +1587,12 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "schedule":
         _run_schedule(args)
     elif args.command == "market-review":
-        _run_market_review(args)
+        raise ValueError(
+            "market-review has been retired. Use `betting market-csv` to load CSV market lines "
+            "into `market_lines` and rely on the diagnostics/emitted errors tracked in "
+            "`market_line_import_errors`. The schedule/daily workbook pipelines already read "
+            "from `market_lines`, so no review command is required."
+        )
     elif args.command == "market-bets":
         _run_market_bets(args)
     elif args.command == "report":
@@ -1737,77 +1742,57 @@ def _run_betting(args: argparse.Namespace) -> None:
         print(f"market-ocr: ingested {created} staging rows")
 
     elif cmd == "market-commit":
-        snapshot_run_id = args.snapshot_run_id
-        _require_snapshot_run_id_format(snapshot_run_id)
-        print(f"snapshot_run_id: {snapshot_run_id}")
-        require_matched = bool(getattr(args, "require_matched", False))
-        force = bool(getattr(args, "force", False))
-        if db_path is None:
-            raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
-        _echo_db_path(Path(db_path))
-        conn = sqlite3.connect(db_path)
-        try:
-            cur = conn.execute("SELECT id, match_status FROM market_snapshot_staging WHERE match_status IN ('matched','needs_review')")
-            rows = cur.fetchall()
-            staging_ids = [r[0] for r in rows]
-            needs_review_ids = [r[0] for r in rows if r[1] == "needs_review"]
-        finally:
-            conn.close()
-
-        if require_matched and needs_review_ids:
-            raise ValueError(f"Found needs_review staging rows: {needs_review_ids}; aborting due to --require-matched")
-        # If force is not provided, commit will only commit matched rows; pass force flag accordingly
-        committed = br.commit_market_snapshots(db_path, snapshot_run_id=snapshot_run_id, staging_ids=staging_ids, force=force)
-        print(f"Committed {committed} market snapshots (snapshot_run_id={snapshot_run_id})")
+        raise ValueError(
+            "market-commit is no longer supported. Market ingestion now writes directly into `market_lines` "
+            "via `betting market-csv`; the import command handles unmatched diagnostics and the schedule "
+            "workbooks read the latest odds from `market_lines`."
+        )
 
     elif cmd == "market-csv":
         if db_path is None:
             raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
-        snapshot_run_id = getattr(args, "snapshot_run_id", None)
-        if snapshot_run_id:
-            _require_snapshot_run_id_format(snapshot_run_id)
-            print(f"snapshot_run_id: {snapshot_run_id}")
         _echo_db_path(Path(db_path))
         result = br.import_market_csv(
             db_path,
             csv_path=args.csv_path,
-            snapshot_run_id=snapshot_run_id,
             sport=args.sport,
             season=args.season,
             default_book=getattr(args, "default_book", None),
-            commit_matched=bool(getattr(args, "commit_matched", True)),
+            date_filter=getattr(args, "date_filter", None),
         )
+        rows_loaded = result.get("rows_loaded", 0)
+        inserted = result.get("inserted", 0)
+        unmatched = result.get("unmatched", 0)
+        filtered = result.get("date_filtered", 0)
         print(
             "market-csv: "
-            f"committed={result.get('committed')} "
-            f"staged={result.get('staged')} "
-            f"rejected={result.get('rejected')}"
+            f"rows_loaded={rows_loaded} "
+            f"inserted={inserted} "
+            f"unmatched={unmatched} "
+            f"date_filtered={filtered}"
         )
-        if bool(getattr(args, "auto_commit", False)):
-            auto_summary = br.auto_match_staging_rows(
-                db_path,
-                sport=args.sport,
-                season=args.season,
-            )
-            matched_ids = auto_summary.get("matched_ids", [])
-            committed_auto = 0
-            if matched_ids:
-                commit_snapshot_run_id = snapshot_run_id or br.default_snapshot_run_id(
-                    sport=args.sport,
-                    season=args.season,
-                )
-                committed_auto = br.commit_market_snapshots(
-                    db_path,
-                    snapshot_run_id=commit_snapshot_run_id,
-                    staging_ids=matched_ids,
-                )
-            print(
-                "market-csv: auto-match "
-                f"matched={auto_summary.get('matched')} "
-                f"skipped={auto_summary.get('skipped')} "
-                f"committed={committed_auto}"
-            )
-
+        if unmatched:
+            unmatched_reasons = result.get("unmatched_reasons", {})
+            if unmatched_reasons:
+                print("market-csv: unmatched reasons:")
+                for reason, count in sorted(unmatched_reasons.items()):
+                    print(f"  {reason}={count}")
+            examples = result.get("unmatched_examples", [])
+            if examples:
+                print("market-csv: unmatched examples (up to 10):")
+                for ex in examples:
+                    print(
+                        "  "
+                        f"row={ex.get('row_index')} "
+                        f"reason={ex.get('reason')} "
+                        f"teams={ex.get('team_home_raw')} vs {ex.get('team_away_raw')} "
+                        f"date={ex.get('game_date')} "
+                        f"market={ex.get('market_type')} "
+                        f"selection={ex.get('selection')} "
+                        f"line={ex.get('line')} "
+                        f"odds={ex.get('odds')} "
+                        f"details={ex.get('details')}"
+                    )
     elif cmd == "clv-csv":
         if db_path is None:
             raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
