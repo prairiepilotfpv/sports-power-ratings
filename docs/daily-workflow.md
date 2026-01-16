@@ -106,30 +106,29 @@ python -m src.cli.pipeline betting report --sport nba --season 2025-26 --type da
 
 ## Optional: market snapshot → bets (OCR/CSV) path
 
-Use this when you start from screenshots or market CSVs instead of the BETS sheet.
+Use this when you start from screenshots or a CSV of market lines instead of editing the BETS sheet. The `market-review`/`market-commit` commands are retired; rely on `betting market-csv` (or `market-ocr` → CSV import) and the `market_line_import_errors` table for diagnostics.
 
 ```bash
-# 1) OCR screenshots (or import CSV) into staging
+# 1) OCR screenshots (or import a CSV) into a file
 python -m src.cli.pipeline betting market-ocr --sport nba --season 2025-26 \
-  --images screenshots/2025-01-13 --book dn --captured-at 2025-01-13T14:30:00Z
+  --images screenshots/2025-01-13 --book dn --captured-at 2025-01-13T14:30:00Z \
+  --json-output data/tmp/2025-01-13-lines.json
 
-# 2) Review any unresolved matches
-python -m src.cli.pipeline market-review --sport nba --season 2025-26
+# 2) Import the CSV into market_lines
+python -m src.cli.pipeline betting market-csv --sport nba --season 2025-26 \
+  --csv data/tmp/2025-01-13-lines.json \
+  --default-book dn --date-filter 2025-01-13
 
-# 3) Commit matched rows into market_snapshots (enforces snapshot_run_id format)
-python -m src.cli.pipeline betting market-commit --sport nba --season 2025-26 \
-  --snapshot-run-id snap-20250113
-
-# 4) Pivot snapshots into candidate bets using stake presets
-python -m src.cli.pipeline market-bets --sport nba --season 2025-26 --snapshot-run-id snap-20250113 \
+# 3) Pivot imported lines into candidate bets (snapshot_run_id optional, just reuses data)
+python -m src.cli.pipeline market-bets --sport nba --season 2025-26 \
   --stake-preset unit --unit-stake 1.0
 
-# 5) Generate a daily workbook tied to that snapshot
+# 4) Generate a daily workbook for context (optional)
 python -m src.cli.pipeline betting daily-workbook --sport nba --season 2025-26 \
   --date 2025-01-13 --snapshot-run-id snap-20250113
 ```
 
-From here, continue with step 5 above (`betting log-bets`) and the day-end settle/report commands.
+From here, continue with step 5 in the main checklist (`betting log-bets`) and the settle/report commands.
 
 ## Example day (all-in-one, replace paths/dates)
 

@@ -10,11 +10,10 @@ For a concise daily checklist, see [docs/daily-workflow.md](docs/daily-workflow.
 **Daily checklist (step-by-step)**
 For the full daily runbook with copy/paste commands, see [docs/daily-workflow.md](docs/daily-workflow.md).
 1. Ingest schedule + market lines (OCR or CSV).
-2. Review OCR matches (`market-review`) and accept/reject as needed.
-3. Commit matched staging rows into `market_snapshots` (so snapshots are queryable).
-4. (Optional) Run pre-flight validation (DB integrity, predictions, snapshot counts).
-5. Generate a review run + opportunities for the day.
-6. Build the unified daily workbook (projections + snapshots + OCR + EV/BETS):
+2. The old `market-review`/`market-commit` flow is retired. Treat `market-csv` as the ingestion source, rely on the command’s diagnostics and `market_line_import_errors` to troubleshoot unmatched rows, and trust the schedule/daily-workbook pipelines to read the latest lines from `market_lines`.
+3. Run pre-flight validation (DB integrity, predictions, snapshot counts) if desired.
+4. Generate a review run + opportunities for the day.
+5. Build the unified daily workbook (projections + snapshots + OCR + EV/BETS):
 
 ```powershell
 python -m src.cli.pipeline betting daily-workbook --sport <sport> --season <season> --date <YYYY-MM-DD>
@@ -77,12 +76,7 @@ python -m src.cli.pipeline betting market-csv --sport nba --season 2025-26 \
 
 Expected CSV columns: `market_type` (ML/spread/total), `selection`, `line` (nullable for ML), `odds`, `team_home` (or `team_home_raw`), `team_away` (or `team_away_raw`), `game_date` (YYYY-MM-DD). Optional: `game_id`, `book`. Invalid rows or unmatched team/date pairs are logged in `market_line_import_errors` with failure details; the CLI also summarizes the counts and prints sample failures. Use `--date-filter` to limit the import to a specific date.
 
-2. Commit matched staging rows into `market_snapshots` (optional, used when snapshots are desired):
-
-```powershell
-python -m src.cli.pipeline betting market-commit --sport nba --season 2025-26 \
-  --snapshot-run-id snap-20250101T000000Z
-```
+2. **(Retired)** Reviewing staging rows and committing them via `market-review`/`market-commit` is no longer necessary because `betting market-csv` writes valid rows directly into `market_lines`, and the import logs failures in `market_line_import_errors`. Continue with the review workbook on the imported lines without running those commands.
 
 3. Generate a review workbook for a model (this creates `META` + `BETS` sheets used by `log-bets`):
 
@@ -172,7 +166,7 @@ python -m src.cli.pipeline betting validate --sport nba --season 2025-26 --model
 
 - If validation reports "No predictions found", check that rankings exist for the date/model and rerun `python -m src.cli.pipeline rank` before `review-generate`.
 - If validation reports "Insufficient market snapshots", confirm you committed staging rows for the snapshot run id or pass the correct `--snapshot-date`.
-- High-risk staging rows (e.g., odds outside typical ranges or matched rows missing `game_id`) are logged as warnings when inserted. Resolve by reviewing OCR matches (`market-review`) and re-ingesting or correcting source data if needed.
+- High-risk staging rows (e.g., odds outside typical ranges or matched rows missing `game_id`) are logged as warnings when inserted. Resolve by inspecting `market_line_import_errors`, adjusting the CSV/input, and rerunning `betting market-csv`.
 - If `log_bets` raises `ValueError: review_run_id not provided`, ensure the workbook has a `META` sheet with `key == review_run_id` or pass `--review-run-id` (the CLI currently reads `review_run_id` from `META` automatically when absent).
 - If DB path resolution fails, pass `--db data/db/<sport>/<season>.db` or call the CLI with `--sport` and `--season` so the CLI can infer the path.
 - Use `--dry-run` liberally to confirm parsing before writing.

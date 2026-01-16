@@ -208,10 +208,8 @@ python -m src.cli.pipeline betting validate --sport nba --season 2025-26 --model
 
 # End-to-end OCR ingest to report
 python -m src.cli.pipeline betting market-ocr --sport nba --season 2025-26 --images screenshots/ --book DK --captured-at 2025-12-01T14:30:00Z --json-output tmp/lines.json
-# Review/accept matches (optional when using DB mode)
-python -m src.cli.pipeline market-review --sport nba --season 2025-26 --status all --limit 20
-# Commit staging to market_snapshots (DB mode only)
-python -m src.cli.pipeline betting market-commit --sport nba --season 2025-26 --snapshot-run-id run_20251201
+> ⚠️ `market-review` and `market-commit` have been retired and now raise an error directing you to `betting market-csv` + `market_lines`. Rely on `market-csv` for ingestion and skip these commands.
+
 # Generate weekly report
 python -m src.cli.pipeline betting report --sport nba --season 2025-26 --type weekly --start 2025-12-01 --end 2025-12-31 --format xlsx --output outputs/reports/bets-nba-dec.xlsx
 ```
@@ -263,26 +261,9 @@ Notes: `--json-output` switches the command to JSON-only mode (no DB writes). Wi
 python -m src.cli.pipeline import --sport nba --season 2025-26 --input data/raw/nba.csv
 ```
 
-## market-review — review staging rows
+## market-review — retired
 
-List or resolve OCR/CSV staging rows stored in `market_snapshot_staging`.
-
-```bash
-# List pending rows (default: needs_review only)
-python -m src.cli.pipeline market-review --sport nba --season 2025-26
-
-# Show all statuses and limit to 20 rows
-python -m src.cli.pipeline market-review --sport nba --season 2025-26 --status all --limit 20
-
-# Accept or reject a specific staging row
-python -m src.cli.pipeline market-review --sport nba --season 2025-26 --accept 12 --game-id 2024-12-01-lal-lac --match-confidence 0.95
-python -m src.cli.pipeline market-review --sport nba --season 2025-26 --reject 12
-```
-
-Flags:
-- `--auto-match`: auto-resolve staging rows whose team/date pair only matches one game before falling back to manual accept/reject.
--
-Notes: `--status` accepts comma-separated values (e.g., `matched,needs_review`); `--game-id` is required when accepting.
+`market-review` no longer supports manual staging review. The command now raises a `ValueError` telling you to use `betting market-csv` and `market_lines` for ingestion/diagnostics. The staging table still exists for compatibility, but every modern workflow should rely on the CSV import path instead.
 
 ## market-bets — pivot reviewed staging rows into bets
 

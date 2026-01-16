@@ -639,23 +639,9 @@ If you work with market data (lines/odds) and bets, this repo exposes a lightwei
    - If a `game_id` is provided in the CSV the resolver is skipped and the row is upserted directly into `market_lines`.
    - Unmatched rows are still reported and stored in `market_line_import_errors`; inspect the CLI output for `management` counts and the sample rows it prints.
 
-2. **Review staging rows** when you see entries stuck in staging. The `market-review` command lists `needs_review` rows and allows you to accept/reject them, setting `game_id` on accepted rows.
-    ```bash
-    python -m src.cli.pipeline betting market-review --sport nba --season 2025-26 --status needs_review --limit 20
-    ```
-    - `--auto-match` is available when your CSV already matches teams/dates; it will mark these rows as matched without requiring an explicit staging ID.
+2. **Retired review/commit steps.** `market-review` and `market-commit` now raise an immediate error pointing to `betting market-csv` and the new `market_lines` pipeline, so you don't need to run staging review before generating workbooks.
 
-3. **Commit matched rows** into `market_snapshots`. Provide the snapshot run ID you want to tag (`default_snapshot_run_id` can be reused for consistency).
-   ```bash
-   python -m src.cli.pipeline betting market-commit --sport nba --season 2025-26 --snapshot-run-id snap-20260114
-   ```
-   - This looks up staging rows with `match_status=matched` (or `needs_review` when `--force` is supplied) and upserts them into `market_snapshots`.
-
-4. **Populate the schedule workbook’s `BETS` sheet**. The `schedule` pipeline already looks up the latest committed markets per game/market/selection (and falls back to permissively matched staging rows) so line/odds show up in the workbook whenever available. When no snapshot exists the cells stay blank, letting you fill them manually before running `betting log-bets --writeback`.
-
-5. **Log bets** via the review workbook (`betting review-generate` → edit `BETS` → `betting log-bets`). The workbook’s `BETS` sheet expects `game_id`, `market_type`, `selection`, `line`, `odds`, and `stake`; `log-bets` writes `bet_id`/`logged_at` back when `--writeback` is used.
-
-Repeat as needed: ingest new CSVs, review staging, commit matched rows, and refresh the schedule workbook so the latest odds propagate into `BETS`.
+Repeat as needed: ingest new CSVs and trust the rest of the flow to pick up the latest `market_lines` rows automatically.
 
 ## Market Line CSV Import Guide
 
