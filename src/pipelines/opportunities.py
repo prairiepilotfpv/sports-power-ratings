@@ -18,6 +18,7 @@ from eval.validation import get_validation_config
 from pipelines import guardrails
 from pipelines import schedule as schedule_pipeline
 from pipelines.model_params import resolve_model_params_with_metadata
+from utils.normalization import normalize_evaluation_market_type
 
 logger = logging.getLogger(__name__)
 
@@ -27,16 +28,9 @@ def _utcnow_iso() -> str:
 
 
 def _normalize_market_type(value: str | None) -> str | None:
-    if value is None:
-        return None
-    normalized = str(value).strip().lower()
-    if normalized in {"ml", "moneyline"}:
-        return "moneyline"
-    if normalized == "total":
-        return "total"
-    if normalized == "spread":
-        return "spread"
-    return normalized
+    return normalize_evaluation_market_type(value) or (
+        str(value).strip().lower() if value is not None else None
+    )
 
 
 def _clean_value(value: object) -> object | None:

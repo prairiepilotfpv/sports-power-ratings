@@ -12,6 +12,7 @@ import pandas as pd
 
 from eval.validation import ValidationConfig, get_validation_config, validate_prediction_row
 from pipelines.projections import _normal_cdf
+from utils.normalization import normalize_evaluation_market_type
 from utils.odds import american_to_implied, expected_value
 
 logger = logging.getLogger(__name__)
@@ -225,9 +226,8 @@ def evaluate_market_rows(
     for _, market in market_df.iterrows():
         game_id = market.get("game_id")
         market_type_raw = str(market.get("market_type", "")).strip().lower()
-        market_type = market_type_raw
-        if market_type in {"ml", "moneyline"}:
-            market_type = "moneyline"
+        market_type = normalize_evaluation_market_type(market_type_raw) or market_type_raw
+        if market_type == "moneyline":
             weight_key = "moneyline"
         elif market_type == "spread":
             weight_key = "spreads"
