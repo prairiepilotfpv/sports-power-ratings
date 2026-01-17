@@ -33,6 +33,7 @@ def test_tune_batch_excludes_experimental_by_default(monkeypatch, tmp_path):
     monkeypatch.setattr(tune_batch, "run_tuning_pipeline", fake_run_tuning_pipeline)
     monkeypatch.setattr(tune_batch, "load_ensemble_config", lambda sport, season, available_models=None: config)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SPR_TUNE_BATCH_BACKEND", "thread")
 
     tune_batch.run_tune_batch(
         sport="nba",
@@ -45,7 +46,7 @@ def test_tune_batch_excludes_experimental_by_default(monkeypatch, tmp_path):
         include_experimental=False,
     )
 
-    assert calls == ["bradley-terry", "elo"]
+    assert set(calls) == {"bradley-terry", "elo"}
 
 
 def test_tune_batch_includes_union_from_config(monkeypatch, tmp_path):
@@ -67,6 +68,7 @@ def test_tune_batch_includes_union_from_config(monkeypatch, tmp_path):
     monkeypatch.setattr(tune_batch, "run_tuning_pipeline", fake_run_tuning_pipeline)
     monkeypatch.setattr(tune_batch, "load_ensemble_config", lambda sport, season, available_models=None: config)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SPR_TUNE_BATCH_BACKEND", "thread")
 
     tune_batch.run_tune_batch(
         sport="nba",
