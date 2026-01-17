@@ -5,10 +5,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from models.bradley_terry_calibrated_hfa import BradleyTerryCalibratedHFA
+from models.bradley_terry import BradleyTerryBacktest as BradleyTerryCalibratedHFA
 
 FIXTURE_PATH = (
-    Path(__file__).resolve().parents[1] / "fixtures" / "bradley_terry_hfa" / "games.csv"
+    Path(__file__).resolve().parents[1] / "fixtures" / "bradley_terry" / "games.csv"
 )
 
 
@@ -38,4 +38,5 @@ def test_bradley_terry_calibrated_hfa_predictions_basic() -> None:
         assert 0.0 <= prediction.p_home_win <= 1.0
         assert prediction.total_mean is not None
         assert prediction.total_sd is not None
-        assert prediction.extra["win_prob_source"] == "bt_margin_normal"
+        assert prediction.extra["win_prob_source"] == "direct"
+        assert prediction.win_prob_source == "direct"

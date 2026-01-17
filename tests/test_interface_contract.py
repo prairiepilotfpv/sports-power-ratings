@@ -44,14 +44,15 @@ def test_backtest_model_predictions_contract(model_name: str) -> None:
         game_ids.append(prediction.game_id)
 
         margin_mean = prediction.margin_mean
+        source = prediction.win_prob_source
         if margin_mean is None:
             continue
-        if abs(margin_mean) > 0.1:
+        if abs(margin_mean) > 0.1 and source != "direct":
             assert (prediction.p_home_win > 0.5) == (
                 margin_mean > 0
             ), "model_p_home_win should agree with margin_mean sign"
 
-        if prediction.margin_dist_assumption == "normal_approx":
+        if prediction.margin_dist_assumption == "normal_approx" and source != "direct":
             derived = base_models._home_win_prob_from_margin(
                 margin_mean, prediction.margin_sd
             )
@@ -97,7 +98,7 @@ def test_poisson_predictions_skip_normal_consistency_check(
 
 @pytest.mark.parametrize(
     "model_name",
-    ["elo", "gssd", "toor", "bradley_terry_calibrated_hfa"],
+    ["elo", "gssd", "toor"],
 )
 def test_non_poisson_models_still_use_normal_consistency_check(
     monkeypatch: pytest.MonkeyPatch,

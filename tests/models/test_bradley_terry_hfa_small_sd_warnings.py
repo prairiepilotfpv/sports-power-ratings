@@ -7,7 +7,7 @@ import warnings
 import pandas as pd
 import pytest
 
-from models.bradley_terry_hfa import BradleyTerryHFA
+from models.bradley_terry import BradleyTerryBacktest as BradleyTerryHFA
 
 
 DATA_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "bt_hfa_test_games.csv"

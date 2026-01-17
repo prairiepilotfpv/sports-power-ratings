@@ -171,9 +171,7 @@ def run_tune_batch(
     # includes them. This prevents tuning of HFA-specific backtests when a
     # user requests "all models" but doesn't actually use those variants in
     # any ensemble/config.
-    hfa_exclusions = {"bradley_terry_hfa", "bradley_terry_calibrated_hfa"}
-    if models is None:
-        normalized_models = [m for m in normalized_models if m not in hfa_exclusions]
+    # HFA-specific backtest variants removed; no special exclusions necessary.
 
     print(f"TUNE-BATCH selected models: {normalized_models}")
     print(f"TUNE-BATCH metrics: {metric_list}")

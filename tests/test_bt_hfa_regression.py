@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from backtest.runner import run_backtest
-from models.bradley_terry_hfa import BradleyTerryHFA
+from models.bradley_terry import BradleyTerryBacktest as BradleyTerryHFA
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "mini_nba.csv"
 
@@ -21,7 +21,7 @@ def test_bt_hfa_backtest_metrics(tmp_path: Path) -> None:
         lambda: BradleyTerryHFA(max_iter=200),
         games_df,
         output_dir=tmp_path,
-        model_name="bradley_terry_hfa",
+        model_name="bradley-terry",
     )
 
     metrics = outputs.metrics_overall.iloc[0]

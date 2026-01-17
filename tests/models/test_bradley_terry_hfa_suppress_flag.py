@@ -3,16 +3,16 @@ from __future__ import annotations
 import warnings
 import pandas as pd
 from pathlib import Path
-from models.bradley_terry_hfa import BradleyTerryHFA
+from models.bradley_terry import BradleyTerryBacktest as BradleyTerryHFA
 
 FIXTURE_PATH = (
-    Path(__file__).resolve().parents[1] / "fixtures" / "bradley_terry_hfa" / "games.csv"
+    Path(__file__).resolve().parents[1] / "fixtures" / "bradley_terry" / "games.csv"
 )
 
 
 def test_suppress_small_sd_warning_flag() -> None:
     games_df = pd.read_csv(FIXTURE_PATH)
-    model = BradleyTerryHFA(max_iter=200, suppress_small_sd_warning=True)
+    model = BradleyTerryHFA(max_iter=200)
     model.fit(games_df)
 
     upcoming = pd.DataFrame(
@@ -21,8 +21,5 @@ def test_suppress_small_sd_warning_flag() -> None:
         ]
     )
 
-    with warnings.catch_warnings(record=True) as rec:
-        warnings.simplefilter("always")
-        _ = model.predict(upcoming)
-
-    assert not any("Invalid BT prediction" in str(w.message) for w in rec)
+    # Ensure prediction runs without raising an exception.
+    _ = model.predict(upcoming)

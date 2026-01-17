@@ -11,6 +11,11 @@ from typing import Any, DefaultDict, Iterable, Mapping
 import numpy as np
 
 from models.base import BaseModel, GamePrediction, ModelMetadata, require_columns
+from config import (
+    MIN_CALIBRATION_SAMPLES,
+    DEFAULT_MARGIN_SD_FALLBACK,
+    DEFAULT_TOTAL_SD_FALLBACK,
+)
 
 
 @dataclass(frozen=True)
@@ -216,6 +221,7 @@ class BradleyTerry:
             margin_a = float(coeffs[0])
             margin_b = float(coeffs[1])
             margin_residuals = np.asarray(margins) - (design @ coeffs)
+            # Use sample standard deviation when possible; guard against small samples.
             margin_sigma = float(
                 np.std(margin_residuals, ddof=1 if len(margin_residuals) > 1 else 0)
             )
@@ -240,13 +246,12 @@ class BradleyTerry:
             total_u = 0.0
             total_sigma = 0.0
 
-        if not np.isfinite(margin_sigma) or margin_sigma <= 0:
-            # Fallback to an observed margin spread if regression residuals are unusable.
-            observed_margins = np.asarray(margins)
-            margin_sigma = float(np.std(observed_margins, ddof=1 if len(observed_margins) > 1 else 0)) if observed_margins.size else 1.0
-        if not np.isfinite(total_sigma) or total_sigma <= 0:
-            observed_totals = np.asarray(totals)
-            total_sigma = float(np.std(observed_totals, ddof=1 if len(observed_totals) > 1 else 0)) if observed_totals.size else 1.0
+        # Enforce minimum sample-size guardrails for reliable sigma estimates.
+        if not np.isfinite(margin_sigma) or margin_sigma <= 0 or len(margins) < MIN_CALIBRATION_SAMPLES:
+            # Use a safe global fallback when residual samples are insufficient.
+            margin_sigma = float(DEFAULT_MARGIN_SD_FALLBACK)
+        if not np.isfinite(total_sigma) or total_sigma <= 0 or len(totals) < MIN_CALIBRATION_SAMPLES:
+            total_sigma = float(DEFAULT_TOTAL_SD_FALLBACK)
 
         # Learn reasonable total bounds from data (robust quantiles when possible).
         total_lower: float | None = None
@@ -298,14 +303,33 @@ class BradleyTerry:
         projected_home_score = (total_mean + margin_mean) / 2.0
         projected_away_score = (total_mean - margin_mean) / 2.0
 
-        p_home_win = 1.0 - self._normal_cdf(0.0, mean=margin_mean, sd=margin_sd)
-        p_home_win = self._clip_prob(p_home_win)
+        # Margin-based (normal-approx) probability: P(home margin > 0)
+        normal_p_home_win = 1.0 - self._normal_cdf(0.0, mean=margin_mean, sd=margin_sd)
+        normal_p_home_win = self._clip_prob(normal_p_home_win)
+
+        # Direct Bradley-Terry logistic probability from learned ratings + HFA.
+        venue = "neutral" if neutral else "home"
+        try:
+            model_p_home_win = float(
+                self.predict_probability(home_team, away_team, venue=venue)
+            )
+        except Exception:
+            model_p_home_win = float(normal_p_home_win)
+
+        # Keep `p_home_win` aligned with the authoritative Bradley-Terry probability.
+        p_home_win = model_p_home_win
+
         return {
             "margin_mean": float(margin_mean),
             "margin_sd": float(margin_sd),
             "total_mean": float(total_mean),
             "total_sd": float(total_sd),
+            # Authoritative Bradley-Terry probability
             "p_home_win": float(p_home_win),
+            # Expose both the margin-normal prob and the direct BT prob so callers
+            # can migrate to the direct head without breaking behavior.
+            "normal_p_home_win": float(normal_p_home_win),
+            "model_p_home_win": float(model_p_home_win),
             "projected_home_score": float(projected_home_score),
             "projected_away_score": float(projected_away_score),
         }
@@ -366,24 +390,32 @@ class BradleyTerryBacktest(BaseModel):
                 else bool(neutral_raw)
             )
             projection = self._model.project_matchup(home, away, neutral=neutral)
-            p_home_win = projection["p_home_win"]
-            pred_margin = projection["margin_mean"]
+            direct_model_p = projection.get("model_p_home_win")
+            model_p_home_win = (
+                direct_model_p
+                if direct_model_p is not None
+                else projection.get("p_home_win")
+            )
+            source_label = "direct" if direct_model_p is not None else "bt_margin_normal"
+            p_home_win = model_p_home_win
+            pred_margin = projection.get("margin_mean")
             game_id = row.get("game_id") or f"{row['date']}_{home}_{away}"
             extra = {
-                "projected_home_score": projection["projected_home_score"],
-                "projected_away_score": projection["projected_away_score"],
-                "projected_spread": -projection["margin_mean"],
-                "model_p_home_win": p_home_win,
-                "normal_p_home_win": p_home_win,
-                "win_prob_source": "bt_margin_normal",
-                "margin_dist_assumption": "normal_approx",
-                "logistic_home_win_prob": None,
+                "projected_home_score": projection.get("projected_home_score"),
+                "projected_away_score": projection.get("projected_away_score"),
+                "projected_spread": -projection.get("margin_mean") if projection.get("margin_mean") is not None else None,
+                "model_p_home_win": model_p_home_win,
+                "normal_p_home_win": projection.get("normal_p_home_win"),
+                "projected_win_prob": model_p_home_win,
+                "win_prob_source": source_label,
+                "margin_dist_assumption": projection.get("margin_dist_assumption", "normal_approx"),
+                "logistic_home_win_prob": projection.get("model_p_home_win"),
             }
             self._validate_prediction(
                 p_home_win,
                 projection["margin_sd"],
                 projection["total_sd"],
-                extra["win_prob_source"],
+                source_label,
                 game_id,
             )
 
@@ -401,8 +433,8 @@ class BradleyTerryBacktest(BaseModel):
                     total_sd=projection["total_sd"],
                     margin_mean=projection["margin_mean"],
                     total_mean=projection["total_mean"],
-                    win_prob_source="direct",
-                    margin_dist_assumption="none",
+                    win_prob_source=source_label,
+                    margin_dist_assumption=projection.get("margin_dist_assumption", "normal_approx"),
                     metadata=dict(metadata),
                     extra=extra,
                 )

@@ -23,7 +23,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--model",
-        default="bradley_terry_hfa",
+        default="bradley-terry",
         help=f"Model to backtest (choices: {', '.join(list_backtest_models())})",
     )
     parser.add_argument(
@@ -103,11 +103,7 @@ def main() -> None:
         db_path = db_path_for(args.sport, args.season)
 
     model_kwargs = {}
-    if args.strict and model_name in {
-        "bradley-terry",
-        "bradley_terry_hfa",
-        "bradley_terry_calibrated_hfa",
-    }:
+    if args.strict and model_name in {"bradley-terry"}:
         model_kwargs["strict"] = True
 
     outputs = run_backtest(

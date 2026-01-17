@@ -312,7 +312,10 @@ def _validate_probability_sign(
 
     if p_home_win is None or margin_mean is None:
         return
-    if win_prob_source == "sample":
+    # Allow raw sample-based distributions and direct model probabilities
+    # to bypass strict margin-sign enforcement. Direct model probabilities
+    # may legitimately disagree with a post-hoc margin regression.
+    if win_prob_source in ("sample", "direct"):
         return
     if margin_mean > 0 and p_home_win <= 0.5 - tolerance:
         raise ValueError(

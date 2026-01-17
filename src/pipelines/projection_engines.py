@@ -216,16 +216,20 @@ def _rating_projection_engine(
         projection.margin, margin_sd
     ) if projection.margin is not None else None
     projected_win_prob = normal_p_home_win
-    model_p_home_win = projection.projected_win_prob
-    win_prob_source = "logistic"
+    # By default, expose the margin-derived probability as the legacy
+    # `model_p_home_win` so downstream consumers relying on the old
+    # semantics continue to function. The direct Bradley-Terry logistic
+    # probability (when available) is exposed as `logistic_home_win_prob`.
+    model_p_home_win = normal_p_home_win
+    win_prob_source = "bt_margin_normal"
     margin_dist_assumption = "normal_approx"
     if model_id == "bradley-terry":
-        win_prob_source = "direct"
-        margin_dist_assumption = "none"
+        # For raw bradley-terry models, attempt to fetch direct logistic
+        # probability but keep the legacy margin-based field authoritative.
         if hasattr(model, "predict_probability"):
             venue = "neutral" if neutral else "home"
             try:
-                model_p_home_win = float(
+                logistic_prob = float(
                     model.predict_probability(
                         home_team,
                         away_team,
@@ -233,12 +237,13 @@ def _rating_projection_engine(
                     )
                 )
             except Exception:
-                pass
-        normal_p_home_win = None
-        projected_win_prob = None
-    logistic_home_win_prob = projection.projected_win_prob
-    if win_prob_source == "direct" and model_p_home_win is not None:
-        logistic_home_win_prob = model_p_home_win
+                logistic_prob = None
+        else:
+            logistic_prob = projection.projected_win_prob
+        # expose logistic prob separately
+        logistic_home_win_prob = logistic_prob
+    else:
+        logistic_home_win_prob = projection.projected_win_prob
     return {
         "projected_home_score": projection.projected_home_score,
         "projected_away_score": projection.projected_away_score,
@@ -266,22 +271,30 @@ def _bt_projection_engine(
         return _rating_projection_engine(home_team, away_team, model, context)
     neutral = bool(context.get("neutral", False))
     projection = model.project_matchup(home_team, away_team, neutral=neutral)
+    # For pipeline projections (model-based scheduling, reporting), the
+    # projection engine should expose the model's direct logistic win
+    # probability as authoritative and suppress the margin-derived
+    # probability to avoid confusing consumers that expect a direct
+    # win-prob for ranking models.
+    model_p = projection.get("model_p_home_win", projection.get("p_home_win"))
+    # For raw Bradley-Terry models, we prefer the logistic probability and
+    # do not surface the margin-normal derived probability in the pipeline
+    # projection output (keep it None) to match historical pipeline behavior.
+    normal_p = None if model_p is not None else projection.get("normal_p_home_win")
     return {
-        "projected_home_score": projection["projected_home_score"],
-        "projected_away_score": projection["projected_away_score"],
-        "projected_total": projection["total_mean"],
-        # For Bradley-Terry models, expose the model's direct win-prob as 'model_p_home_win'
-        # and mark the win_prob_source as 'direct'. Keep normal/logistic fields explicit.
-        "projected_win_prob": projection["p_home_win"],
-        "model_p_home_win": projection["p_home_win"],
-        "normal_p_home_win": None,
-        "win_prob_source": "direct",
-        "margin_mean": projection["margin_mean"],
-        "margin_sd": projection["margin_sd"],
-        "total_mean": projection["total_mean"],
-        "total_sd": projection["total_sd"],
-        "margin_dist_assumption": "none",
-        "logistic_home_win_prob": None,
+        "projected_home_score": projection.get("projected_home_score"),
+        "projected_away_score": projection.get("projected_away_score"),
+        "projected_total": projection.get("total_mean"),
+        "projected_win_prob": model_p,
+        "model_p_home_win": model_p,
+        "normal_p_home_win": normal_p,
+        "win_prob_source": "direct" if model_p is not None else "bt_margin_normal",
+        "margin_mean": projection.get("margin_mean"),
+        "margin_sd": projection.get("margin_sd"),
+        "total_mean": projection.get("total_mean"),
+        "total_sd": projection.get("total_sd"),
+        "margin_dist_assumption": projection.get("margin_dist_assumption", "none"),
+        "logistic_home_win_prob": model_p,
     }
 
 

@@ -10,7 +10,7 @@ python -m src.cli.pipeline <command> [options]
 
 ## Common Flags
 
-  - Example: to suppress small-sigma warnings for `bradley_terry_hfa` (useful for low-scoring sports like `nhl`) pass `--model-params '{"suppress_small_sd_warning": true}'`.
+  - Example: to suppress small-sigma warnings for models that expose this option (useful for low-scoring sports like `nhl`) pass `--model-params '{"suppress_small_sd_warning": true}'`.
 
 ### Activating and verifying tuned runs
 
@@ -325,18 +325,18 @@ CSV expectations: `market_type` (ML/spread/total), `selection`, `line` (nullable
 Backtesting fits the model on all games before each evaluation date, then predicts that day's games to generate metrics and calibration tables.
 
 ```bash
-python -m src.cli.pipeline backtest --model bradley_terry_hfa --csv nba_results.csv --start 2024-11-01 --end 2024-12-01
+python -m src.cli.pipeline backtest --model bradley-terry --csv nba_results.csv --start 2024-11-01 --end 2024-12-01
 ```
 
 Options:
 
-- `--model`: Model to evaluate (default: `bradley_terry_hfa`). Supported: `bradley_terry_hfa`, `bradley_terry_calibrated_hfa`, `elo`, `gssd`, `toor`.
+-- `--model`: Model to evaluate (default: `bradley-terry`). Supported: `bradley-terry`, `elo`, `gssd`, `toor`.
 - `--csv`: Path to CSV containing historical games (required). Relative paths resolved from repo root.
 - `--start` / `--end`: Evaluation window dates (YYYY-MM-DD) (required).
 - `--window`: `expanding` (default) or `rolling`.
 - `--rolling-days` or `--rolling-games`: Size for rolling window.
 - `--model-params` / `--model-params-file`: As above.
-  - Note: model-specific options are supported; for example `bradley_terry_hfa` accepts `suppress_small_sd_warning` (boolean) to silence warnings about small learned margin/total sigmas for low-scoring sports. Default: `false`.
+  - Note: model-specific options are supported; check the model's `metadata()` for available params. Some historical wrapper variants exposed `suppress_small_sd_warning`.
 - `--output-dir`: Override default directory (`outputs/backtests/<model>/`).
 - `--sport` / `--season` / `--db`: Optional persistence of metrics to DB for use in projections.
 
@@ -353,7 +353,7 @@ Examples:
 # Expanding window backtest (default)
 python -m src.cli.pipeline backtest \
   --csv data/raw/nba_2024_25.csv \
-  --model bradley_terry_hfa \
+  --model bradley-terry \
   --start 2024-11-01 \
   --end 2024-12-01
 
@@ -386,7 +386,7 @@ python -m src.cli.pipeline backtest \
 # Persist metrics to DB
 python -m src.cli.pipeline backtest \
   --csv nba_results.csv \
-  --model bradley_terry_hfa \
+  --model bradley-terry \
   --start 2024-11-01 \
   --end 2024-12-01 \
   --sport nba \
@@ -396,7 +396,7 @@ python -m src.cli.pipeline backtest \
 # Custom output directory
 python -m src.cli.pipeline backtest \
   --csv nba_results.csv \
-  --model bradley_terry_calibrated_hfa \
+  --model bradley-terry \
   --start 2024-11-01 \
   --end 2024-12-01 \
   --output-dir outputs/custom_backtest_run

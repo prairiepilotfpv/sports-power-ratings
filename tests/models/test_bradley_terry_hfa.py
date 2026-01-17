@@ -5,10 +5,10 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from models.bradley_terry_hfa import BradleyTerryHFA
+from models.bradley_terry import BradleyTerryBacktest as BradleyTerryHFA
 
 FIXTURE_PATH = (
-    Path(__file__).resolve().parents[1] / "fixtures" / "bradley_terry_hfa" / "games.csv"
+    Path(__file__).resolve().parents[1] / "fixtures" / "bradley_terry" / "games.csv"
 )
 
 
@@ -49,5 +49,6 @@ def test_bradley_terry_hfa_predictions_stable() -> None:
         projected_away = prediction.extra["projected_away_score"]
         assert projected_home - projected_away == pytest.approx(prediction.margin_mean)
         assert projected_home + projected_away == pytest.approx(prediction.total_mean)
-        assert prediction.extra["win_prob_source"] == "bt_margin_normal"
+        assert prediction.extra["win_prob_source"] == "direct"
+        assert prediction.win_prob_source == "direct"
         assert prediction.extra["margin_dist_assumption"] == "normal_approx"

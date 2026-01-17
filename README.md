@@ -57,12 +57,7 @@ outputs/               Backtest and tuning artifacts
 
 ## Model overview
 
-- **Bradley-Terry**: logistic win-probability ratings for head-to-head outcomes.
-- **Elo**: incremental ratings with home-advantage adjustments.
-- **GSSD**: ratings derived from per-team scoring splits.
-- **TOORPowerRating**: OLS on game margins to derive power ratings.
-- **TOORModel**: maps Bradley-Terry strengths to margins via OLS for backtests.
-- **Poisson**: attack/defense scoring model with simulation-driven totals.
+Note: The Bradley–Terry implementation now exposes multiple prediction "heads" (win probability, margin mean/sd, total mean/sd). See [docs/bradley_terry_heads.md](docs/bradley_terry_heads.md) for the canonical field contract and recommended usage. Tests fixtures for Bradley–Terry were renamed to `tests/fixtures/bradley_terry/`.
 
 ## Requirements
 
@@ -126,7 +121,7 @@ python -m src.cli.pipeline matchup --sport nba --season 2025-26 --matchup "Laker
 python -m src.cli.pipeline report --sport nba --season 2025-26
 
 # 6) Backtest a model on historical games
-python -m src.cli.pipeline backtest --csv nba_results.csv --model bradley_terry_hfa --start 2024-11-01 --end 2024-12-01
+python -m src.cli.pipeline backtest --csv nba_results.csv --model bradley-terry --start 2024-11-01 --end 2024-12-01
 
 # 7) Tune model hyperparameters via repeated backtests
 python -m src.cli.pipeline tune --model elo --csv nba_results.csv --start 2024-11-01 --end 2024-12-01 --metric log_loss
@@ -373,12 +368,12 @@ Backtesting evaluates model predictions against actual outcomes across a histori
 **Basic usage:**
 
 ```bash
-python -m src.cli.pipeline backtest --model bradley_terry_hfa --csv nba_results.csv --start 2024-11-01 --end 2024-12-01
+python -m src.cli.pipeline backtest --model bradley-terry --csv nba_results.csv --start 2024-11-01 --end 2024-12-01
 ```
 
 **Options:**
 
-- `--model`: Model to evaluate (default: `bradley_terry_hfa`). Supported: `bradley_terry_hfa`, `bradley_terry_calibrated_hfa`, `elo`, `gssd`, `toor`.
+-- `--model`: Model to evaluate (default: `bradley-terry`). Supported: `bradley-terry`, `elo`, `gssd`, `toor`.
 - `--csv`: Path to CSV containing historical games (required). Relative paths are resolved from the repo root.
 - `--start` / `--end`: Evaluation window dates (YYYY-MM-DD) (required).
 - `--window`: Training window type: `expanding` (default, all games before eval date) or `rolling` (fixed-size lookback).
@@ -415,7 +410,7 @@ Each backtest produces four CSV files plus an Excel workbook:
 # Expanding window backtest (default)
 python -m src.cli.pipeline backtest \
   --csv data/raw/nba_2024_25.csv \
-  --model bradley_terry_hfa \
+  --model bradley-terry \
   --start 2024-11-01 \
   --end 2024-12-01
 
@@ -455,7 +450,7 @@ python -m src.cli.pipeline backtest \
 - macOS/Linux: `source .pyenv/bin/activate`
 python -m src.cli.pipeline backtest \
   --csv nba_results.csv \
-  --model bradley_terry_calibrated_hfa \
+  --model bradley-terry \
 3) Install runtime dependencies
 
 ```bash
@@ -501,7 +496,7 @@ python -m src.cli.pipeline matchup --sport nba --season 2025-26 --matchup "Laker
 python -m src.cli.pipeline report --sport nba --season 2025-26
 
 # 6) Backtest a model on historical games
-python -m src.cli.pipeline backtest --csv nba_results.csv --model bradley_terry_hfa --start 2024-11-01 --end 2024-12-01
+python -m src.cli.pipeline backtest --csv nba_results.csv --model bradley-terry --start 2024-11-01 --end 2024-12-01
 
 # 7) Tune model hyperparameters via repeated backtests
 python -m src.cli.pipeline tune --model elo --csv nba_results.csv --start 2024-11-01 --end 2024-12-01 --metric log_loss
@@ -530,7 +525,7 @@ See the complete command and option documentation in [docs/CLI.md](docs/CLI.md).
 ## Model Parameter Overrides (JSON examples)
 
 - Inline: `--model-params '{"k_factor": 20, "home_advantage": 60}'`
-- File: create `params.json`:
+python -m src.cli.pipeline backtest --csv nba_results.csv --model bradley-terry --start 2024-11-01 --end 2024-12-01
 
 ```json
 {

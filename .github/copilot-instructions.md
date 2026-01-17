@@ -36,14 +36,14 @@ Summary: concise reference to help an AI code agent be productive in this reposi
   - Rank (all models): `python -m src.cli.pipeline rank --sport nba --season 2025-26`
   - Rank (single model): `python -m src.cli.pipeline rank --sport nba --season 2025-26 --model elo`
   - Matchup: `python -m src.cli.pipeline matchup --sport nba --season 2025-26 --matchup "Lakers vs Celtics"`
-  - Backtest: `python -m src.cli.pipeline backtest --model bradley_terry_hfa --csv nba_results.csv --start 2024-11-01 --end 2024-12-01`
+  - Backtest: `python -m src.cli.pipeline backtest --model bradley-terry --csv nba_results.csv --start 2024-11-01 --end 2024-12-01`
   - Tune: `python -m src.cli.pipeline tune --model elo --csv nba_results.csv --start 2024-11-01 --end 2024-12-01 --metric log_loss`
   - Market OCR: `python -m src.cli.pipeline market-ocr --sport nba --season 2025-26 --input screenshots/ --book dn --captured-at 2024-12-01T14:30:00Z --json-output tmp/lines.json`
   - Bet report: `python -m src.cli.pipeline bet-report --sport nba --season 2025-26 --type weekly --start 2024-12-01 --end 2024-12-31 --format xlsx --output outputs/reports/bets-nba-dec.xlsx`
 
 ## Important conventions & patterns
 - Paths: default DBs are `data/db/<sport>/<season>.db`. Processed output: `data/processed/<sport>/<season>/` (`src/data/paths.py`). Betting artifacts (reports, OCR JSON) default to `outputs/`.
-- Models: registry in `src/models/registry.py`. Forecast model names (e.g., `bradley-terry`, `elo`, `gssd`, `poisson`, `toor`) map to power-rating classes; backtest runners use slightly different names (e.g., `bradley_terry_hfa`, `bradley_terry_calibrated_hfa`) — check `list_models()` and `list_backtest_models()`.
+-- Models: registry in `src/models/registry.py`. Forecast model names (e.g., `bradley-terry`, `elo`, `gssd`, `poisson`, `toor`) map to power-rating classes; backtest runners use the canonical names from `list_backtest_models()`.
 - Model params: overrides accepted as JSON string (`--model-params '{"k_factor":20}'`) or file (`--model-params-file params.json`). Tuned params are persisted and auto-loaded when present.
 - Input resolution: CLI resolves bare filenames under `data/raw/` when a provided path is missing (see `resolve_input_path`). Ingest supports `--input`, `--input-dir`, or `--input-text` (mutually exclusive).
 - Required CSV schema for backtests: `date`, `home_team`, `away_team`, `home_score`, `away_score`. Parsing is lenient (column aliases handled) but missing/invalid dates or negative scores raise errors (see `src/contracts.py` validation helpers).

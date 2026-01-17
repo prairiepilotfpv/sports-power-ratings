@@ -52,7 +52,7 @@ Writes:
 ## How tune-batch chooses models
 - No `--models` provided: union of models across resolved configs (sport/season-scoped). If no configs, uses the default allowlist union.
 - `--include-all-models`: tune every backtest model (old behavior).
-- `--include-experimental`: include models marked experimental (e.g., `bradley_terry_hfa`). Default excludes experimental variants.
+  - `--include-experimental`: include models marked experimental (e.g., `bradley-terry`). Default excludes experimental variants.
 - `--models` provided: exact list is used.
 
 Example:

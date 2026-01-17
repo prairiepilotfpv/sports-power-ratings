@@ -18,7 +18,7 @@ def test_backtest_exports_excel(tmp_path: Path) -> None:
     assert len(dates) > 1, "Fixture must include at least two dates."
 
     start_date = dates[1].isoformat()
-    model_cls = get_backtest_model("bradley_terry_hfa")
+    model_cls = get_backtest_model("bradley-terry")
 
     output_dir = tmp_path / "backtest"
     run_backtest(
@@ -27,7 +27,7 @@ def test_backtest_exports_excel(tmp_path: Path) -> None:
         start_date=start_date,
         end_date=start_date,
         output_dir=output_dir,
-        model_name="bradley_terry_hfa",
+        model_name="bradley-terry",
     )
 
     excel_files = list(output_dir.glob("backtest_*.xlsx"))

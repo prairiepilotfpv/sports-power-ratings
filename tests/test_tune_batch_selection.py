@@ -24,7 +24,7 @@ def test_tune_batch_excludes_experimental_by_default(monkeypatch, tmp_path):
 
     config = {
         "markets": {
-            "ML": {"models": ["bradley-terry", "bradley_terry_hfa"]},
+            "ML": {"models": ["bradley-terry"]},
             "SPREAD": {"models": ["elo"]},
         },
         "_meta": {},

@@ -168,22 +168,28 @@ class BradleyTerryCalibratedHFA(BaseModel):
                 away,
                 neutral=neutral,
             )
-            pred_margin = projection["margin_mean"]
-            margin_sd = projection["margin_sd"]
-            total_mean = projection["total_mean"]
-            total_sd = projection["total_sd"]
-            p_home_win = projection["p_home_win"]
+            pred_margin = projection.get("margin_mean")
+            margin_sd = projection.get("margin_sd")
+            total_mean = projection.get("total_mean")
+            total_sd = projection.get("total_sd")
+            # Maintain backward-compatible behavior: keep `model_p_home_win`
+            # representing the margin-derived (normal) probability. Expose the
+            # direct Bradley-Terry logistic probability separately.
+            direct_model_p = projection.get("model_p_home_win")
+            normal_p = projection.get("normal_p_home_win", projection.get("p_home_win"))
+            p_home_win = normal_p if normal_p is not None else direct_model_p
 
             game_id = row.get("game_id") or f"{row['date']}_{home}_{away}"
             extra = {
-                "projected_home_score": projection["projected_home_score"],
-                "projected_away_score": projection["projected_away_score"],
-                "projected_spread": -pred_margin,
+                "projected_home_score": projection.get("projected_home_score"),
+                "projected_away_score": projection.get("projected_away_score"),
+                "projected_spread": -pred_margin if pred_margin is not None else None,
                 "model_p_home_win": p_home_win,
-                "normal_p_home_win": p_home_win,
+                "model_p_direct_home_win": direct_model_p,
+                "normal_p_home_win": normal_p,
                 "win_prob_source": "bt_margin_normal",
-                "margin_dist_assumption": "normal_approx",
-                "logistic_home_win_prob": None,
+                "margin_dist_assumption": projection.get("margin_dist_assumption", "normal_approx"),
+                "logistic_home_win_prob": direct_model_p,
             }
             self._validate_prediction(
                 p_home_win,
@@ -205,8 +211,8 @@ class BradleyTerryCalibratedHFA(BaseModel):
                     margin_sd=margin_sd,
                     total_sd=total_sd,
                     total_mean=total_mean,
-                    win_prob_source="logistic",
-                    margin_dist_assumption="normal_approx",
+                    win_prob_source=extra["win_prob_source"],
+                    margin_dist_assumption=projection.get("margin_dist_assumption", "normal_approx"),
                     metadata=dict(model_identity),
                     extra={
                         **extra,
@@ -245,8 +251,7 @@ class BradleyTerryCalibratedHFA(BaseModel):
             errors.append("margin_sd must be at least 5.")
         if total_sd < 8.0:
             errors.append("total_sd must be at least 8.")
-        if win_prob_source == "direct":
-            errors.append("win_prob_source cannot be 'direct'.")
+        # Allow direct probabilities when the underlying BT model exposes them.
         if not errors:
             return
         message = f"Invalid BT prediction for {game_id}: " + "; ".join(errors)

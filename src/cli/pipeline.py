@@ -451,8 +451,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     backtest_parser.add_argument(
         "--model",
-        default="bradley_terry_hfa",
-        help="Backtest model to run (default: bradley_terry_hfa).",
+        default="bradley-terry",
+        help="Backtest model to run (default: bradley-terry).",
     )
     backtest_parser.add_argument(
         "--model-params",

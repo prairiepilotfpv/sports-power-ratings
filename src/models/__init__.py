@@ -13,7 +13,6 @@ from .base import (
     validate_win_prob_dist,
 )
 from .bradley_terry import BradleyTerry
-from .bradley_terry_hfa import BradleyTerryHFA
 from .elo import EloModel, EloPowerRating
 from .gssd import GSSDModel, GSSDPowerRating
 from .poisson import PoissonModel, PoissonPowerRating
@@ -25,7 +24,6 @@ __all__ = [
     "ModelMetadata",
     "PowerRatingModel",
     "BradleyTerry",
-    "BradleyTerryHFA",
     "EloModel",
     "EloPowerRating",
     "GSSDModel",
