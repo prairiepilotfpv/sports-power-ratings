@@ -61,7 +61,7 @@ def build_excel_report(
                     model, params=model_params, params_file=model_params_file
                 )
                 rankings = build_rankings(
-                    df.copy(deep=True), model=model, model_params=resolved_params
+                    df.copy(deep=True), model=model, model_params=resolved_params, include_implied_points=True
                 )
             except ValueError as exc:
                 if "No completed games" in str(exc):
@@ -69,7 +69,8 @@ def build_excel_report(
                         f"No completed games found for sport={sport!r}, season={season!r}"
                     ) from exc
                 raise
-            rankings = rankings.loc[:, ["team", "rating", "points", "games"]]
+            # Use explicit implied_points column (derived head) instead of generic 'points'.
+            rankings = rankings.loc[:, ["team", "rating", "implied_points", "games", "point_scale", "use_log_scale"]]
             rankings.to_excel(writer, sheet_name=model, index=False)
 
             summary = pd.DataFrame()

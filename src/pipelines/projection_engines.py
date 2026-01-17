@@ -75,6 +75,17 @@ def _rating_projection_engine(
     if callable(model_id):
         model_id = model_id()
     ratings = context.get("ratings", {})
+    # Enforce explicit rating units: projection logic expects ratings in
+    # spread/points units (i.e. implied points). Callers must set
+    # `projection_context["rating_units"] = "points"` or obtain ratings
+    # via `build_rankings(..., include_implied_points=True)`.
+    rating_units = context.get("rating_units")
+    if rating_units != "points":
+        raise ValueError(
+            "Projection engine requires ratings expressed in points units. "
+            "Call build_rankings(..., include_implied_points=True) or set "
+            "projection_context['rating_units'] = 'points'."
+        )
     home_rating = ratings.get(home_team)
     away_rating = ratings.get(away_team)
     sport = context.get("sport")

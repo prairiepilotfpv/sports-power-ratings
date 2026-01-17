@@ -145,9 +145,18 @@ def _margin_sd_fit_stats(
 
 
 def _rating_lookup(rankings: pd.DataFrame) -> Dict[str, float]:
-    """Build a lookup for team name -> point-scale rating."""
+    """Build a lookup for team name -> point-scale rating.
+
+    This function requires the rankings DataFrame to include `implied_points`.
+    If `implied_points` is missing, raise a clear error explaining how to
+    obtain them from `build_rankings`.
+    """
+    if "implied_points" not in rankings.columns:
+        raise ValueError(
+            "Schedule projections require implied_points; call build_rankings(include_implied_points=True)."
+        )
     return {
-        str(row["team"]).strip(): float(row["points"]) for _, row in rankings.iterrows()
+        str(row["team"]).strip(): float(row["implied_points"]) for _, row in rankings.iterrows()
     }
 
 
@@ -227,6 +236,7 @@ def _project_row(
             "conditional_sd_intercept": conditional_sd_intercept,
             "conditional_sd_slope": conditional_sd_slope,
             "win_prob_k": win_prob_k,
+            "rating_units": "points",
         }
     if projection_engine is None:
         projection_engine = get_projection_engine(model_instance)
@@ -438,6 +448,7 @@ def _build_schedule_dataframe(
         model=model,
         require_scores=False,
         model_params=model_params,
+        include_implied_points=True,
         return_model=True,
     )
     ratings = _rating_lookup(rankings)
@@ -481,6 +492,7 @@ def _build_schedule_dataframe(
         "sd_sample_size": sd_sample_size,
         "sd_residual_min": sd_residual_min,
         "sd_residual_max": sd_residual_max,
+        "rating_units": "points",
     }
     if model == "poisson" and model_params and "n_simulations" in model_params:
         projection_context["n_simulations"] = model_params["n_simulations"]

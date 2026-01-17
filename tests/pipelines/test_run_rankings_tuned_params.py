@@ -45,8 +45,8 @@ def test_build_rankings_filters_and_passes_fit_kwargs_for_gssd() -> None:
     )
     assert not rankings_no_recency.empty
 
-    a_points_recency = float(rankings_recency.loc[rankings_recency["team"] == "A", "points"].iloc[0])
-    a_points_no_recency = float(rankings_no_recency.loc[rankings_no_recency["team"] == "A", "points"].iloc[0])
+    a_rating_recency = float(rankings_recency.loc[rankings_recency["team"] == "A", "rating"].iloc[0])
+    a_rating_no_recency = float(rankings_no_recency.loc[rankings_no_recency["team"] == "A", "rating"].iloc[0])
 
     # The simple two-game setup above doesn't create multiple samples per-stat,
     # so recency weighting might not change per-stat averages; instead, verify

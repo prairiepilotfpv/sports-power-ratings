@@ -299,13 +299,14 @@ def test_schedule_uses_latest_scores(tmp_path: Path) -> None:
     )
     save_games(db_path, [initial_game])
 
-    output_path = tmp_path / "schedule.csv"
-    build_schedule_with_projections(
+    # Use the schedule entrypoint which requests implied_points so projections
+    # receive spread-unit ratings even when no completed games exist.
+    output_path = build_schedule_with_projections(
         db_path,
         sport="nba",
         season="2024-25",
         model="bradley-terry",
-        output_path=output_path,
+        output_path=tmp_path / "schedule.csv",
     )
     initial_df = pd.read_csv(output_path)
     initial_row = initial_df.loc[initial_df["game_id"] == game_id].iloc[0]

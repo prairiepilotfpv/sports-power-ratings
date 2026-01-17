@@ -90,8 +90,12 @@ def team_home_advantages(
 
 def _rating_lookup(rankings: pd.DataFrame) -> Dict[str, float]:
     """Map team name to point-scale rating."""
+    if "implied_points" not in rankings.columns:
+        raise ValueError(
+            "Matchup projections require implied_points; call build_rankings(include_implied_points=True)."
+        )
     return {
-        str(row["team"]).strip(): float(row["points"]) for _, row in rankings.iterrows()
+        str(row["team"]).strip(): float(row["implied_points"]) for _, row in rankings.iterrows()
     }
 
 
@@ -132,12 +136,14 @@ def predict_matchup(
         tuned_metric=tuned_metric,
     )
     resolved_params = resolution.params
+    # Use only completed games to build rankings and avoid requiring scores
+    # again inside `build_rankings` since we've already filtered them.
+    played = _completed_games(df)
     rankings, model_instance = build_rankings(
-        df, model=model, model_params=resolved_params, return_model=True
+        played, model=model, model_params=resolved_params, include_implied_points=True, return_model=True, require_scores=False
     )
     ratings = _rating_lookup(rankings)
     projection_engine = get_projection_engine(model_instance)
-    played = _completed_games(df)
     home_advantages = team_home_advantages(played, ratings)
     metrics = load_model_metrics(db_path, sport=sport, season=season, model=model) or {}
     fallback_home_advantage = float(metrics.get("home_advantage", 0.0))
@@ -183,6 +189,7 @@ def predict_matchup(
             "win_prob_k": win_prob_k,
             "home_advantage": home_advantage,
             "neutral": False,
+            "rating_units": "points",
         },
     )
 
@@ -197,6 +204,14 @@ def predict_matchup(
 
     if margin_mean is None:
         raise ValueError("Projection engine did not return margin_mean.")
+
+    # Determine preliminary winner/loser from the margin mean so these
+    # variables are available for any early returns (e.g., hard-exclude
+    # branches below). Do not change model math — this only assigns labels.
+    if margin_mean >= 0:
+        winner, loser = home_key, away_key
+    else:
+        winner, loser = away_key, home_key
 
     # Hard-exclude models that report implausible margin SDs which would
     # otherwise produce near-certain covers or meaningless signals. Exclude
@@ -228,10 +243,6 @@ def predict_matchup(
             tuned_metric_used=resolution.tuned_metric_used,
         )
 
-    if margin_mean >= 0:
-        winner, loser = home_key, away_key
-    else:
-        winner, loser = away_key, home_key
 
     win_prob_samples = None
     if win_prob_value is not None and margin_sd_value is not None:

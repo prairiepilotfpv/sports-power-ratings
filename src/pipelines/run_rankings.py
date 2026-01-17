@@ -42,7 +42,7 @@ def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
 
 def _empty_rankings() -> pd.DataFrame:
     """Return an empty rankings DataFrame with the expected columns."""
-    return pd.DataFrame(columns=["team", "rating", "points", "games"])
+    return pd.DataFrame(columns=["team", "rating", "games"])
 
 
 def _filter_kwargs(params: dict[str, Any], func) -> dict[str, Any]:
@@ -74,6 +74,7 @@ def build_rankings(
     *,
     require_scores: bool = True,
     model_params: dict[str, float] | None = None,
+    include_implied_points: bool = False,
     return_model: bool = False,
 ) -> pd.DataFrame | tuple[pd.DataFrame, Any]:
     """Fit a ranking model and return a DataFrame of ratings and point values."""
@@ -99,6 +100,12 @@ def build_rankings(
 
     if played.empty:
         empty = _empty_rankings()
+        if include_implied_points:
+            # Ensure callers requesting implied points receive the expected
+            # empty schema so downstream code can safely reference the
+            # `implied_points` column even when no teams are present.
+            empty = empty.copy()
+            empty["implied_points"] = pd.Series(dtype=float)
         return (empty, model_instance) if return_model else empty
 
     games_played: Dict[str, int] = {}
@@ -113,37 +120,49 @@ def build_rankings(
     rating_map = dict(model_instance.rankings())
     if not rating_map:
         empty = _empty_rankings()
+        if include_implied_points:
+            empty = empty.copy()
+            empty["implied_points"] = pd.Series(dtype=float)
         return (empty, model_instance) if return_model else empty
 
-    # Convert rating differences into point-spread units.
-    model_id = getattr(model_instance, "model_id", None)
-    use_log_scale = all(rating > 0 for rating in rating_map.values()) and (
-        model_id != "bradley-terry"
-    )
-    point_scale = _estimate_point_scale(
-        played, rating_map, use_log_scale=use_log_scale
-    )
-
-    points_ratings: Dict[str, float] = {}
-    for team, rating in rating_map.items():
-        if use_log_scale:
-            points_rating = math.log(rating) * point_scale if rating > 0 else 0.0
-        else:
-            points_rating = rating * point_scale
-        points_ratings[team] = points_rating
-
-    centered_points = _center_ratings(points_ratings)
-
+    # Convert rating differences into point-spread units only when requested.
     items = []
-    for team, rating in rating_map.items():
-        items.append(
-            {
-                "team": team,
-                "rating": rating,
-                "points": centered_points.get(team, 0.0),
-                "games": games_played.get(team, 0),
-            }
+    implied_points_map: dict[str, float] | None = None
+    if include_implied_points:
+        model_id = getattr(model_instance, "model_id", None)
+        use_log_scale = all(rating > 0 for rating in rating_map.values()) and (
+            model_id != "bradley-terry"
         )
+        point_scale = _estimate_point_scale(
+            played, rating_map, use_log_scale=use_log_scale
+        )
+
+        points_ratings: Dict[str, float] = {}
+        for team, rating in rating_map.items():
+            if use_log_scale:
+                points_rating = math.log(rating) * point_scale if rating > 0 else 0.0
+            else:
+                points_rating = rating * point_scale
+            points_ratings[team] = points_rating
+
+        centered_points = _center_ratings(points_ratings)
+        implied_points_map = centered_points
+
+    for team, rating in rating_map.items():
+        row = {
+            "team": team,
+            "rating": rating,
+            "games": games_played.get(team, 0),
+        }
+        if include_implied_points and implied_points_map is not None:
+            row.update(
+                {
+                    "implied_points": implied_points_map.get(team, 0.0),
+                    "point_scale": float(point_scale),
+                    "use_log_scale": bool(use_log_scale),
+                }
+            )
+        items.append(row)
     rankings_df = pd.DataFrame(items).sort_values("rating", ascending=False)
     return (rankings_df, model_instance) if return_model else rankings_df
 
@@ -306,9 +325,20 @@ def _store_model_metrics(
     played = played.sort_values("date")
     calibration_games = played.tail(CALIBRATION_RESIDUAL_GAMES)
 
-    ratings = {
-        str(row["team"]).strip(): float(row["points"]) for _, row in rankings.iterrows()
-    }
+    # Ensure we have spread-unit ratings available. If the provided `rankings`
+    # DataFrame does not include implied points, explicitly re-run build_rankings
+    # requesting `include_implied_points=True` so downstream calibration uses
+    # the intended spread units.
+    if "implied_points" in rankings.columns:
+        ratings = {
+            str(row["team"]).strip(): float(row["implied_points"]) for _, row in rankings.iterrows()
+        }
+    else:
+        # Recompute rankings with implied points to derive spread-unit ratings.
+        fallback_rankings = build_rankings(df, model=model, include_implied_points=True)
+        ratings = {
+            str(row["team"]).strip(): float(row["implied_points"]) for _, row in fallback_rankings.iterrows()
+        }
     neutral_mask = played.get("neutral")
     if neutral_mask is not None:
         non_neutral = played[~neutral_mask.astype(bool)]
