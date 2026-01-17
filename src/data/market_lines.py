@@ -15,6 +15,7 @@ from typing import Iterable
 
 from . import repository as base_repo
 from . import teams as team_repo
+from src.utils.game_id import make_game_id
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +154,21 @@ def _resolve_game_id(
     away_name = team_repo.get_canonical_name(conn, team_id=away_team_id)
     if not home_name or not away_name:
         return None, "team_unmatched"
+
+    # prefer deterministic gid lookup
+    try:
+        gid = make_game_id(sport, season, game_date, away_name, home_name)
+        row = conn.execute(
+            "SELECT game_id FROM games WHERE sport = ? AND season = ? AND game_id = ?",
+            (sport, season, gid),
+        ).fetchone()
+        if row:
+            return row[0], None
+    except Exception:
+        # fall back to legacy text-match
+        pass
+
+    # fallback: match existing rows by exact canonical team names and date
     rows = conn.execute(
         """
         SELECT game_id

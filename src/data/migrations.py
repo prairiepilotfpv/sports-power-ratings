@@ -7,6 +7,8 @@ import sqlite3
 from typing import Callable, Iterable
 
 from config import DEFAULT_WIN_PROB_K
+from src.utils.game_id import make_game_id
+from src.utils.identity import normalize_team_name
 
 
 MigrationFn = Callable[[sqlite3.Connection], None]
@@ -327,6 +329,215 @@ def _add_team_identity_and_market_lines(conn: sqlite3.Connection) -> None:
     )
 
 
+def _backfill_game_ids(conn: sqlite3.Connection) -> None:
+    """Compute deterministic game_id for games missing one and update rows.
+
+    If a computed game_id would collide with an existing row, raise with details.
+    """
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(games)")]
+    if not cols:
+        return
+    rows = conn.execute(
+        "SELECT id, sport, season, date, away_team, home_team FROM games WHERE game_id IS NULL OR game_id = ''"
+    ).fetchall()
+    if not rows:
+        return
+    duplicates = []
+    updates = []
+    for r in rows:
+        gid = None
+        try:
+            gid = make_game_id(r[1], r[2], r[3], r[4], r[5])
+        except Exception:
+            continue
+        # check for existing rows with same game_id
+        existing = conn.execute(
+            "SELECT COUNT(*) FROM games WHERE sport = ? AND season = ? AND game_id = ?",
+            (r[1], r[2], gid),
+        ).fetchone()
+        if existing and existing[0] > 0:
+            duplicates.append({
+                "sport": r[1],
+                "season": r[2],
+                "date": r[3],
+                "away": r[4],
+                "home": r[5],
+                "would_be": gid,
+            })
+        else:
+            updates.append((gid, r[0]))
+
+    if duplicates:
+        details = "\n".join(
+            [f"sport={d['sport']} season={d['season']} date={d['date']} away={d['away']} home={d['home']} -> {d['would_be']}" for d in duplicates]
+        )
+        raise RuntimeError(f"Backfill would create duplicate game_id(s):\n{details}")
+
+    for gid, rowid in updates:
+        conn.execute("UPDATE games SET game_id = ? WHERE id = ?", (gid, rowid))
+
+
+def _migrate_game_ids_and_update_references(conn: sqlite3.Connection) -> None:
+    """Migrate games to deterministic game_id, preserve legacy_game_id,
+    and update dependent tables to reference the new ids.
+    """
+    # add legacy column if missing
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(games)")]
+    if not cols:
+        return
+    if "legacy_game_id" not in cols:
+        conn.execute("ALTER TABLE games ADD COLUMN legacy_game_id TEXT")
+
+    # load all games
+    rows = conn.execute(
+        "SELECT id, sport, season, date, home_team, away_team, game_id, legacy_game_id FROM games"
+    ).fetchall()
+
+    old_to_new: dict[str, str] = {}
+    new_to_rows: dict[str, list] = {}
+
+    for r in rows:
+        gid_id, sport, season, date_str, home, away, old_gid, legacy_gid = r
+        try:
+            new_gid = make_game_id(sport or "", season or "", date_str, away or "", home or "")
+        except Exception:
+            continue
+
+        # preserve legacy_game_id when empty
+        if (not legacy_gid or str(legacy_gid).strip() == "") and old_gid:
+            conn.execute("UPDATE games SET legacy_game_id = ? WHERE id = ?", (old_gid, gid_id))
+
+        new_to_rows.setdefault(new_gid, []).append((gid_id, sport, season, date_str, away, home, old_gid))
+
+        # replace game_id with computed value
+        conn.execute("UPDATE games SET game_id = ? WHERE id = ?", (new_gid, gid_id))
+
+        if old_gid and old_gid != new_gid:
+            old_to_new[old_gid] = new_gid
+
+    # detect collisions where same new_gid assigned to multiple distinct rows
+    collisions = {k: v for k, v in new_to_rows.items() if len(v) > 1}
+    if collisions:
+        details = []
+        for new_gid, items in collisions.items():
+            for it in items:
+                details.append(f"new_gid={new_gid} id={it[0]} sport={it[1]} season={it[2]} date={it[3]} away={it[4]} home={it[5]} old={it[6]}")
+        raise RuntimeError("Game ID collision detected during migration:\n" + "\n".join(details))
+
+    # update dependent tables using mapping old->new
+    dependent_tables = [
+        "market_lines",
+        "market_snapshot_staging",
+        "market_snapshots",
+        "forecast_snapshots",
+        "opportunities",
+        "bets",
+        "clv_snapshots",
+        "prediction_exclusions",
+    ]
+
+    for old, new in old_to_new.items():
+        for tbl in dependent_tables:
+            try:
+                conn.execute(f"UPDATE {tbl} SET game_id = ? WHERE game_id = ?", (new, old))
+            except Exception:
+                # table may not exist in this DB
+                pass
+
+    # attempt to resolve staging rows that remain unmatched by exact normalized name/date
+    try:
+        staging_rows = conn.execute(
+            "SELECT id, team_home_raw, team_away_raw, game_date FROM market_snapshot_staging WHERE game_id IS NULL OR game_id = ''"
+        ).fetchall()
+    except Exception:
+        staging_rows = []
+
+    for sid, home_raw, away_raw, gdate in staging_rows:
+        if not gdate or not (home_raw or away_raw):
+            continue
+        candidates = conn.execute(
+            "SELECT game_id, home_team, away_team FROM games WHERE date = ?",
+            (gdate,),
+        ).fetchall()
+        matches = []
+        for cand in candidates:
+            cand_gid, home_c, away_c = cand
+            if normalize_team_name(home_raw) == normalize_team_name(home_c) and normalize_team_name(away_raw) == normalize_team_name(away_c):
+                matches.append(cand_gid)
+        if len(matches) == 1:
+            conn.execute("UPDATE market_snapshot_staging SET game_id = ? WHERE id = ?", (matches[0], sid))
+
+    # cascade resolved staging -> market_snapshots -> opportunities -> bets where source ids exist
+    try:
+        conn.execute(
+            "UPDATE market_snapshots SET game_id = (SELECT game_id FROM market_snapshot_staging WHERE market_snapshot_staging.id = market_snapshots.source_staging_id) WHERE (game_id IS NULL OR game_id = '') AND source_staging_id IS NOT NULL"
+        )
+    except Exception:
+        pass
+    try:
+        conn.execute(
+            "UPDATE opportunities SET game_id = (SELECT game_id FROM market_snapshots WHERE market_snapshots.id = opportunities.source_market_snapshot_id) WHERE (game_id IS NULL OR game_id = '') AND source_market_snapshot_id IS NOT NULL"
+        )
+    except Exception:
+        pass
+    try:
+        conn.execute(
+            "UPDATE bets SET game_id = (SELECT game_id FROM opportunities WHERE opportunities.id = bets.source_opportunity_id) WHERE (game_id IS NULL OR game_id = '') AND source_opportunity_id IS NOT NULL"
+        )
+    except Exception:
+        pass
+
+    # Do not commit here; caller will commit. This allows callers to run
+    # the migration inside a transaction for dry-run analysis.
+
+
+def analyze_migration(conn: sqlite3.Connection) -> dict:
+    """Analyze the deterministic game_id migration and return a report
+    without modifying the database.
+
+    Returns a dict containing:
+      - mappings: dict of legacy_id -> new_id
+      - collisions: dict of new_id -> list of rows that would collide
+      - sample_updates: list of (rowid, old_gid, new_gid)
+      - counts: summary counts
+    """
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(games)")]
+    if not cols:
+        return {"mappings": {}, "collisions": {}, "sample_updates": [], "counts": {}}
+
+    rows = conn.execute(
+        "SELECT id, sport, season, date, home_team, away_team, game_id FROM games"
+    ).fetchall()
+
+    old_to_new: dict[str, str] = {}
+    new_to_rows: dict[str, list] = {}
+    sample_updates: list[tuple] = []
+
+    for r in rows:
+        gid_id, sport, season, date_str, home, away, old_gid = r
+        try:
+            new_gid = make_game_id(sport or "", season or "", date_str, away or "", home or "")
+        except Exception:
+            continue
+        new_to_rows.setdefault(new_gid, []).append((gid_id, sport, season, date_str, away, home, old_gid))
+        if old_gid and old_gid != new_gid:
+            old_to_new[old_gid] = new_gid
+            sample_updates.append((gid_id, old_gid, new_gid))
+
+    collisions = {k: v for k, v in new_to_rows.items() if len(v) > 1}
+
+    return {
+        "mappings": old_to_new,
+        "collisions": {k: [(it[0], it[4], it[5], it[6]) for it in v] for k, v in collisions.items()},
+        "sample_updates": sample_updates[:20],
+        "counts": {
+            "games_total": len(rows),
+            "would_update": len(sample_updates),
+            "collisions": len(collisions),
+        },
+    }
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "add_hold_reason_to_staging", _add_hold_reason_to_staging),
     Migration(2, "add_clv_snapshots_table", _add_clv_snapshots_table),
@@ -336,6 +547,8 @@ MIGRATIONS: list[Migration] = [
     Migration(6, "add_market_tuning_tables", _add_market_tuning_tables),
     Migration(7, "add_games_start_time", _add_games_start_time),
     Migration(8, "add_team_identity_and_market_lines", _add_team_identity_and_market_lines),
+    Migration(9, "backfill_game_ids", _backfill_game_ids),
+    Migration(10, "migrate_to_deterministic_game_id_and_update_refs", _migrate_game_ids_and_update_references),
 ]
 
 LATEST_SCHEMA_VERSION = max((m.version for m in MIGRATIONS), default=0)

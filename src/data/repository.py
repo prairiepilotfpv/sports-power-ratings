@@ -14,6 +14,7 @@ from config import DEFAULT_WIN_PROB_K
 from ingest.schema import GameResult
 from . import teams as team_repo
 from .migrations import apply_migrations
+from src.utils.game_id import make_game_id
 
 
 # Schema is small and append-only; migrations are handled via helper checks.
@@ -214,26 +215,74 @@ def init_db(db_path: str | Path) -> None:
 def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
     """Upsert game rows into the SQLite database and return change count."""
     init_db(db_path)
-    rows = [
-        (
-            g.date.isoformat(),
-            g.start_time.isoformat() if g.start_time else None,
-            g.home_team,
-            g.away_team,
-            g.home_score,
-            g.away_score,
-            1 if g.neutral else 0,
-            1 if g.overtime else 0,
-            g.decision_type,
-            g.game_id,
-            g.sport,
-            g.season,
-            g.division,
-            g.conference,
-            g.notes,
+    # validate that every game has a non-empty game_id before persisting
+    missing = []
+    rows = []
+    for g in games:
+        # attempt to compute missing game_id when possible
+        if not g.game_id or str(g.game_id).strip() == "":
+            try:
+                if g.sport and g.season and g.date and g.away_team and g.home_team:
+                    computed = make_game_id(g.sport, g.season, g.date, g.away_team, g.home_team)
+                    g = GameResult(
+                        date=g.date,
+                        start_time=g.start_time,
+                        home_team=g.home_team,
+                        away_team=g.away_team,
+                        home_score=g.home_score,
+                        away_score=g.away_score,
+                        neutral=g.neutral,
+                        overtime=g.overtime,
+                        decision_type=g.decision_type,
+                        game_id=computed,
+                        sport=g.sport,
+                        season=g.season,
+                        division=g.division,
+                        conference=g.conference,
+                        notes=g.notes,
+                    )
+                else:
+                    missing.append({
+                        "sport": g.sport,
+                        "season": g.season,
+                        "date": getattr(g.date, "isoformat", lambda: str(g.date))(),
+                        "away_team": g.away_team,
+                        "home_team": g.home_team,
+                    })
+            except Exception:
+                missing.append({
+                    "sport": g.sport,
+                    "season": g.season,
+                    "date": getattr(g.date, "isoformat", lambda: str(g.date))(),
+                    "away_team": g.away_team,
+                    "home_team": g.home_team,
+                })
+        rows.append(
+            (
+                g.date.isoformat(),
+                g.start_time.isoformat() if g.start_time else None,
+                g.home_team,
+                g.away_team,
+                g.home_score,
+                g.away_score,
+                1 if g.neutral else 0,
+                1 if g.overtime else 0,
+                g.decision_type,
+                g.game_id,
+                g.sport,
+                g.season,
+                g.division,
+                g.conference,
+                g.notes,
+            )
         )
-        for g in games
-    ]
+
+    if missing:
+        lines = [
+            f"sport={m.get('sport')} season={m.get('season')} date={m.get('date')} away={m.get('away_team')} home={m.get('home_team')}"
+            for m in missing
+        ]
+        raise ValueError("Refusing to save games with missing game_id. Rows:\n" + "\n".join(lines))
 
     with closing(sqlite3.connect(Path(db_path))) as conn:
         team_repo.ensure_teams_for_games(conn, games)

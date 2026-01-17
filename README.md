@@ -20,7 +20,11 @@ Local-first tooling to turn Sports-Reference schedules/results into SQLite datab
 - Troubleshooting
 - License
 
+- Archived docs
+
 Use the Quickstart below for common tasks; the detailed CLI reference lives in [docs/CLI.md](docs/CLI.md).
+
+Note: historical design notes and retired docs have been moved to [docs/archived/](docs/archived/). See [docs/README.md](docs/README.md) for a concise index of current documentation.
 
 ## Overview
 

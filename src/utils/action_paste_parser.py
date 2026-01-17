@@ -156,9 +156,18 @@ def parse_action_paste(text: str) -> List[GameMarkets]:
         except ValueError:
             ml_home_odds = 0
 
-        # validate totals equal
+        # validate totals equal - prefer the over value when there's a small mismatch
         if abs(over_line - under_line) > 1e-6:
-            raise ValueError(f"Total mismatch for matchup '{away} at {home}': over {over_line} vs under {under_line}; using over value")
+            try:
+                import warnings
+
+                warnings.warn(
+                    f"Total mismatch for matchup '{away} at {home}': over {over_line} vs under {under_line}; using over value",
+                    stacklevel=2,
+                )
+            except Exception:
+                # fallback: do not fail parsing for real-world paste quirks
+                pass
 
         gm = GameMarkets(
             away_team=away,
