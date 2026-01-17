@@ -16,6 +16,7 @@ from typing import Iterable
 from . import repository as base_repo
 from . import teams as team_repo
 from src.utils.game_id import make_game_id
+from src.utils.normalization import normalize_market_type_value, normalize_total_selection
 
 logger = logging.getLogger(__name__)
 
@@ -46,27 +47,11 @@ def normalize_game_date(value: str | None) -> str | None:
 
 
 def _normalize_market_type(value: str | None) -> str | None:
-    if not value:
-        return None
-    norm = str(value).strip().lower()
-    if norm in {"ml", "moneyline", "money line", "money_line"}:
-        return "ML"
-    if norm in {"spread", "spreads", "pointspread", "point spread", "handicap", "spreadline", "line"}:
-        return "spread"
-    if norm in {"total", "totals", "overunder", "over/under", "ou", "o/u", "total_line"}:
-        return "total"
-    return None
+    return normalize_market_type_value(value)
 
 
 def _normalize_total_selection(value: str | None) -> str | None:
-    if not value:
-        return None
-    norm = str(value).strip().lower()
-    if norm in {"over", "o", "ov"}:
-        return "Over"
-    if norm in {"under", "u", "un"}:
-        return "Under"
-    return None
+    return normalize_total_selection(value)
 
 
 def _parse_line(value: str | float | None) -> float | None:

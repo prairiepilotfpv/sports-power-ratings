@@ -6,12 +6,40 @@ import csv
 from datetime import datetime, timezone
 
 import pandas as pd
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from data import betting_repository as br
+from utils import identity as idu
+from utils.normalization import (
+    normalize_market_type_value,
+    normalize_team_label,
+    normalize_total_selection,
+)
 
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class ActionMarketRow(BaseModel):
+    """Validated market row from Action CSV inputs."""
+
+    team_home_raw: str = Field(min_length=1)
+    team_away_raw: str = Field(min_length=1)
+    game_date: str | None = None
+    market_type: str
+    selection: str = Field(min_length=1)
+    line: float | None = None
+    odds: int | None = None
+    captured_at: str | None = None
+
+    @field_validator("market_type", mode="before")
+    @classmethod
+    def _normalize_market_type(cls, value: object) -> str:
+        normalized = normalize_market_type_value(str(value) if value is not None else None)
+        if not normalized:
+            raise ValueError("Unsupported market_type value.")
+        return normalized
 
 
 def import_from_csv(
@@ -52,16 +80,51 @@ def import_from_csv(
     inserted = 0
     staged = 0
     rejected = 0
+    alias_map = idu.load_alias_map(sport)
 
     for _, row in df.iterrows():
-        home_raw = row.get("team_home_raw")
-        away_raw = row.get("team_away_raw")
-        game_date = row.get("game_date")
-        market_type = row.get("market_type")
-        selection = row.get("selection")
-        line = row.get("line") if "line" in row else None
-        odds = row.get("odds") if "odds" in row else None
-        captured_at = row.get(capture_field) if capture_field in row else None
+        try:
+            line_value = row.get("line") if "line" in row else None
+            if line_value is not None and pd.isna(line_value):
+                line_value = None
+            odds_value = row.get("odds") if "odds" in row else None
+            if odds_value is not None and pd.isna(odds_value):
+                odds_value = None
+            selection_value = row.get("selection")
+            if selection_value is not None and pd.isna(selection_value):
+                selection_value = None
+            parsed = ActionMarketRow(
+                team_home_raw=str(row.get("team_home_raw") or ""),
+                team_away_raw=str(row.get("team_away_raw") or ""),
+                game_date=str(row.get("game_date")) if row.get("game_date") is not None else None,
+                market_type=row.get("market_type"),
+                selection=str(selection_value or ""),
+                line=line_value,
+                odds=odds_value,
+                captured_at=row.get(capture_field) if capture_field in row else None,
+            )
+        except ValidationError:
+            rejected += 1
+            continue
+
+        home_raw = parsed.team_home_raw
+        away_raw = parsed.team_away_raw
+        game_date = parsed.game_date
+        market_type = parsed.market_type
+        selection = parsed.selection
+        line = parsed.line
+        odds = parsed.odds
+        captured_at = parsed.captured_at
+
+        home_match = normalize_team_label(home_raw, alias_map=alias_map) or home_raw
+        away_match = normalize_team_label(away_raw, alias_map=alias_map) or away_raw
+        selection_match = selection
+        if market_type in {"ML", "spread"}:
+            selection_match = (
+                normalize_team_label(selection, alias_map=alias_map) or selection
+            )
+        if market_type == "total":
+            selection_match = normalize_total_selection(selection) or selection
         effective_snapshot_run_id = snapshot_run_id or br.default_snapshot_run_id(
             sport=sport,
             season=season,
@@ -76,8 +139,8 @@ def import_from_csv(
                 db_path,
                 sport=sport,
                 season=season,
-                team_home_raw=str(home_raw) if home_raw is not None else "",
-                team_away_raw=str(away_raw) if away_raw is not None else "",
+                team_home_raw=str(home_match) if home_match is not None else "",
+                team_away_raw=str(away_match) if away_match is not None else "",
                 game_date=str(game_date) if game_date is not None else None,
             )
         except Exception:
@@ -95,7 +158,7 @@ def import_from_csv(
                     captured_at=captured_at or _utcnow_iso(),
                     book=book or "parser",
                     market_type=str(market_type),
-                    selection=str(selection),
+                    selection=str(selection_match),
                     line=None if pd.isna(line) else float(line),
                     odds=None if pd.isna(odds) else int(odds) if odds is not None else None,
                     game_id=game_id,
@@ -111,7 +174,7 @@ def import_from_csv(
                     "raw_text": None,
                     "book": book or "parser",
                     "market_type": market_type,
-                    "selection": selection,
+                    "selection": selection_match,
                     "line": None if pd.isna(line) else float(line) if line is not None else None,
                     "odds": None if pd.isna(odds) else int(odds) if odds is not None else None,
                     "team_home_raw": home_raw,

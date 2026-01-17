@@ -318,7 +318,7 @@ Flags:
 - `--date-filter`: limit the import to this ISO date (YYYY-MM-DD); repeatable for multiple dates.
 - `--default-book`: fallback book name when the CSV omits it.
 
-CSV expectations: `market_type` (ML/spread/total), `selection`, `line` (nullable for ML), `odds`, `team_home{_raw}`, `team_away{_raw}`, `game_date`. Optional: `game_id`, `book`. Invalid or unmatched rows are counted, diagnosed, and stored for inspection.
+CSV expectations: `market_type` (ML/spread/total), `selection`, `line` (nullable for ML), `odds`, `team_home{_raw}`, `team_away{_raw}`, `game_date`. Optional: `game_id`, `book`. Invalid or unmatched rows are counted, diagnosed, and stored for inspection. Market types are normalized from common aliases (e.g., `Money Line`, `ML`, `moneyline`), and team aliases are resolved using `data/config/team_aliases.json` during matching.
 
 ## backtest — evaluate models on historical games
 
