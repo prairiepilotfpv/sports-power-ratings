@@ -9,13 +9,20 @@ from typing import Any, Iterable, Mapping
 import numpy as np
 import pandas as pd
 
-from config import DEFAULT_TOTAL_SD_FALLBACK, DEFAULT_WIN_PROB_K
+from config import (
+    DEFAULT_MARGIN_SD_FALLBACK,
+    DEFAULT_TOTAL_SD_FALLBACK,
+    DEFAULT_WIN_PROB_K,
+    MARGIN_SD_GUARDRAIL_MAX,
+    MARGIN_SD_GUARDRAIL_MIN,
+)
 from models.base import BaseModel, GamePrediction, ModelMetadata, require_columns
 from models.calibration import (
     ConditionalSDModel,
     align_spread_with_margin,
     fit_conditional_sd,
     fit_win_prob_bias,
+    guardrail_margin_sd,
     recency_weight,
     resolve_fit_end_date,
     resolve_fit_end_date_from_games,
@@ -403,10 +410,16 @@ class GSSDModel(BaseModel):
                 pred_margin, projected_spread - self._win_prob_bias
             )
             p_home_win = logistic_win_prob(adjusted_spread, win_prob_k)
-            margin_sd = (
+            margin_sd_raw = (
                 self._conditional_sd_model.predict(pred_margin)
                 if self._conditional_sd_model is not None
                 else coefficients.error_term
+            )
+            margin_sd, _ = guardrail_margin_sd(
+                margin_sd_raw,
+                fallback_sd=DEFAULT_MARGIN_SD_FALLBACK,
+                guardrail_min=MARGIN_SD_GUARDRAIL_MIN,
+                guardrail_max=MARGIN_SD_GUARDRAIL_MAX,
             )
             home_points_pred = (home_stats["pfh"] + away_stats["paa"]) / 2.0
             away_points_pred = (away_stats["pfa"] + home_stats["pah"]) / 2.0
@@ -416,6 +429,9 @@ class GSSDModel(BaseModel):
                 if self._total_sd is not None and self._total_sd > 0
                 else DEFAULT_TOTAL_SD_FALLBACK
             )
+            projected_home_score = 0.5 * (total_mean + pred_margin)
+            projected_away_score = 0.5 * (total_mean - pred_margin)
+            projected_total = total_mean
             win_prob_dist = win_prob_distribution(
                 p_home_win,
                 win_prob_k=win_prob_k,
@@ -451,6 +467,9 @@ class GSSDModel(BaseModel):
                         "conditional_sd": self._conditional_sd,
                         "total_mean": total_mean,
                         "total_sd": total_sd,
+                        "projected_home_score": projected_home_score,
+                        "projected_away_score": projected_away_score,
+                        "projected_total": projected_total,
                         "conditional_sd_intercept": (
                             self._conditional_sd_model.intercept
                             if self._conditional_sd_model is not None

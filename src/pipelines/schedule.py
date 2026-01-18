@@ -27,9 +27,10 @@ from data import teams as team_repo
 from pipelines.model_params import (
     resolve_active_model_market_params,
     resolve_active_ensemble_weights,
+    resolve_model_market_params_with_metadata,
 )
+resolve_model_params_with_metadata = resolve_model_market_params_with_metadata
 from pipelines.common import normalize_games, resolve_output_path
-from pipelines.model_params import resolve_model_params_with_metadata
 from pipelines.market_tuning import _metric_name_for_market
 from ensemble.config import load_ensemble_config
 from ensemble.io import load_market_weights
@@ -65,6 +66,8 @@ DASHBOARD_COLUMNS: List[str] = [
     "model_version",
     "params_source",
     "tuned_metric_used",
+    "tuning_run_id",
+    "params_market",
     "run_timestamp_utc",
     "prediction_hash",
     "date",
@@ -87,7 +90,7 @@ DASHBOARD_COLUMNS: List[str] = [
     "total_sd",
 ]
 
-MODEL_METADATA_DATA_START_ROW = 12
+MODEL_METADATA_DATA_START_ROW = 20  # Ensure metadata+header always start at this row; bump if new metadata keys appear
 
 
 def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
@@ -210,6 +213,8 @@ def _project_row(
     home_advantage: float,
     params_source: str,
     tuned_metric_used: str | None,
+    params_run_id: str | None = None,
+    params_market: str | None = None,
     model_instance: Any | None = None,
     projection_engine: Any | None = None,
     projection_context: Dict[str, Any] | None = None,
@@ -243,6 +248,12 @@ def _project_row(
     base = _base_schedule_row(row)
     home = base["home_team"]
     away = base["away_team"]
+
+    market_label = Market.ML.name
+    if params_market is not None:
+        normalized_market = str(params_market).strip()
+        if normalized_market:
+            market_label = normalized_market.upper()
     applied_home_advantage = 0.0 if base["neutral"] else home_advantage
     home_rating = ratings.get(home)
     away_rating = ratings.get(away)
@@ -358,6 +369,8 @@ def _project_row(
             "projection_status": projection_status,
             "params_source": params_source,
             "tuned_metric_used": tuned_metric_used,
+            "tuning_run_id": params_run_id,
+            "params_market": market_label,
             "home_rating": home_rating,
             "away_rating": away_rating,
             "projected_winner": projected_winner,
@@ -394,10 +407,26 @@ def _project_row(
     return base
 
 
+def _finalize_schedule_export(schedule_df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure the export includes all expected columns before validation."""
+    finalized = schedule_df.copy()
+    required_columns = ["date", "game_id"]
+    missing_required = [col for col in required_columns if col not in finalized.columns]
+    if missing_required:
+        raise ValueError(
+            f"Missing required schedule export columns: {missing_required}"
+        )
+    for column in SCHEDULE_EXPORT_COLUMNS:
+        if column not in finalized.columns:
+            finalized[column] = pd.NA
+    return finalized.loc[:, SCHEDULE_EXPORT_COLUMNS]
+
+
 def _order_schedule_export(schedule_df: pd.DataFrame) -> pd.DataFrame:
     """Ensure a consistent column order for downstream reporting."""
+    finalized = _finalize_schedule_export(schedule_df)
     return validate_schedule_export_frame(
-        schedule_df,
+        finalized,
         expected_columns=SCHEDULE_EXPORT_COLUMNS,
         context="Schedule export",
     )
@@ -439,6 +468,8 @@ def _build_schedule_dataframe(
     model_params: dict[str, float] | None,
     params_source: str,
     tuned_metric_used: str | None,
+    params_run_id: str | None,
+    params_market: str,
 ) -> pd.DataFrame:
     played = _completed_games(df)
     upcoming = _upcoming_games(df)
@@ -518,6 +549,8 @@ def _build_schedule_dataframe(
                     home_advantage=home_advantages.get(home, fallback_home_advantage),
                     params_source=params_source,
                     tuned_metric_used=tuned_metric_used,
+                    params_run_id=params_run_id,
+                    params_market=params_market,
                     model_instance=model_instance,
                     projection_engine=projection_engine,
                     projection_context=projection_context,
@@ -534,6 +567,8 @@ def _build_schedule_dataframe(
                 home_advantage=home_advantages.get(home, fallback_home_advantage),
                 params_source=params_source,
                 tuned_metric_used=tuned_metric_used,
+                params_run_id=params_run_id,
+                params_market=params_market,
                 model_instance=model_instance,
                 projection_engine=projection_engine,
                 projection_context=projection_context,
@@ -688,6 +723,8 @@ def _build_market_forecasts_for_ensembles(
                 model_params=params,
                 params_source=params_source,
                 tuned_metric_used=tuned_metric_used,
+                params_run_id=resolved.source_run_id,
+                params_market=market.name,
             )
             if market == Market.ML:
                 market_schedule = _apply_calibration_to_schedule_df(
@@ -923,6 +960,8 @@ def _dashboard_rows_for_today(
                 "model_version": metadata.get("model_version"),
                 "params_source": metadata.get("params_source"),
                 "tuned_metric_used": metadata.get("tuned_metric_used"),
+                "tuning_run_id": metadata.get("tuning_run_id"),
+                "params_market": metadata.get("params_market"),
                 "run_timestamp_utc": metadata.get("run_timestamp_utc"),
                 "prediction_hash": metadata.get("prediction_hash"),
                 "date": row.get("date"),
@@ -1498,19 +1537,23 @@ def _build_model_metadata(
     schedule_df: pd.DataFrame,
     params_source: str,
     tuned_metric_used: str | None,
+    params_run_id: str | None,
+    params_market: str | None = None,
 ) -> dict[str, Any]:
     model_instance = get_model(model_name)()
     identity = resolve_model_identity(model_instance)
     metadata = {
         "model_id": identity["model_id"],
         "model_version": identity["model_version"],
+        "prediction_hash": prediction_hash(schedule_df, SCHEDULE_EXPORT_COLUMNS),
         "params": _serialize_params(identity["params"]),
         "params_source": params_source,
         "tuned_metric_used": tuned_metric_used,
+        "tuning_run_id": params_run_id,
+        "params_market": params_market or Market.ML.name,
         "trained_on_date_range": _training_date_range(played),
         "n_games_train": int(len(played)),
         "run_timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "prediction_hash": prediction_hash(schedule_df, SCHEDULE_EXPORT_COLUMNS),
     }
     return metadata
 
@@ -1526,8 +1569,8 @@ def _write_metadata_section(
     )
     metadata_df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=0)
 
-    # Leave a buffer so schedule data does not overlap the metadata block.
-    return max(MODEL_METADATA_DATA_START_ROW - 1, len(metadata_df) + 2)
+    # Always start schedule data at a fixed row below the metadata block.
+    return MODEL_METADATA_DATA_START_ROW - 1
 
 
 def _build_schedule_for_model(
@@ -1544,7 +1587,7 @@ def _build_schedule_for_model(
     model_params_file: str | Path | None,
     tuned_metric: str | None,
 ) -> Path:
-    resolution = resolve_model_params_with_metadata(
+    resolution = resolve_model_market_params_with_metadata(
         model,
         params=model_params,
         params_file=model_params_file,
@@ -1552,8 +1595,10 @@ def _build_schedule_for_model(
         sport=sport,
         season=season,
         tuned_metric=tuned_metric,
+        market=Market.ML,
     )
     resolved_params = resolution.params
+    params_run_id = resolution.source_run_id
     schedule_df = _build_schedule_dataframe(
         df,
         db_path=db_path,
@@ -1564,6 +1609,8 @@ def _build_schedule_for_model(
         model_params=resolved_params,
         params_source=resolution.params_source,
         tuned_metric_used=resolution.tuned_metric_used,
+        params_run_id=params_run_id,
+        params_market=resolution.market,
     )
     schedule_df = _apply_calibration_to_schedule_df(
         schedule_df,
@@ -1715,7 +1762,7 @@ def build_schedule_excel_report(
     with pd.ExcelWriter(report_path) as writer:
         for model_name in models:
             model_df = df.copy(deep=True)
-            resolution = resolve_model_params_with_metadata(
+            resolution = resolve_model_market_params_with_metadata(
                 model_name,
                 params=model_params,
                 params_file=model_params_file,
@@ -1723,6 +1770,7 @@ def build_schedule_excel_report(
                 sport=sport,
                 season=season,
                 tuned_metric=tuned_metric,
+                market=Market.ML,
             )
             resolved_params = resolution.params
             params_source = resolution.params_source
@@ -1737,6 +1785,8 @@ def build_schedule_excel_report(
                 model_params=resolved_params,
                 params_source=params_source,
                 tuned_metric_used=tuned_metric_used,
+                params_run_id=resolution.source_run_id,
+                params_market=resolution.market,
             )
             schedule_df = _apply_calibration_to_schedule_df(
                 schedule_df,
@@ -1751,6 +1801,8 @@ def build_schedule_excel_report(
                 schedule_df=schedule_df,
                 params_source=params_source,
                 tuned_metric_used=tuned_metric_used,
+                params_run_id=resolution.source_run_id,
+                params_market=resolution.market,
             )
             start_row = _write_metadata_section(writer, model_name, metadata)
             schedule_df.to_excel(

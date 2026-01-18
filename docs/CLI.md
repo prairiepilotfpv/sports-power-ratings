@@ -98,6 +98,7 @@ python -m src.cli.pipeline schedule --sport nba --season 2025-26 --output data/p
 - If `--output` ends with `.csv`, writes CSV per model (prefixed when multiple models run).
 - `--upcoming-only` limits export to games without scores.
 - Rows include schedule fields, projections (ratings, spreads, totals, win probabilities), calibration info, and results when scores exist.
+- Each schedule row now also includes tuning metadata (`params_market` and `tuning_run_id`) so you can trace which per-market run provided the parameters used for those projections.
 - When multiple models run, the workbook includes a `BETS` sheet with ensemble-aware columns:
   - ML: `home_win_prob`, `away_win_prob`, `win_prob_source`, `ml_ensemble_components_json`
   - SPREAD: `margin_mean`, `margin_sd`, `spread_source`, `spread_ensemble_components_json`

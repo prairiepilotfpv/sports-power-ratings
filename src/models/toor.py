@@ -13,12 +13,13 @@ import numpy as np
 from config import (
     DEFAULT_MARGIN_SD_FALLBACK,
     DEFAULT_WIN_PROB_K,
+    DEFAULT_TOTAL_SD_FALLBACK,
+    DEFAULT_TOTAL_MEAN_FALLBACK,
     LEAGUE_MARGIN_SD_DEFAULT,
     MARGIN_SD_GUARDRAIL_MIN,
     MARGIN_SD_GUARDRAIL_MAX,
 )
 from models.base import BaseModel, GamePrediction, ModelMetadata, require_columns
-from models.bradley_terry import BradleyTerry
 from models.calibration import (
     ConditionalSDModel,
     align_spread_with_margin,
@@ -173,16 +174,33 @@ class TOORPowerRating:
             # normalize so ratings have mean 1.0 (keeps scale comparable across fits)
             mean_exp = float(np.mean(exp_vals)) if exp_vals.size else 1.0
             normalized = exp_vals / mean_exp if mean_exp != 0.0 else exp_vals
+            # positive normalized ratings (for display/rankings)
             self._ratings = {team: float(normalized[index[team]]) for team in teams}
+            # preserve signed, mean-centered strengths for MOV regression
+            # (these retain sign and are mean-centered; may be negative)
+            self._signed_strengths = {team: float(centered[index[team]]) for team in teams}
         else:
             self._ratings = {}
+            self._signed_strengths = {}
 
     def rankings(self) -> list[tuple[str, float]]:
         return sorted(self._ratings.items(), key=lambda item: item[1], reverse=True)
 
+    def signed_strengths(self) -> dict[str, float]:
+        """Return signed, mean-centered team strengths suitable for MOV regression.
+
+        These are the centered coefficients from the team-indicator OLS (can be
+        negative). If unavailable, returns an empty dict.
+        """
+        return getattr(self, "_signed_strengths", {}).copy()
+
 
 class TOORModel(BaseModel):
-    """Backtest model mapping Bradley-Terry strengths to margins via OLS."""
+    """TOOR backtest model: OLS-mapped team strengths -> MOV, with logistic win-prob and TOTAL head.
+
+    Self-contained (no cross-model coupling): fits signed, mean-centered team strengths
+    via team-indicator OLS and then fits an MOV regression (home_adv, home/away strengths).
+    """
 
     def __init__(
         self,
@@ -203,7 +221,10 @@ class TOORModel(BaseModel):
         """
         self._max_iter = max_iter
         self._tol = tol
-        self._bt_model = BradleyTerry(max_iter=max_iter, tol=tol)
+        # self-contained OLS-based team strengths (no cross-model coupling)
+        self._rating_model = TOORPowerRating(
+            max_iter=max_iter, recency_lambda=recency_lambda
+        )
         self._coefficients = DEFAULT_COEFFICIENTS
         self._win_prob_k = DEFAULT_WIN_PROB_K
         self._recency_lambda = recency_lambda
@@ -212,6 +233,9 @@ class TOORModel(BaseModel):
         self._conditional_sd_model: ConditionalSDModel | None = None
         self._win_prob_bias = float(winprob_bias)
         self._learn_winprob_bias = learn_winprob_bias
+        # league-level total statistics (computed during fit)
+        self._total_mean: float | None = None
+        self._total_sd: float | None = None
         self._sd_fit_stats: dict[str, Any] = {
             "n": 0,
             "residual_min": None,
@@ -234,7 +258,7 @@ class TOORModel(BaseModel):
                 "learn_winprob_bias": self._learn_winprob_bias,
             },
             supports_margin=True,
-            supports_total=False,
+            supports_total=True,
             supports_win_prob=True,
             role="primary",
             ensemble_weight=1.0,
@@ -259,10 +283,12 @@ class TOORModel(BaseModel):
             games_df, ["home_team", "away_team", "home_score", "away_score"]
         )
         games = games_df.to_dict(orient="records")
-        self._bt_model.fit(games)
+        # Fit internal OLS team strengths (signed, mean-centered)
+        self._rating_model.fit(games)
 
         design_matrix: list[list[float]] = []
         margins: list[float] = []
+        totals: list[float] = []
         weights: list[float] = []
         win_prob_samples: list[tuple[float, int]] = []
         win_prob_spreads: list[float] = []
@@ -270,13 +296,17 @@ class TOORModel(BaseModel):
         residuals_arr = np.array([], dtype=float)
 
         fit_end_date = resolve_fit_end_date(games_df)
+        strengths = self._rating_model.signed_strengths()
+
         for game in games:
             home = str(game.get("home_team", "")).strip()
             away = str(game.get("away_team", "")).strip()
             if not home or not away:
                 continue
             try:
-                margin = float(game.get("home_score")) - float(game.get("away_score"))
+                home_score = float(game.get("home_score"))
+                away_score = float(game.get("away_score"))
+                margin = home_score - away_score
             except Exception:
                 continue
 
@@ -288,52 +318,103 @@ class TOORModel(BaseModel):
             )
             home_advantage = 0.0 if neutral else 1.0
 
-            home_rating = self._bt_model.ratings[home]
-            away_rating = self._bt_model.ratings[away]
-            if home_rating <= 0 or away_rating <= 0:
-                continue
+            home_strength = float(strengths.get(home, 0.0))
+            away_strength = float(strengths.get(away, 0.0))
 
-            home_log = log(home_rating)
-            away_log = log(away_rating)
-
-            design_matrix.append([home_advantage, home_log, away_log])
+            design_matrix.append([home_advantage, home_strength, away_strength])
             margins.append(margin)
+            totals.append(home_score + away_score)
             weights.append(
                 recency_weight(game.get("date"), fit_end_date, self._recency_lambda)
             )
+
+        # compute recency-weighted league total mean/sd for TOTAL head
+        if totals:
+            w = np.asarray(weights, dtype=float) if weights else None
+            tot_arr = np.asarray(totals, dtype=float)
+            if w is None:
+                self._total_mean = float(np.mean(tot_arr))
+                self._total_sd = float(np.std(tot_arr, ddof=0))
+            else:
+                denom = float(np.sum(w)) if float(np.sum(w)) > 0 else None
+                if denom:
+                    self._total_mean = float(np.sum(w * tot_arr) / np.sum(w))
+                    residuals = tot_arr - self._total_mean
+                    self._total_sd = float(weighted_rmse(residuals, w))
+                else:
+                    self._total_mean = float(np.mean(tot_arr))
+                    self._total_sd = float(np.std(tot_arr, ddof=0))
 
         if design_matrix:
             matrix = np.asarray(design_matrix, dtype=float)
             target = np.asarray(margins, dtype=float)
             weight_arr = np.asarray(weights, dtype=float)
-            coeffs = weighted_least_squares(matrix, target, weights=weight_arr)
-            predictions = matrix @ coeffs
-            residuals = predictions - target
-            residuals_arr = np.asarray(residuals, dtype=float)
-            error_term = weighted_rmse(residuals_arr, weight_arr)
-            self._coefficients = ToorCoefficients(
-                home_advantage=float(coeffs[0]),
-                home_coeff=float(coeffs[1]),
-                away_coeff=float(coeffs[2]),
-                error_term=error_term,
-            )
 
-            if self._conditional_sd:
-                self._conditional_sd_model = fit_conditional_sd(
-                    predictions, residuals_arr, weights=weight_arr
+            if self._learn_home_advantage:
+                # fit HFA together with strength coefficients
+                coeffs = weighted_least_squares(matrix, target, weights=weight_arr)
+                predictions = matrix @ coeffs
+                residuals = predictions - target
+                residuals_arr = np.asarray(residuals, dtype=float)
+                error_term = weighted_rmse(residuals_arr, weight_arr)
+
+                self._coefficients = ToorCoefficients(
+                    home_advantage=float(coeffs[0]),
+                    home_coeff=float(coeffs[1]),
+                    away_coeff=float(coeffs[2]),
+                    error_term=error_term,
                 )
-            else:
-                self._conditional_sd_model = None
 
-            for predicted_margin, actual_margin in zip(
-                predictions, target, strict=False
-            ):
+                if self._conditional_sd:
+                    self._conditional_sd_model = fit_conditional_sd(
+                        predictions, residuals_arr, weights=weight_arr
+                    )
+                else:
+                    self._conditional_sd_model = None
+
+                predicted_margins_iter = zip(predictions, target)
+            else:
+                # use fixed HFA and fit only strength coefficients
+                fixed_hfa = (
+                    DEFAULT_COEFFICIENTS.home_advantage
+                )
+                hfa_col = matrix[:, 0]
+                strength_matrix = matrix[:, 1:]
+                # subtract fixed HFA contribution from the target
+                y_adj = target - (fixed_hfa * hfa_col)
+
+                coeffs_strength = weighted_least_squares(
+                    strength_matrix, y_adj, weights=weight_arr
+                )
+                # reconstruct full predictions to compute residuals / error term
+                predictions_full = (strength_matrix @ coeffs_strength) + (fixed_hfa * hfa_col)
+                residuals = predictions_full - target
+                residuals_arr = np.asarray(residuals, dtype=float)
+                error_term = weighted_rmse(residuals_arr, weight_arr)
+
+                self._coefficients = ToorCoefficients(
+                    home_advantage=float(fixed_hfa),
+                    home_coeff=float(coeffs_strength[0]),
+                    away_coeff=float(coeffs_strength[1]),
+                    error_term=error_term,
+                )
+
+                if self._conditional_sd:
+                    # fit conditional sd on the reconstructed predictions
+                    self._conditional_sd_model = fit_conditional_sd(
+                        predictions_full, residuals_arr, weights=weight_arr
+                    )
+                else:
+                    self._conditional_sd_model = None
+
+                predicted_margins_iter = zip(predictions_full, target)
+
+            # populate win-prob calibration samples from whichever prediction stream was used
+            for predicted_margin, actual_margin in predicted_margins_iter:
                 if actual_margin == 0:
                     continue
                 projected_spread = -float(predicted_margin)
-                win_prob_samples.append(
-                    (projected_spread, 1 if actual_margin > 0 else 0)
-                )
+                win_prob_samples.append((projected_spread, 1 if actual_margin > 0 else 0))
                 win_prob_spreads.append(projected_spread)
                 win_prob_outcomes.append(1 if actual_margin > 0 else 0)
 
@@ -370,16 +451,37 @@ class TOORModel(BaseModel):
             )
             home_advantage = 0.0 if neutral else 1.0
 
-            home_rating = self._bt_model.ratings[home]
-            away_rating = self._bt_model.ratings[away]
-            home_log = log(home_rating) if home_rating > 0 else 0.0
-            away_log = log(away_rating) if away_rating > 0 else 0.0
+            # Use signed/team-indicator strengths from the internal OLS fit
+            strengths = self._rating_model.signed_strengths()
+            home_strength = float(strengths.get(home, 0.0))
+            away_strength = float(strengths.get(away, 0.0))
 
             pred_margin = (
                 coefficients.home_advantage * home_advantage
-                + coefficients.home_coeff * home_log
-                + coefficients.away_coeff * away_log
+                + coefficients.home_coeff * home_strength
+                + coefficients.away_coeff * away_strength
             )
+
+            # TOTAL head: provide league total mean/sd (computed at fit)
+            pred_total = (
+                float(self._total_mean)
+                if self._total_mean is not None
+                else DEFAULT_TOTAL_MEAN_FALLBACK
+            )
+            total_sd = (
+                float(self._total_sd) if self._total_sd is not None else None
+            )
+
+            # Guardrail total_sd for small/unreliable samples to avoid validator failures
+            sport = row.get("sport") if isinstance(row, dict) else None
+            cfg = get_validation_config(sport)
+            if total_sd is None or not (cfg.total_sd_min <= total_sd <= cfg.total_sd_max):
+                total_sd = float(DEFAULT_TOTAL_SD_FALLBACK) if DEFAULT_TOTAL_SD_FALLBACK is not None else float(20.0)
+
+            # pred_total is guaranteed numeric (league-level fallback); compute projected scores
+            projected_home = 0.5 * (pred_total + pred_margin)
+            projected_away = 0.5 * (pred_total - pred_margin)
+
             projected_spread = -pred_margin
             adjusted_spread = align_spread_with_margin(
                 pred_margin, projected_spread - self._win_prob_bias
@@ -392,6 +494,7 @@ class TOORModel(BaseModel):
                 "home_team": home,
                 "away_team": away,
             }
+
             if self._conditional_sd_model is not None:
                 sport = row.get("sport") if isinstance(row, dict) else None
                 cfg = get_validation_config(sport)
@@ -464,7 +567,10 @@ class TOORModel(BaseModel):
                     p_home_win=p_home_win,
                     win_prob_dist=win_prob_dist,
                     pred_margin=pred_margin,
+                    pred_total=pred_total,
                     margin_sd=margin_sd,
+                    total_sd=total_sd,
+                    total_mean=pred_total,
                     win_prob_source="logistic",
                     margin_dist_assumption="normal_approx",
                     metadata=dict(model_identity),
@@ -486,6 +592,14 @@ class TOORModel(BaseModel):
                             if self._conditional_sd_model is not None
                             else None
                         ),
+                        "projected_home_score": projected_home,
+                        "projected_away_score": projected_away,
+                        "projected_total": pred_total,
+                        "total_mean": pred_total,
+                        "total_sd": total_sd,
+                        "model_p_home_win": p_home_win,
+                        "normal_p_home_win": None,
+                        "win_prob_source": "logistic",
                     },
                 )
             )

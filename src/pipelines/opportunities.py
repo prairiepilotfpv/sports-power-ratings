@@ -15,9 +15,10 @@ from data import betting_repository as br
 from data.repository import load_games
 from eval.evaluator import evaluate_market_rows
 from eval.validation import get_validation_config
+from markets.base import Market
 from pipelines import guardrails
 from pipelines import schedule as schedule_pipeline
-from pipelines.model_params import resolve_model_params_with_metadata
+from pipelines.model_params import resolve_model_market_params_with_metadata
 from utils.normalization import normalize_evaluation_market_type
 
 logger = logging.getLogger(__name__)
@@ -148,11 +149,12 @@ def load_schedule_predictions(
     games_df = schedule_pipeline.normalize_games(rows)
     if games_df.empty:
         return games_df
-    resolution = resolve_model_params_with_metadata(
+    resolution = resolve_model_market_params_with_metadata(
         model,
         db_path=db_path,
         sport=sport,
         season=season,
+        market=Market.ML,
     )
     schedule_df = schedule_pipeline._build_schedule_dataframe(
         games_df,
@@ -164,6 +166,8 @@ def load_schedule_predictions(
         model_params=resolution.params,
         params_source=resolution.params_source,
         tuned_metric_used=resolution.tuned_metric_used,
+        params_run_id=resolution.source_run_id,
+        params_market=resolution.market,
     )
     if schedule_df.empty:
         return schedule_df

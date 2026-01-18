@@ -13,6 +13,8 @@ class _DummyResolution:
         self.params = None
         self.params_source = "default"
         self.tuned_metric_used = None
+        self.source_run_id = None
+        self.market = Market.ML.name
 
 
 def test_market_forecasts_respect_allowed_models(monkeypatch) -> None:
@@ -29,6 +31,8 @@ def test_market_forecasts_respect_allowed_models(monkeypatch) -> None:
         model_params,
         params_source,
         tuned_metric_used,
+        params_run_id=None,
+        params_market=Market.ML.name,
     ) -> pd.DataFrame:
         calls.append(model)
         return pd.DataFrame(

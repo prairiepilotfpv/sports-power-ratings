@@ -13,9 +13,10 @@ from openpyxl.utils import get_column_letter
 from data.paths import processed_path_for
 from data.repository import load_games
 from data import betting_repository as br
+from markets.base import Market
 from pipelines import schedule as schedule_pipeline
 from pipelines.common import normalize_games
-from pipelines.model_params import resolve_model_params_with_metadata
+from pipelines.model_params import resolve_model_market_params_with_metadata
 from pipelines import opportunities as opportunities_pipeline
 from pipelines.review_runs import _apply_formula_sheet, _load_ocr_raw_rows
 from data.betting_repository import get_opportunities_with_game_info
@@ -87,11 +88,12 @@ def _build_projections_frame(
     if games_df.empty:
         return pd.DataFrame(columns=SCHEDULE_EXPORT_COLUMNS)
 
-    resolution = resolve_model_params_with_metadata(
+    resolution = resolve_model_market_params_with_metadata(
         model,
         db_path=db_path,
         sport=sport,
         season=season,
+        market=Market.ML,
     )
     schedule_df = schedule_pipeline._build_schedule_dataframe(
         games_df,
@@ -103,6 +105,8 @@ def _build_projections_frame(
         model_params=resolution.params,
         params_source=resolution.params_source,
         tuned_metric_used=resolution.tuned_metric_used,
+        params_run_id=resolution.source_run_id,
+        params_market=resolution.market,
     )
     if schedule_df.empty:
         return schedule_df

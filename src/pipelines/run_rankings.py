@@ -13,10 +13,11 @@ import numpy as np
 
 from data.paths import processed_path_for
 from data.repository import load_games, save_model_metrics
+from markets.base import Market
 from models.registry import get_model, list_models, normalize_model_name
 from models.calibration import fit_conditional_sd
 from pipelines.common import normalize_games, resolve_output_path
-from pipelines.model_params import resolve_model_params_with_metadata
+from pipelines.model_params import resolve_model_market_params_with_metadata
 from config import (
     CALIBRATION_RESIDUAL_GAMES,
     DEFAULT_MARGIN_SD_FALLBACK,
@@ -268,7 +269,7 @@ def run_rankings(
     for model_name in models:
         try:
             model_df = df.copy(deep=True)
-            resolution = resolve_model_params_with_metadata(
+            resolution = resolve_model_market_params_with_metadata(
                 model_name,
                 params=model_params,
                 params_file=model_params_file,
@@ -276,6 +277,7 @@ def run_rankings(
                 sport=sport,
                 season=season,
                 tuned_metric=tuned_metric,
+                market=Market.ML,
             )
             resolved_params = resolution.params
             rankings = build_rankings(
@@ -284,7 +286,9 @@ def run_rankings(
             rankings = rankings.assign(
                 params_source=resolution.params_source,
                 tuned_metric_used=resolution.tuned_metric_used,
+                params_run_id=resolution.source_run_id,
             )
+            rankings = rankings.drop(columns=["params_run_id"], errors="ignore")
         except ValueError as exc:
             if "No completed games" in str(exc):
                 raise ValueError(

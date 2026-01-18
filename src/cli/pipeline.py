@@ -2064,7 +2064,9 @@ def _run_activate_tuning(args: argparse.Namespace) -> None:
     params = None
     source_run_id = None
     if run_id:
-        params, source_run_id = load_model_market_tuning_run_by_run_id(db_path, run_id=run_id)
+        params, source_run_id, _ = load_model_market_tuning_run_by_run_id(
+            db_path, run_id=run_id
+        )
         if params is None:
             raise ValueError(f"No tuning run found with run_id={run_id}")
     else:

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import ast
+import logging
+import math
+import os
 from dataclasses import dataclass, field
 from typing import Iterable, Mapping, Any, Tuple, List
-import math
 
 from config import (
     MARGIN_SD_GUARDRAIL_MAX,
@@ -15,7 +18,6 @@ from config import (
     TOTAL_SD_GUARDRAIL_MAX,
     TOTAL_SD_GUARDRAIL_MIN,
 )
-import ast
 
 
 @dataclass(frozen=True)
@@ -53,6 +55,15 @@ SPORT_VALIDATION_CONFIGS: dict[str, ValidationConfig] = {
         score_max=15.0,
         total_tolerance=2.0,
     ),
+}
+
+
+_LOGGER = logging.getLogger(__name__)
+_DEBUG_PRED_VALIDATE = os.getenv("DEBUG_PRED_VALIDATE", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
 }
 
 
@@ -120,21 +131,22 @@ def validate_prediction_row(
 
     home_score_raw = _first_present(row, ("projected_home_score", "home_score_pred", "home_score"))
     away_score_raw = _first_present(row, ("projected_away_score", "away_score_pred", "away_score"))
-    # Some pipelines serialize projection extras into an `extra` column (stringified dict).
-    # When present, prefer projected values embedded in `extra` (they represent the model
-    # projection) over recorded `home_score`/`away_score` which are actual results.
     extra_raw = row.get("extra")
-    if extra_raw and isinstance(extra_raw, str) and extra_raw.strip().startswith("{"):
+    extra: dict[str, Any] = {}
+    if isinstance(extra_raw, dict):
+        extra = extra_raw
+    elif extra_raw and isinstance(extra_raw, str) and extra_raw.strip().startswith("{"):
         try:
-            extra = ast.literal_eval(extra_raw)
-            # Prefer explicit projected scores from the extras when available.
-            if extra.get("projected_home_score") is not None:
-                home_score_raw = extra.get("projected_home_score")
-            if extra.get("projected_away_score") is not None:
-                away_score_raw = extra.get("projected_away_score")
+            parsed_extra = ast.literal_eval(extra_raw)
+            if isinstance(parsed_extra, dict):
+                extra = parsed_extra
         except Exception:
             # best-effort: if parsing fails, fall back to top-level fields
             pass
+    if extra.get("projected_home_score") is not None:
+        home_score_raw = extra.get("projected_home_score")
+    if extra.get("projected_away_score") is not None:
+        away_score_raw = extra.get("projected_away_score")
     home_score_val = _coerce_float(home_score_raw)
     away_score_val = _coerce_float(away_score_raw)
     if home_score_val is None or away_score_val is None:
@@ -150,6 +162,15 @@ def validate_prediction_row(
     if total_val is not None and home_score_val is not None and away_score_val is not None:
         derived_total = home_score_val + away_score_val
         if abs(derived_total - total_val) > config.total_tolerance:
+            if _DEBUG_PRED_VALIDATE:
+                _log_total_inconsistency(
+                    row,
+                    derived_total=derived_total,
+                    total_val=float(total_val),
+                    home_score=home_score_val,
+                    away_score=away_score_val,
+                    extra=extra,
+                )
             reasons.append("total_inconsistent")
 
     for prob_key in (
@@ -173,3 +194,33 @@ def validate_prediction_row(
             reasons.append("invalid_margin_dist")
 
     return len(reasons) == 0, reasons
+
+
+def _log_total_inconsistency(
+    row: Mapping[str, Any],
+    *,
+    derived_total: float,
+    total_val: float,
+    home_score: float,
+    away_score: float,
+    extra: Mapping[str, Any],
+) -> None:
+    delta = derived_total - total_val
+    payload = {
+        "game_id": row.get("game_id"),
+        "pred_total": row.get("pred_total"),
+        "total_mean": row.get("total_mean"),
+        "projected_total": row.get("projected_total"),
+        "projected_home_score": row.get("projected_home_score"),
+        "projected_away_score": row.get("projected_away_score"),
+        "extra_total_mean": extra.get("total_mean"),
+        "extra_projected_total": extra.get("projected_total"),
+        "extra_projected_home_score": extra.get("projected_home_score"),
+        "extra_projected_away_score": extra.get("projected_away_score"),
+        "home_score": home_score,
+        "away_score": away_score,
+        "derived_total": derived_total,
+        "total_val": total_val,
+        "delta": delta,
+    }
+    _LOGGER.warning("total_inconsistent diagnostic %s", payload)

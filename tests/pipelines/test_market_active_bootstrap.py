@@ -8,7 +8,6 @@ from data.repository import (
     get_active_model_market_params_source,
     init_db,
     save_model_market_tuning_run,
-    save_tuned_params,
     set_active_model_market_params,
 )
 from pipelines.market_tuning import _resolve_market_metric
@@ -29,6 +28,23 @@ def test_bootstrap_market_active_params_idempotent(tmp_path: Path) -> None:
         source_run_id="manual",
     )
 
+    _, spread_metric = _resolve_market_metric("SPREAD", None)
+    save_model_market_tuning_run(
+        db_path,
+        sport="nba",
+        season="2024-25",
+        model="elo",
+        market="SPREAD",
+        metric_optimized=spread_metric,
+        run_id="run-spread-1",
+        best_score=2.0,
+        best_params_json=json.dumps({"b": 2}),
+        summary_metrics_json=None,
+        started_at=None,
+        finished_at=None,
+        notes=None,
+    )
+
     _, metric_optimized = _resolve_market_metric("TOTAL", None)
     save_model_market_tuning_run(
         db_path,
@@ -44,26 +60,6 @@ def test_bootstrap_market_active_params_idempotent(tmp_path: Path) -> None:
         started_at=None,
         finished_at=None,
         notes=None,
-    )
-    save_tuned_params(
-        db_path,
-        sport="nba",
-        season="2024-25",
-        model="elo",
-        metric="mae_margin",
-        run_id="run-margin-1",
-        params_json=json.dumps({"b": 2}),
-        best_score=0.1,
-    )
-    save_tuned_params(
-        db_path,
-        sport="nba",
-        season="2024-25",
-        model="elo",
-        metric="mae_total",
-        run_id="run-total-2",
-        params_json=json.dumps({"c": 3}),
-        best_score=0.2,
     )
 
     summary = bootstrap_market_active_params(
@@ -127,7 +123,6 @@ def test_bootstrap_market_active_params_idempotent(tmp_path: Path) -> None:
     )
 
     assert summary["counts"]["created_from_best_run"] == 1
-    assert summary["counts"]["created_from_model_metric"] == 0
     assert summary["counts"]["created_default"] == 1
     assert summary["counts"]["skipped_existing"] == 1
 
@@ -139,7 +134,6 @@ def test_bootstrap_market_active_params_idempotent(tmp_path: Path) -> None:
         include_ml=True,
     )
     assert summary_repeat["counts"]["created_from_best_run"] == 0
-    assert summary_repeat["counts"]["created_from_model_metric"] == 0
     assert summary_repeat["counts"]["created_default"] == 0
     assert summary_repeat["counts"]["skipped_existing"] == 3
 
@@ -148,15 +142,21 @@ def test_bootstrap_market_active_params_metric_fallback(tmp_path: Path) -> None:
     db_path = tmp_path / "params.db"
     init_db(db_path)
 
-    save_tuned_params(
+    _, metric_optimized = _resolve_market_metric("SPREAD", None)
+    save_model_market_tuning_run(
         db_path,
         sport="nba",
         season="2024-25",
         model="elo",
-        metric="mae_margin",
+        market="SPREAD",
+        metric_optimized=metric_optimized,
         run_id="run-margin-1",
-        params_json=json.dumps({"k_factor": 22}),
         best_score=0.1,
+        best_params_json=json.dumps({"k_factor": 22}),
+        summary_metrics_json=None,
+        started_at=None,
+        finished_at=None,
+        notes=None,
     )
 
     bootstrap_market_active_params(
@@ -182,5 +182,5 @@ def test_bootstrap_market_active_params_metric_fallback(tmp_path: Path) -> None:
             model="elo",
             market="SPREAD",
         )
-        == "model_tuned_params:mae_margin"
+        == "run-margin-1"
     )

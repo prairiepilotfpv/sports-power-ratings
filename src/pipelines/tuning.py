@@ -17,7 +17,6 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 from backtest.runner import load_games_df_from_csv, run_backtest
-from data.repository import save_tuned_params, set_active_tuned_params
 from models.registry import get_backtest_model, normalize_model_name
 from utils.parallel import limit_blas_threads, parallel_map
 
@@ -239,22 +238,6 @@ def run_tuning_pipeline(
         )
         applied = True
 
-    if db_path and sport and season:
-        save_tuned_params(
-            db_path,
-            sport=sport,
-            season=season,
-            model=model_name,
-            metric=metric,
-            run_id=run_id,
-            params_json=json.dumps(candidate_params, sort_keys=True),
-            best_score=candidate_score,
-        )
-        if apply_best and improved:
-            set_active_tuned_params(
-                db_path, sport=sport, season=season, model=model_name, metric=metric
-            )
-            print(f"Applied ACTIVE metric={metric} for model={model_name}")
 
     results.to_csv(base_dir / f"tuning_results_{run_id}.csv", index=False)
     with (base_dir / f"best_params_{run_id}.json").open("w", encoding="utf-8") as handle:

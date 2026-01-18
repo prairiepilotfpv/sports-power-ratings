@@ -12,6 +12,10 @@ MIN_CALIBRATION_SAMPLES = 25
 DEFAULT_MARGIN_SD_FALLBACK = 12.0
 DEFAULT_TOTAL_SD_FALLBACK = 20.0
 
+# League-level default total mean used when insufficient data exists
+# Conservative NBA baseline; used only as a structural fallback
+DEFAULT_TOTAL_MEAN_FALLBACK = 220.0
+
 # League-level default margin spread (NBA-oriented) used when residuals are missing or unstable.
 # Chosen to be a conservative, realistic baseline rather than an artificially low variance.
 LEAGUE_MARGIN_SD_DEFAULT = 13.5

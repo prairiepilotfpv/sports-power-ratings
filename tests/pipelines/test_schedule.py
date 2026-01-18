@@ -21,6 +21,7 @@ from pipelines.schedule import (
     build_schedule_excel_report,
     build_schedule_with_projections,
 )
+import math
 
 
 def test_build_schedule_with_projections(tmp_path: Path) -> None:
@@ -89,6 +90,54 @@ def test_build_schedule_with_projections(tmp_path: Path) -> None:
     assert upcoming["win_prob_source"] == "direct"
     assert upcoming["margin_dist_assumption"] == "none"
     assert pd.isna(upcoming["normal_p_home_win"])
+
+
+def test_gssd_schedule_projected_scores_populated(tmp_path: Path) -> None:
+    db_path = tmp_path / "games.db"
+    games = [
+        GameResult(
+            date=date(2025, 10, 25),
+            home_team="Home",
+            away_team="Away",
+            home_score=110,
+            away_score=105,
+            sport="nba",
+            season="2025-26",
+        ),
+        GameResult(
+            date=date(2025, 10, 27),
+            home_team="Away",
+            away_team="Home",
+            home_score=101,
+            away_score=108,
+            sport="nba",
+            season="2025-26",
+        ),
+        GameResult(
+            date=date(2025, 10, 29),
+            home_team="Home",
+            away_team="Away",
+            home_score=None,
+            away_score=None,
+            sport="nba",
+            season="2025-26",
+        ),
+    ]
+    save_games(db_path, games)
+
+    output_path = build_schedule_with_projections(
+        db_path,
+        sport="nba",
+        season="2025-26",
+        model="gssd",
+        output_path=tmp_path / "gssd_schedule.csv",
+    )
+    df = pd.read_csv(output_path)
+    scheduled = df[df["status"] == "scheduled"].iloc[0]
+    for column in ["projected_home_score", "projected_away_score", "projected_total"]:
+        assert pd.notna(scheduled[column]), f"{column} should be populated"
+    accumulated = scheduled["projected_home_score"] + scheduled["projected_away_score"]
+    assert math.isclose(accumulated, scheduled["projected_total"], abs_tol=1e-6)
 
 
 def test_build_schedule_with_elo_projections(tmp_path: Path) -> None:
@@ -355,6 +404,8 @@ def test_schedule_export_column_ordering() -> None:
         "projection_status": "ok",
         "params_source": "default",
         "tuned_metric_used": None,
+        "tuning_run_id": None,
+        "params_market": "ML",
         "home_team": "Home",
         "away_team": "Away",
         "neutral": False,

@@ -3,41 +3,102 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import logging
-import sqlite3
-
 from data.repository import (
-    load_active_tuned_metric,
-    load_active_tuned_params,
-    load_tuned_params_for_metric,
-)
-from models.registry import normalize_model_name
-from data.repository import (
-    get_active_model_market_params,
-    get_active_model_market_params_source,
     get_active_ensemble_market_weights,
     get_active_ensemble_market_weights_source,
-    load_best_model_market_tuning_params_by_optimized_metric,
-    load_model_market_tuning_run_by_run_id,
+    get_active_model_market_params,
+    get_active_model_market_params_source,
+    has_model_market_active_params,
+    has_model_market_tuning_runs,
+    legacy_tuned_params_exist,
     load_best_ensemble_market_tuning_weights_by_optimized_metric,
+    load_best_model_market_tuning_params_by_optimized_metric,
     load_ensemble_market_tuning_run_by_run_id,
+    load_model_market_tuning_run_by_run_id,
     set_active_model_market_params,
 )
-from pipelines.market_tuning import _resolve_market_metric
 from markets.base import Market
+from models.registry import normalize_model_name
+from pipelines.market_tuning import _resolve_market_metric
+
+logger = logging.getLogger(__name__)
+LEGACY_WARNING_EMITTED: set[tuple[str, str]] = set()
 
 
 @dataclass(frozen=True)
 class ModelParamsResolution:
-    """Resolved model parameters and their provenance."""
+    """Resolved model parameters along with their provenance metadata."""
 
     params: dict[str, Any] | None
     params_source: str
     tuned_metric_used: str | None
+    source_run_id: str | None = None
+    market: str = Market.ML.name
+
+
+_MARKET_NAMES = {market.name for market in Market}
+
+
+def _normalize_market(market: str | Market | None) -> str:
+    if isinstance(market, Market):
+        return market.name
+    if market is None:
+        return Market.ML.name
+    normalized = str(market).strip().upper()
+    if not normalized:
+        return Market.ML.name
+    if normalized not in _MARKET_NAMES:
+        raise ValueError(f"Unsupported market: {market}")
+    return normalized
+
+
+def _metric_display_from_optimized(metric_optimized: str | None) -> str | None:
+    if metric_optimized is None:
+        return None
+    if metric_optimized.startswith("backtest_"):
+        return metric_optimized.replace("backtest_", "", 1)
+    return metric_optimized
+
+
+def _log_db_params_usage(
+    model_name: str,
+    market_name: str,
+    params_source: str,
+    tuned_metric_used: str | None,
+) -> None:
+    metric_label = tuned_metric_used or "unknown"
+    logger.info(
+        "Using tuned params from DB (market=%s metric=%s source=%s) for model=%s",
+        market_name,
+        metric_label,
+        params_source,
+        model_name,
+    )
+
+
+def _warn_if_only_legacy_data(
+    db_path: str | Path,
+    sport: str,
+    season: str,
+) -> None:
+    key = (sport, season)
+    if key in LEGACY_WARNING_EMITTED:
+        return
+    if has_model_market_active_params(db_path, sport=sport, season=season):
+        return
+    if has_model_market_tuning_runs(db_path, sport=sport, season=season):
+        return
+    if not legacy_tuned_params_exist(db_path, sport=sport, season=season):
+        return
+    logger.warning(
+        "No per-market tuning rows found; using defaults. Re-run tune to populate market params."
+    )
+    LEGACY_WARNING_EMITTED.add(key)
 
 
 def resolve_model_params(
@@ -49,9 +110,10 @@ def resolve_model_params(
     sport: str | None = None,
     season: str | None = None,
     tuned_metric: str | None = None,
+    market: str | Market | None = None,
 ) -> dict[str, Any] | None:
-    """Resolve model parameters from a JSON blob or file."""
-    resolution = resolve_model_params_with_metadata(
+    """Resolve model parameters from CLI inputs or persisted tuning rows."""
+    return resolve_model_market_params_with_metadata(
         model,
         params=params,
         params_file=params_file,
@@ -59,8 +121,72 @@ def resolve_model_params(
         sport=sport,
         season=season,
         tuned_metric=tuned_metric,
+        market=market,
+    ).params
+
+
+def resolve_model_market_params_with_metadata(
+    model: str,
+    *,
+    params: dict[str, Any] | None = None,
+    params_file: str | Path | None = None,
+    db_path: str | Path | None = None,
+    sport: str | None = None,
+    season: str | None = None,
+    tuned_metric: str | None = None,
+    market: str | Market | None = None,
+) -> ModelParamsResolution:
+    """Resolve parameters scoped to a single market and return richer metadata."""
+    if params and params_file:
+        raise ValueError("Provide either params or params_file, not both.")
+    market_name = _normalize_market(market)
+    if params is not None:
+        return ModelParamsResolution(
+            params=params,
+            params_source="cli",
+            tuned_metric_used=None,
+            source_run_id=None,
+            market=market_name,
+        )
+    if params_file is not None:
+        payload = _load_params_file(params_file)
+        if payload is None:
+            return ModelParamsResolution(
+                params=None,
+                params_source="file",
+                tuned_metric_used=None,
+                source_run_id=None,
+                market=market_name,
+            )
+        model_name = normalize_model_name(model)
+        if isinstance(payload, dict) and model_name in payload:
+            scoped = payload.get(model_name)
+            if isinstance(scoped, dict):
+                return ModelParamsResolution(
+                    params=scoped,
+                    params_source="file",
+                    tuned_metric_used=None,
+                    source_run_id=None,
+                    market=market_name,
+                )
+        if isinstance(payload, dict):
+            return ModelParamsResolution(
+                params=payload,
+                params_source="file",
+                tuned_metric_used=None,
+                source_run_id=None,
+                market=market_name,
+            )
+        raise ValueError("Model params file must contain a JSON object.")
+    if tuned_metric is not None:
+        logger.debug("Ignoring tuned_metric=%s for market=%s resolution", tuned_metric, market_name)
+    return _resolve_model_params_from_db(
+        model=model,
+        db_path=db_path,
+        sport=sport,
+        season=season,
+        market=market_name,
     )
-    return resolution.params
 
 
 def resolve_model_params_with_metadata(
@@ -72,156 +198,51 @@ def resolve_model_params_with_metadata(
     sport: str | None = None,
     season: str | None = None,
     tuned_metric: str | None = None,
+    market: str | Market | None = None,
 ) -> ModelParamsResolution:
-    """Resolve model parameters and return provenance metadata."""
-    if params and params_file:
-        raise ValueError("Provide either params or params_file, not both.")
-    if params is not None:
-        return ModelParamsResolution(
-            params=params,
-            params_source="cli",
-            tuned_metric_used=None,
-        )
-    if params_file is None:
-        resolved = _load_tuned_params_with_metadata(
-            model,
-            db_path=db_path,
-            sport=sport,
-            season=season,
-            tuned_metric=tuned_metric,
-        )
-        return resolved
-    payload = _load_params_file(params_file)
-    if payload is None:
-        return ModelParamsResolution(
-            params=None,
-            params_source="file",
-            tuned_metric_used=None,
-        )
-    model_name = normalize_model_name(model)
-    if isinstance(payload, dict) and model_name in payload:
-        scoped = payload.get(model_name)
-        if isinstance(scoped, dict):
-            return ModelParamsResolution(
-                params=scoped,
-                params_source="file",
-                tuned_metric_used=None,
-            )
-    if isinstance(payload, dict):
-        return ModelParamsResolution(
-            params=payload,
-            params_source="file",
-            tuned_metric_used=None,
-        )
-    raise ValueError("Model params file must contain a JSON object.")
+    return resolve_model_market_params_with_metadata(
+        model,
+        params=params,
+        params_file=params_file,
+        db_path=db_path,
+        sport=sport,
+        season=season,
+        tuned_metric=tuned_metric,
+        market=market,
+    )
 
 
-def _load_tuned_params_with_metadata(
-    model: str,
+def _resolve_model_params_from_db(
     *,
+    model: str,
     db_path: str | Path | None,
     sport: str | None,
     season: str | None,
-    tuned_metric: str | None,
+    market: str,
 ) -> ModelParamsResolution:
+    market_name = _normalize_market(market)
     if db_path is None or sport is None or season is None:
         return ModelParamsResolution(
             params=None,
             params_source="default",
             tuned_metric_used=None,
+            source_run_id=None,
+            market=market_name,
         )
     model_name = normalize_model_name(model)
-    if tuned_metric:
-        tuned_metric = tuned_metric.strip().lower()
-        params = load_tuned_params_for_metric(
-            db_path,
-            sport=sport,
-            season=season,
-            model=model_name,
-            metric=tuned_metric,
-        )
-        if params is not None:
-            # Fetch the run_id for audit/debugging (stored in model_tuned_params.run_id)
-            run_id = None
-            try:
-                with sqlite3.connect(db_path) as conn:
-                    cur = conn.execute(
-                        "SELECT run_id FROM model_tuned_params WHERE sport = ? AND season = ? AND model = ? AND metric = ?",
-                        (sport, season, model_name, tuned_metric),
-                    )
-                    row = cur.fetchone()
-                    if row:
-                        run_id = row[0]
-            except Exception:
-                run_id = None
-
-            # Log a short debug message (do not log full params JSON)
-            logger = logging.getLogger(__name__)
-            try:
-                keys = list(params.keys()) if isinstance(params, dict) else None
-            except Exception:
-                keys = None
-            logger.debug(
-                "Using tuned params from DB (metric=%s) for model=%s; params_keys=%s; run_id=%s",
-                tuned_metric,
-                model_name,
-                keys,
-                run_id,
-            )
-            print(
-                "Using tuned params from DB "
-                f"(metric={tuned_metric}) for model={model_name}"
-            )
-            return ModelParamsResolution(
-                params=params,
-                params_source="db_metric",
-                tuned_metric_used=tuned_metric,
-            )
-        return ModelParamsResolution(
-            params=None,
-            params_source="default",
-            tuned_metric_used=None,
-        )
-    params = load_active_tuned_params(
-        db_path,
+    resolved = resolve_active_model_market_params(
+        db_path=db_path,
         sport=sport,
         season=season,
         model=model_name,
-    )
-    if params is None:
-        return ModelParamsResolution(
-            params=None,
-            params_source="default",
-            tuned_metric_used=None,
-        )
-    metric = load_active_tuned_metric(
-        db_path,
-        sport=sport,
-        season=season,
-        model=model_name,
-    )
-    metric_label = metric or "unknown"
-    # Log a short debug message (do not log full params JSON). run_id is not available for active params.
-    logger = logging.getLogger(__name__)
-    try:
-        keys = list(params.keys()) if isinstance(params, dict) else None
-    except Exception:
-        keys = None
-    logger.debug(
-        "Using tuned params from DB (metric=%s) for model=%s; params_keys=%s; run_id=%s",
-        metric_label,
-        model_name,
-        keys,
-        None,
-    )
-    print(
-        "Using tuned params from DB "
-        f"(metric={metric_label}) for model={model_name}"
+        market=market_name,
     )
     return ModelParamsResolution(
-        params=params,
-        params_source="db_active",
-        tuned_metric_used=metric,
+        params=resolved.params,
+        params_source=resolved.params_source,
+        tuned_metric_used=resolved.tuned_metric_used,
+        source_run_id=resolved.source_run_id,
+        market=market_name,
     )
 
 
@@ -254,35 +275,51 @@ def resolve_active_model_market_params(
     model: str,
     market: str,
 ) -> ActiveParamsResolution:
-    """Resolve active params for a specific (model, market, sport, season).
-
-    Resolution order:
-      1) model_market_active_params table
-      2) best model_market_tuning_runs for the market's optimized metric
-      3) defaults (None)
-    """
     if db_path is None or sport is None or season is None:
         return ActiveParamsResolution(params=None, params_source="default", tuned_metric_used=None, source_run_id=None)
     model_name = normalize_model_name(model)
-    # 1) market-specific active params
+    market_name = _normalize_market(market)
+
     active = get_active_model_market_params(
-        db_path, sport=sport, season=season, model=model_name, market=market
+        db_path, sport=sport, season=season, model=model_name, market=market_name
     )
     if active is not None:
-        source = get_active_model_market_params_source(
-            db_path, sport=sport, season=season, model=model_name, market=market
+        source_run_id = get_active_model_market_params_source(
+            db_path, sport=sport, season=season, model=model_name, market=market_name
         )
-        return ActiveParamsResolution(params=active, params_source="db_market_active", tuned_metric_used=None, source_run_id=source)
+        tuned_metric = None
+        if source_run_id:
+            _, _, metric_optimized = load_model_market_tuning_run_by_run_id(
+                db_path, run_id=source_run_id
+            )
+            tuned_metric = _metric_display_from_optimized(metric_optimized)
+        _log_db_params_usage(model_name, market_name, "db_market_active", tuned_metric)
+        return ActiveParamsResolution(
+            params=active,
+            params_source="db_market_active",
+            tuned_metric_used=tuned_metric,
+            source_run_id=source_run_id,
+        )
 
-    # 2) attempt to auto-select the best tuned run for this market
-    metric_name, metric_optimized = _resolve_market_metric(market, None)
+    metric_name, metric_optimized = _resolve_market_metric(market_name, None)
     params, run_id = load_best_model_market_tuning_params_by_optimized_metric(
-        db_path, sport=sport, season=season, model=model_name, market=market, metric_optimized=metric_optimized
+        db_path,
+        sport=sport,
+        season=season,
+        model=model_name,
+        market=market_name,
+        metric_optimized=metric_optimized,
     )
     if params is not None:
-        print(f"Auto-selected tuned params from best run (metric={metric_name}) for model={model_name} market={market} run_id={run_id}")
-        return ActiveParamsResolution(params=params, params_source="db_market_best_run", tuned_metric_used=metric_name, source_run_id=run_id)
+        _log_db_params_usage(model_name, market_name, "db_market_best_run", metric_name)
+        return ActiveParamsResolution(
+            params=params,
+            params_source="db_market_best_run",
+            tuned_metric_used=metric_name,
+            source_run_id=run_id,
+        )
 
+    _warn_if_only_legacy_data(db_path, sport, season)
     return ActiveParamsResolution(params=None, params_source="default", tuned_metric_used=None, source_run_id=None)
 
 
@@ -294,13 +331,6 @@ def resolve_active_ensemble_weights(
     market: str,
     ensemble_id: str,
 ) -> ActiveParamsResolution:
-    """Resolve active ensemble weights for a market/ensemble.
-
-    Resolution order:
-      1) ensemble_market_active_weights
-      2) best ensemble_market_tuning_runs for the market's optimized metric
-      3) defaults (None)
-    """
     if db_path is None or sport is None or season is None:
         return ActiveParamsResolution(params=None, params_source="default", tuned_metric_used=None, source_run_id=None)
     weights = get_active_ensemble_market_weights(
@@ -314,11 +344,27 @@ def resolve_active_ensemble_weights(
 
     metric_name, metric_optimized = _resolve_market_metric(market, None)
     weights, run_id = load_best_ensemble_market_tuning_weights_by_optimized_metric(
-        db_path, sport=sport, season=season, market=market, ensemble_id=ensemble_id, metric_optimized=metric_optimized
+        db_path,
+        sport=sport,
+        season=season,
+        market=market,
+        ensemble_id=ensemble_id,
+        metric_optimized=metric_optimized,
     )
     if weights is not None:
-        print(f"Auto-selected ensemble weights from best run (metric={metric_name}) for ensemble={ensemble_id} market={market} run_id={run_id}")
-        return ActiveParamsResolution(params=weights, params_source="db_ensemble_best_run", tuned_metric_used=metric_name, source_run_id=run_id)
+        logger.info(
+            "Using tuned ensemble weights from best run (market=%s metric=%s ensemble=%s run_id=%s)",
+            market,
+            metric_name,
+            ensemble_id,
+            run_id,
+        )
+        return ActiveParamsResolution(
+            params=weights,
+            params_source="db_ensemble_best_run",
+            tuned_metric_used=metric_name,
+            source_run_id=run_id,
+        )
 
     return ActiveParamsResolution(params=None, params_source="default", tuned_metric_used=None, source_run_id=None)
 
@@ -330,10 +376,9 @@ def bootstrap_market_active_params(
     season: str,
     models: list[str],
     include_ml: bool = True,
-) -> dict:
+) -> dict[str, list[tuple[str, str, str | None]] | dict[str, int]]:
     summary: dict[str, list[tuple[str, str, str | None]]] = {
         "created_from_best_run": [],
-        "created_from_model_metric": [],
         "created_default": [],
         "skipped_existing": [],
     }
@@ -379,34 +424,6 @@ def bootstrap_market_active_params(
                 summary["created_from_best_run"].append((model_name, market_name, run_id))
                 continue
 
-            fallback_metric = None
-            if market_name == "SPREAD":
-                fallback_metric = "mae_margin"
-            elif market_name == "TOTAL":
-                fallback_metric = "mae_total"
-
-            if fallback_metric:
-                tuned = load_tuned_params_for_metric(
-                    db_path,
-                    sport=sport,
-                    season=season,
-                    model=model_name,
-                    metric=fallback_metric,
-                )
-                if tuned is not None:
-                    source = f"model_tuned_params:{fallback_metric}"
-                    set_active_model_market_params(
-                        db_path,
-                        sport=sport,
-                        season=season,
-                        model=model_name,
-                        market=market_name,
-                        params=tuned,
-                        source_run_id=source,
-                    )
-                    summary["created_from_model_metric"].append((model_name, market_name, source))
-                    continue
-
             set_active_model_market_params(
                 db_path,
                 sport=sport,
@@ -420,3 +437,4 @@ def bootstrap_market_active_params(
 
     summary["counts"] = {key: len(value) for key, value in summary.items() if key != "counts"}
     return summary
+

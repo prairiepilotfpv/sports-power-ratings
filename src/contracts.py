@@ -27,6 +27,8 @@ SCHEDULE_EXPORT_COLUMNS: list[str] = [
     "projection_status",
     "params_source",
     "tuned_metric_used",
+    "tuning_run_id",
+    "params_market",
     "home_team",
     "away_team",
     "neutral",
