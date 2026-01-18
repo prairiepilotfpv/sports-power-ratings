@@ -221,7 +221,7 @@ def _rating_projection_engine(
     # semantics continue to function. The direct Bradley-Terry logistic
     # probability (when available) is exposed as `logistic_home_win_prob`.
     model_p_home_win = normal_p_home_win
-    win_prob_source = "bt_margin_normal"
+    win_prob_source = "margin_normal"
     margin_dist_assumption = "normal_approx"
     if model_id == "bradley-terry":
         # For raw bradley-terry models, attempt to fetch direct logistic
@@ -259,6 +259,27 @@ def _rating_projection_engine(
         "total_sd": total_sd if projection.projected_total is not None else None,
         "logistic_home_win_prob": logistic_home_win_prob,
     }
+
+def _elo_projection_engine(
+    home_team: str,
+    away_team: str,
+    model: Any,
+    context: ProjectionContext,
+) -> ProjectionOutput:
+    projection = _rating_projection_engine(home_team, away_team, model, context)
+    logistic_p = projection.get("logistic_home_win_prob")
+    if logistic_p is None:
+        return projection
+    projection.update(
+        {
+            "projected_win_prob": logistic_p,
+            "model_p_home_win": logistic_p,
+            "win_prob_source": "logistic",
+            "logistic_home_win_prob": logistic_p,
+            "margin_dist_assumption": "normal_approx",
+        }
+    )
+    return projection
 
 
 def _bt_projection_engine(
@@ -362,5 +383,6 @@ def _poisson_projection_engine(
 
 
 register_projection_engine(_DEFAULT_ENGINE_KEY, _rating_projection_engine)
+register_projection_engine("elo", _elo_projection_engine)
 register_projection_engine("bradley-terry", _bt_projection_engine)
 register_projection_engine("poisson", _poisson_projection_engine)

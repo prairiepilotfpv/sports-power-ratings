@@ -21,7 +21,7 @@ def make_prediction_with_extra():
         "margin_mean": 1.0,
         "margin_sd": 1.5,
         "total_sd": 2.0,
-        "win_prob_source": "bt_margin_normal",
+        "win_prob_source": "margin_normal",
     }
     gp = GamePrediction(
         game_id="nhl|2025-10-01|A|B",
