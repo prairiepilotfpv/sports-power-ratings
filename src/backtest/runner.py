@@ -416,6 +416,11 @@ def run_backtest(
                                 "logloss_raw": raw_ll,
                                 "logloss_calibrated": cal_ll,
                             })
+                else:
+                    if "p_home_win" in merged.columns:
+                        merged["p_home_win_calibrated"] = merged["p_home_win"]
+                        merged["calibration_id"] = pd.NA
+                        merged["calibration_method"] = "identity"
             except Exception:
                 # best-effort: if calibration fails, continue without it
                 pass

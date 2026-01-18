@@ -209,14 +209,28 @@ def run_tuning_pipeline(
     candidate_params = (
         best_row["params"] if isinstance(best_row["params"], dict) else {}
     )
-    candidate_score = float(best_row["metric_value"])
+    metric_value = pd.to_numeric(best_row["metric_value"], errors="coerce")
+    has_metric = pd.notna(metric_value)
+    candidate_score = float(metric_value) if has_metric else float("nan")
 
-    improved = True
-    if require_improvement and baseline_score is not None:
+    if not has_metric:
+        logger.warning(
+            "Best candidate for metric=%s has no numeric value; skipping improvement check.",
+            metric,
+        )
+        improved = False
+    elif require_improvement and baseline_score is not None:
         improved = candidate_score < float(baseline_score)
+    else:
+        improved = True
 
     best_params = candidate_params if improved else {}
-    best_score = candidate_score if improved else float(baseline_score)
+    if improved:
+        best_score = candidate_score
+    else:
+        best_score = (
+            float(baseline_score) if baseline_score is not None else float("nan")
+        )
 
     applied = False
     if apply_best and improved and db_path and sport and season:
@@ -346,7 +360,12 @@ def _iter_param_grid(grid: dict[str, Iterable[Any]]) -> Iterable[dict[str, Any]]
 def _select_best_index(results: pd.DataFrame, metric: str) -> int:
     metrics = pd.to_numeric(results["metric_value"], errors="coerce")
     if metrics.isna().all():
-        raise ValueError("No numeric metric values found in tuning results.")
+        logger.warning(
+            "No numeric metric values found in tuning results for metric=%s. "
+            "Defaulting to the first candidate.",
+            metric,
+        )
+        return int(results.index[0])
     return int(metrics.idxmin())
 
 
