@@ -300,6 +300,9 @@ def _default_param_grid(model: str) -> dict[str, Iterable[Any]]:
             "home_advantage": [0.0, 50.0, 100.0],
             "initial_rating": [1500.0],
             "min_rating": [1.0],
+            "total_shrinkage": [0.0, 0.25, 0.5, 0.75, 1.0],
+            "total_team_prior_games": [5, 10, 20],
+            "total_sd_floor": [0.25, 0.5, 0.75],
         }
     if model == "bradley-terry":
         return {

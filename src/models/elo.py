@@ -9,7 +9,7 @@ from typing import Any, DefaultDict, Iterable, Mapping
 
 import numpy as np
 
-from config import DEFAULT_WIN_PROB_K
+from config import DEFAULT_WIN_PROB_K, DEFAULT_TOTAL_SD_FALLBACK, DEFAULT_TOTAL_MEAN_FALLBACK
 from models.base import BaseModel, GamePrediction, ModelMetadata, require_columns
 from models.calibration import (
     ConditionalSDModel,
@@ -149,6 +149,9 @@ class EloModel(BaseModel):
         conditional_sd: bool = False,
         winprob_bias: float = 0.0,
         learn_winprob_bias: bool = False,
+        total_shrinkage: float = 0.5,
+        total_team_prior_games: int = 10,
+        total_sd_floor: float = 0.5,
     ) -> None:
         """Initialize the backtest model.
 
@@ -170,6 +173,15 @@ class EloModel(BaseModel):
         self._conditional_sd_model: ConditionalSDModel | None = None
         self._win_prob_bias = float(winprob_bias)
         self._learn_winprob_bias = learn_winprob_bias
+        # Totals hyperparameters
+        self._total_shrinkage = float(total_shrinkage)
+        self._total_team_prior_games = int(total_team_prior_games)
+        self._total_sd_floor = float(total_sd_floor)
+
+        # Fitted totals state
+        self._total_mean: float | None = None
+        self._team_total_adj: dict[str, float] = {}
+        self._total_sd: float | None = None
 
     def metadata(self) -> ModelMetadata:
         return ModelMetadata(
@@ -182,9 +194,12 @@ class EloModel(BaseModel):
                 "conditional_sd": self._conditional_sd,
                 "winprob_bias": self._win_prob_bias,
                 "learn_winprob_bias": self._learn_winprob_bias,
+                "total_shrinkage": self._total_shrinkage,
+                "total_team_prior_games": self._total_team_prior_games,
+                "total_sd_floor": self._total_sd_floor,
             },
             supports_margin=True,
-            supports_total=False,
+            supports_total=True,
             supports_win_prob=True,
             role="primary",
             ensemble_weight=1.0,
@@ -203,6 +218,11 @@ class EloModel(BaseModel):
         win_prob_samples: list[tuple[float, int]] = []
         win_prob_spreads: list[float] = []
         win_prob_outcomes: list[int] = []
+        # Totals accumulators
+        total_values: list[float] = []
+        total_weights: list[float] = []
+        team_total_weighted_sum: DefaultDict[str, float] = defaultdict(float)
+        team_weight_sum: DefaultDict[str, float] = defaultdict(float)
 
         fit_end_date = resolve_fit_end_date(games_df)
         for game in games:
@@ -229,9 +249,20 @@ class EloModel(BaseModel):
 
             design_matrix.append([home_advantage_flag, rating_diff])
             margins.append(margin)
-            weights.append(
-                recency_weight(game.get("date"), fit_end_date, self._recency_lambda)
-            )
+            w = recency_weight(game.get("date"), fit_end_date, self._recency_lambda)
+            weights.append(w)
+
+            # Totals bookkeeping: each game's total contributes to both teams
+            try:
+                actual_total = float(game.get("home_score")) + float(game.get("away_score"))
+            except Exception:
+                continue
+            total_values.append(actual_total)
+            total_weights.append(w)
+            team_total_weighted_sum[home] += w * actual_total
+            team_total_weighted_sum[away] += w * actual_total
+            team_weight_sum[home] += w
+            team_weight_sum[away] += w
 
         if design_matrix:
             matrix = np.asarray(design_matrix, dtype=float)
@@ -279,6 +310,69 @@ class EloModel(BaseModel):
                 win_prob_k=self._win_prob_k if self._win_prob_k > 0 else DEFAULT_WIN_PROB_K,
             )
 
+        # Fit totals model using weighted league mean and team adjustments
+        total_wsum = float(sum(total_weights)) if total_weights else 0.0
+        if total_wsum > 0 and len(total_values) >= 3:
+            # Weighted league mean
+            league_total_mean = float(
+                sum(v * w for v, w in zip(total_values, total_weights)) / total_wsum
+            )
+            # Per-team raw and shrunk adjustments
+            raw_adj: dict[str, float] = {}
+            adj: dict[str, float] = {}
+            for team, wsum in team_weight_sum.items():
+                if wsum > 0:
+                    team_mean = float(team_total_weighted_sum[team] / wsum)
+                    raw = team_mean - league_total_mean
+                    raw_adj[team] = raw
+                    n_eff = float(wsum)
+                    shrink = n_eff / (n_eff + float(self._total_team_prior_games))
+                    adj[team] = raw * shrink
+                else:
+                    raw_adj[team] = 0.0
+                    adj[team] = 0.0
+
+            # Build fitted predictions and residuals
+            fitted_preds: list[float] = []
+            fitted_weights: list[float] = []
+            residuals_total: list[float] = []
+            # iterate through original games to compute per-game preds
+            for game, w in zip(games, total_weights):
+                home = str(game.get("home_team", "")).strip()
+                away = str(game.get("away_team", "")).strip()
+                try:
+                    actual_total = float(game.get("home_score")) + float(game.get("away_score"))
+                except Exception:
+                    continue
+                adj_home = adj.get(home, 0.0)
+                adj_away = adj.get(away, 0.0)
+                pred_total_i = league_total_mean + self._total_shrinkage * 0.5 * (
+                    adj_home + adj_away
+                )
+                fitted_preds.append(pred_total_i)
+                fitted_weights.append(w)
+                residuals_total.append(pred_total_i - actual_total)
+
+            # compute weighted rmse for totals
+            try:
+                total_rmse = weighted_rmse(
+                    np.asarray(residuals_total, dtype=float),
+                    np.asarray(fitted_weights, dtype=float),
+                )
+            except Exception:
+                total_rmse = float(DEFAULT_TOTAL_SD_FALLBACK)
+
+            total_sd = max(self._total_sd_floor, float(total_rmse))
+
+            self._total_mean = float(league_total_mean)
+            self._team_total_adj = dict(adj)
+            self._total_sd = float(total_sd)
+        else:
+            # fallback to global defaults
+            self._total_mean = float(DEFAULT_TOTAL_MEAN_FALLBACK)
+            self._team_total_adj = {}
+            self._total_sd = float(DEFAULT_TOTAL_SD_FALLBACK)
+
     def predict(self, upcoming_games_df: Any) -> list[GamePrediction]:
         require_columns(upcoming_games_df, ["date", "home_team", "away_team"])
         predictions: list[GamePrediction] = []
@@ -324,6 +418,20 @@ class EloModel(BaseModel):
                 margin_std=margin_sd,
             )
 
+            # Totals prediction
+            base_total = (
+                float(self._total_mean)
+                if self._total_mean is not None
+                else float(DEFAULT_TOTAL_MEAN_FALLBACK)
+            )
+            adj_home = float(self._team_total_adj.get(home, 0.0))
+            adj_away = float(self._team_total_adj.get(away, 0.0))
+            pred_total = base_total + self._total_shrinkage * 0.5 * (adj_home + adj_away)
+            total_sd_raw = (
+                float(self._total_sd) if self._total_sd is not None else float(DEFAULT_TOTAL_SD_FALLBACK)
+            )
+            total_sd = max(self._total_sd_floor, total_sd_raw)
+
             game_id = row.get("game_id") or f"{row['date']}_{home}_{away}"
             predictions.append(
                 GamePrediction(
@@ -334,7 +442,10 @@ class EloModel(BaseModel):
                     p_home_win=p_home_win,
                     win_prob_dist=win_prob_dist,
                     pred_margin=pred_margin,
+                    pred_total=pred_total,
                     margin_sd=margin_sd,
+                    total_mean=pred_total,
+                    total_sd=total_sd,
                     win_prob_source="logistic",
                     margin_dist_assumption="normal_approx",
                     metadata=dict(model_identity),
@@ -345,6 +456,7 @@ class EloModel(BaseModel):
                         "win_prob_k": win_prob_k,
                         "winprob_bias": self._win_prob_bias,
                         "conditional_sd": self._conditional_sd,
+                        "projected_total": pred_total,
                         "conditional_sd_intercept": (
                             self._conditional_sd_model.intercept
                             if self._conditional_sd_model is not None
