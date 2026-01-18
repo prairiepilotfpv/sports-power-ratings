@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isnan, log
+from math import erf, isnan, log, sqrt
 from typing import Any, Iterable, Mapping
 
 import numpy as np
 
+from config import DEFAULT_MARGIN_SD_FALLBACK, DEFAULT_TOTAL_SD_FALLBACK
 from models.base import BaseModel, GamePrediction, ModelMetadata, require_columns
 
 
@@ -19,6 +20,66 @@ class _PoissonState:
     defense: np.ndarray
     mu: float
     home_advantage: float
+
+
+def _clip_prob(prob: float, eps: float = 1e-6) -> float:
+    return float(min(max(prob, eps), 1.0 - eps))
+
+
+def _guard_sd(value: float, fallback: float) -> float:
+    try:
+        sd = float(value)
+    except Exception:
+        return float(fallback)
+    if not np.isfinite(sd) or sd <= 0:
+        return float(fallback)
+    return sd
+
+
+def poisson_canonical_from_samples(
+    home_samples: np.ndarray, away_samples: np.ndarray
+) -> dict[str, float | str]:
+    total_samples = home_samples + away_samples
+    margin_samples = home_samples - away_samples
+
+    projected_home_score = float(np.mean(home_samples))
+    projected_away_score = float(np.mean(away_samples))
+    total_mean = float(np.mean(total_samples))
+    margin_mean = float(np.mean(margin_samples))
+    margin_sd_raw = float(np.std(margin_samples))
+    total_sd_raw = float(np.std(total_samples))
+
+    margin_sd = _guard_sd(margin_sd_raw, DEFAULT_MARGIN_SD_FALLBACK)
+    total_sd = _guard_sd(total_sd_raw, DEFAULT_TOTAL_SD_FALLBACK)
+
+    p_home_win_emp = float(
+        np.mean(margin_samples > 0)
+        + 0.5 * np.mean(margin_samples == 0)
+    )
+    p_home_win = p_home_win_emp
+
+    if margin_sd > 0:
+        z = margin_mean / (margin_sd * sqrt(2.0))
+        p_home_win_norm = 0.5 * (1.0 + erf(z))
+    else:
+        p_home_win_norm = 0.5 if abs(margin_mean) < 1e-12 else (1.0 if margin_mean > 0 else 0.0)
+
+    if (abs(margin_mean) > 0.1) and ((p_home_win_emp > 0.5) != (margin_mean > 0)):
+        p_home_win = float(p_home_win_norm)
+
+    p_home_win = _clip_prob(float(p_home_win))
+
+    return {
+        "margin_mean": float(margin_mean),
+        "margin_sd": float(margin_sd),
+        "total_mean": float(total_mean),
+        "total_sd": float(total_sd),
+        "p_home_win": p_home_win,
+        "projected_home_score": projected_home_score,
+        "projected_away_score": projected_away_score,
+        "win_prob_source": "sample",
+        "margin_dist_assumption": "empirical",
+    }
 
 
 class PoissonPowerRating:
@@ -61,8 +122,8 @@ class PoissonPowerRating:
             supports_margin=True,
             supports_total=True,
             supports_win_prob=True,
-            role="specialist_total",
-            ensemble_weight=0.0,
+            role="primary",
+            ensemble_weight=1.0,
         )
 
     def fit(self, games: Iterable[Mapping[str, Any]]) -> None:
@@ -287,8 +348,8 @@ class PoissonModel(BaseModel):
             supports_margin=True,
             supports_total=True,
             supports_win_prob=True,
-            role="specialist_total",
-            ensemble_weight=0.0,
+            role="primary",
+            ensemble_weight=1.0,
         )
 
     def fit(self, games_df: Any) -> None:
@@ -320,43 +381,11 @@ class PoissonModel(BaseModel):
             if samples is None:
                 continue
             home_samples, away_samples = samples
-            total_samples = home_samples + away_samples
-            margin_samples = home_samples - away_samples
+            canonical = poisson_canonical_from_samples(home_samples, away_samples)
 
-            projected_home_score = float(np.mean(home_samples))
-            projected_away_score = float(np.mean(away_samples))
-            total_mean = float(np.mean(total_samples))
-            margin_mean = float(np.mean(margin_samples))
-            total_sd = float(np.std(total_samples))
-            margin_sd = float(np.std(margin_samples))
-
-            # Approximate moneyline probability: split ties 50/50 for OT/SO outcomes.
-            p_home_win_emp = float(
-                np.mean(margin_samples > 0)
-                + 0.5 * np.mean(margin_samples == 0)
-            )
-
-            # In rare cases the empirical Monte-Carlo estimate can disagree
-            # with the sign of the mean margin (e.g. mean < 0 but p_home_win > 0.5).
-            # For contract consistency, if there's a sign mismatch for a
-            # non-trivial mean (thresholded), prefer a normal approximation
-            # based on the sample mean and sd which preserves sign.
-            margin_mean = float(np.mean(margin_samples))
-            margin_sd = float(np.std(margin_samples))
-            p_home_win = p_home_win_emp
-            try:
-                from math import erf, sqrt
-
-                if margin_sd > 0:
-                    z = margin_mean / (margin_sd * sqrt(2.0))
-                    p_home_win_norm = 0.5 * (1.0 + erf(z))
-                else:
-                    p_home_win_norm = 0.5 if abs(margin_mean) < 1e-12 else (1.0 if margin_mean > 0 else 0.0)
-
-                if (abs(margin_mean) > 0.1) and ((p_home_win_emp > 0.5) != (margin_mean > 0)):
-                    p_home_win = float(p_home_win_norm)
-            except Exception:
-                p_home_win = p_home_win_emp
+            margin_mean = canonical["margin_mean"]
+            total_mean = canonical["total_mean"]
+            p_home_win = canonical["p_home_win"]
 
             game_id = row.get("game_id") or f"{row['date']}_{home}_{away}"
             predictions.append(
@@ -368,14 +397,22 @@ class PoissonModel(BaseModel):
                     p_home_win=p_home_win,
                     pred_margin=margin_mean,
                     pred_total=total_mean,
-                    margin_sd=margin_sd,
-                    total_sd=total_sd,
-                    win_prob_source="sample",
-                    margin_dist_assumption="empirical",
+                    margin_mean=margin_mean,
+                    total_mean=total_mean,
+                    margin_sd=canonical["margin_sd"],
+                    total_sd=canonical["total_sd"],
+                    win_prob_source=canonical["win_prob_source"],
+                    margin_dist_assumption=canonical["margin_dist_assumption"],
+                    win_prob_samples=None,
                     metadata=dict(model_identity),
                     extra={
-                        "projected_home_score": projected_home_score,
-                        "projected_away_score": projected_away_score,
+                        "projected_home_score": canonical["projected_home_score"],
+                        "projected_away_score": canonical["projected_away_score"],
+                        "projected_spread": -margin_mean,
+                        "projected_total": total_mean,
+                        "projected_win_prob": p_home_win,
+                        "model_p_home_win": p_home_win,
+                        "logistic_home_win_prob": p_home_win,
                         "tie_rule": "split",
                     },
                 )

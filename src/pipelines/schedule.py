@@ -466,6 +466,14 @@ def _build_schedule_dataframe(
     )
     if win_prob_k <= 0:
         win_prob_k = DEFAULT_WIN_PROB_K
+    try:
+        winprob_bias = float(
+            metrics.get("winprob_bias")
+            if metrics.get("winprob_bias") is not None
+            else getattr(getattr(model_instance, "metadata", lambda: None)(), "params", {}).get("winprob_bias", 0.0)
+        )
+    except Exception:
+        winprob_bias = 0.0
     base_total = float(metrics.get("base_total", 0.0)) or fallback_total
     margin_std = metrics.get("margin_std")
     total_std = metrics.get("total_std")
@@ -488,6 +496,7 @@ def _build_schedule_dataframe(
         "conditional_sd_intercept": conditional_sd_intercept,
         "conditional_sd_slope": conditional_sd_slope,
         "win_prob_k": win_prob_k,
+        "winprob_bias": winprob_bias,
         "sport": sport,
         "sd_sample_size": sd_sample_size,
         "sd_residual_min": sd_residual_min,

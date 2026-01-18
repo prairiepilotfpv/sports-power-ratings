@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any, Iterable, Mapping
 
 import numpy as np
 import pandas as pd
 
-from config import DEFAULT_WIN_PROB_K
+from config import DEFAULT_TOTAL_SD_FALLBACK, DEFAULT_WIN_PROB_K
 from models.base import BaseModel, GamePrediction, ModelMetadata, require_columns
 from models.calibration import (
     ConditionalSDModel,
@@ -41,6 +42,34 @@ class _StatAccumulator:
         if self.sum_weight <= 0:
             return None
         return self.sum_value / self.sum_weight
+
+
+@dataclass
+class _VarianceAccumulator:
+    sum_weight: float = 0.0
+    sum_value: float = 0.0
+    sum_value_sq: float = 0.0
+
+    def add(self, value: float, weight: float) -> None:
+        self.sum_weight += weight
+        self.sum_value += value * weight
+        self.sum_value_sq += (value * value) * weight
+
+    def mean(self) -> float | None:
+        if self.sum_weight <= 0:
+            return None
+        return self.sum_value / self.sum_weight
+
+    def sd(self) -> float | None:
+        if self.sum_weight <= 0:
+            return None
+        mean = self.mean()
+        if mean is None:
+            return None
+        variance = (self.sum_value_sq / self.sum_weight) - (mean * mean)
+        if variance <= 0 or not math.isfinite(variance):
+            return None
+        return math.sqrt(variance)
 
 
 class GSSDPowerRating:
@@ -196,6 +225,8 @@ class GSSDModel(BaseModel):
         self._conditional_sd_model: ConditionalSDModel | None = None
         self._win_prob_bias = float(winprob_bias)
         self._learn_winprob_bias = learn_winprob_bias
+        self._total_mean: float | None = None
+        self._total_sd: float | None = None
 
     def metadata(self) -> ModelMetadata:
         meta = self._gssd.metadata()
@@ -211,7 +242,7 @@ class GSSDModel(BaseModel):
                 "learn_winprob_bias": self._learn_winprob_bias,
             },
             supports_margin=True,
-            supports_total=False,
+            supports_total=True,
             supports_win_prob=True,
             role="primary",
             ensemble_weight=1.0,
@@ -235,6 +266,7 @@ class GSSDModel(BaseModel):
         win_prob_samples: list[tuple[float, int]] = []
         win_prob_spreads: list[float] = []
         win_prob_outcomes: list[int] = []
+        total_accumulator = _VarianceAccumulator()
 
         for game in games:
             home = str(game.get("home_team", "")).strip()
@@ -267,9 +299,17 @@ class GSSDModel(BaseModel):
                 row.append(home_advantage_flag)
             design_matrix.append(row)
             margins.append(margin)
-            weights.append(
-                recency_weight(game.get("date"), fit_end_date, self._recency_lambda)
+            weight = recency_weight(
+                game.get("date"), fit_end_date, self._recency_lambda
             )
+            weights.append(weight)
+            try:
+                total_points = float(game.get("home_score")) + float(
+                    game.get("away_score")
+                )
+                total_accumulator.add(total_points, weight)
+            except Exception:
+                pass
 
         if design_matrix:
             matrix = np.asarray(design_matrix, dtype=float)
@@ -324,6 +364,9 @@ class GSSDModel(BaseModel):
                 win_prob_k=self._win_prob_k if self._win_prob_k > 0 else DEFAULT_WIN_PROB_K,
             )
 
+        self._total_mean = total_accumulator.mean()
+        self._total_sd = total_accumulator.sd()
+
     def predict(self, upcoming_games_df: Any) -> list[GamePrediction]:
         require_columns(upcoming_games_df, ["date", "home_team", "away_team"])
         predictions: list[GamePrediction] = []
@@ -365,6 +408,14 @@ class GSSDModel(BaseModel):
                 if self._conditional_sd_model is not None
                 else coefficients.error_term
             )
+            home_points_pred = (home_stats["pfh"] + away_stats["paa"]) / 2.0
+            away_points_pred = (away_stats["pfa"] + home_stats["pah"]) / 2.0
+            total_mean = home_points_pred + away_points_pred
+            total_sd = (
+                self._total_sd
+                if self._total_sd is not None and self._total_sd > 0
+                else DEFAULT_TOTAL_SD_FALLBACK
+            )
             win_prob_dist = win_prob_distribution(
                 p_home_win,
                 win_prob_k=win_prob_k,
@@ -381,7 +432,9 @@ class GSSDModel(BaseModel):
                     p_home_win=p_home_win,
                     win_prob_dist=win_prob_dist,
                     pred_margin=pred_margin,
+                    pred_total=total_mean,
                     margin_sd=margin_sd,
+                    total_sd=total_sd,
                     win_prob_source="logistic",
                     margin_dist_assumption="normal_approx",
                     metadata=dict(model_identity),
@@ -396,6 +449,8 @@ class GSSDModel(BaseModel):
                         "win_prob_k": win_prob_k,
                         "winprob_bias": self._win_prob_bias,
                         "conditional_sd": self._conditional_sd,
+                        "total_mean": total_mean,
+                        "total_sd": total_sd,
                         "conditional_sd_intercept": (
                             self._conditional_sd_model.intercept
                             if self._conditional_sd_model is not None

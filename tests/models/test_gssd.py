@@ -89,3 +89,48 @@ def test_gssd_predict_uses_coefficients() -> None:
     expected_prob = 1.0 / (1.0 + math.exp(-expected_margin / 10.0))
     assert prediction.p_home_win == pytest.approx(expected_prob)
     assert prediction.win_prob_dist
+
+
+def test_gssd_predict_populates_totals_head() -> None:
+    model = GSSDModel()
+    games = pd.DataFrame(
+        [
+            {
+                "date": "2025-01-01",
+                "home_team": "Alpha",
+                "away_team": "Beta",
+                "home_score": 100,
+                "away_score": 90,
+            },
+            {
+                "date": "2025-01-02",
+                "home_team": "Beta",
+                "away_team": "Alpha",
+                "home_score": 95,
+                "away_score": 105,
+            },
+        ]
+    )
+
+    model.fit(games)
+
+    preds = model.predict(
+        pd.DataFrame(
+            [
+                {
+                    "date": "2025-01-03",
+                    "home_team": "Alpha",
+                    "away_team": "Beta",
+                }
+            ]
+        )
+    )
+
+    assert len(preds) == 1
+    prediction = preds[0]
+    # Expected totals from offense/defense blending
+    assert prediction.pred_total == pytest.approx(190.0)
+    assert prediction.total_mean == pytest.approx(190.0)
+    # Fit-derived total SD from training totals [190, 200] => sd = 5
+    assert prediction.total_sd is not None
+    assert prediction.total_sd == pytest.approx(5.0)

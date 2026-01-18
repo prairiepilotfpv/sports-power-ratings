@@ -19,8 +19,10 @@ from config import (
 from models.calibration import ConditionalSDModel, guardrail_margin_sd
 from eval.validation import get_validation_config
 from models.base import _home_win_prob_from_margin
+from models.poisson import poisson_canonical_from_samples
 from pipelines.projections import (
     matchup_total_from_averages,
+    logistic_win_prob,
     project_game,
     total_from_ratings,
 )
@@ -282,6 +284,122 @@ def _elo_projection_engine(
     return projection
 
 
+def _toor_projection_engine(
+    home_team: str,
+    away_team: str,
+    model: Any,
+    context: ProjectionContext,
+) -> ProjectionOutput:
+
+    projection = _rating_projection_engine(home_team, away_team, model, context)
+    logistic_prob = None
+    neutral = bool(context.get("neutral", False))
+
+    if hasattr(model, "predict_probability"):
+        venue = "neutral" if neutral else "home"
+        try:
+            logistic_prob = float(
+                model.predict_probability(
+                    home_team,
+                    away_team,
+                    venue=venue,
+                )
+            )
+        except Exception:
+            logistic_prob = None
+
+    if logistic_prob is None and hasattr(model, "project_matchup"):
+        direct = None
+        try:
+            direct = model.project_matchup(home_team, away_team, neutral=neutral)
+        except Exception:
+            direct = None
+        if isinstance(direct, dict):
+            direct_p = direct.get("model_p_home_win") or direct.get("p_home_win")
+            if direct_p is not None:
+                try:
+                    logistic_prob = float(direct_p)
+                except Exception:
+                    logistic_prob = None
+
+    if logistic_prob is None:
+        margin_mean = projection.get("margin_mean")
+        if margin_mean is not None:
+            win_prob_k = float(context.get("win_prob_k", DEFAULT_WIN_PROB_K))
+            if win_prob_k <= 0:
+                win_prob_k = DEFAULT_WIN_PROB_K
+
+            winprob_bias = 0.0
+            params: dict[str, Any] = {}
+            if hasattr(model, "metadata") and callable(getattr(model, "metadata")):
+                meta = model.metadata()
+                params = getattr(meta, "params", {}) or {}
+            else:
+                raw_params = getattr(model, "params", {})
+                if callable(raw_params):
+                    raw_params = raw_params()
+                params = raw_params or {}
+
+            try:
+                winprob_bias = float(params.get("winprob_bias", 0.0))
+            except Exception:
+                winprob_bias = 0.0
+
+            projected_spread = -float(margin_mean)
+            adjusted_spread = projected_spread - winprob_bias
+            logistic_prob = logistic_win_prob(adjusted_spread, win_prob_k)
+
+    if logistic_prob is None:
+        return projection
+
+    projection.update(
+        {
+            "projected_win_prob": logistic_prob,
+            "model_p_home_win": logistic_prob,
+            "logistic_home_win_prob": logistic_prob,
+            "win_prob_source": "logistic",
+        }
+    )
+    return projection
+
+
+def _gssd_projection_engine(
+    home_team: str,
+    away_team: str,
+    model: Any,
+    context: ProjectionContext,
+) -> ProjectionOutput:
+    projection = _rating_projection_engine(home_team, away_team, model, context)
+    margin_mean = projection.get("margin_mean")
+    if margin_mean is None:
+        return projection
+
+    win_prob_k = float(context.get("win_prob_k", DEFAULT_WIN_PROB_K))
+    if win_prob_k <= 0:
+        win_prob_k = DEFAULT_WIN_PROB_K
+    try:
+        winprob_bias = float(context.get("winprob_bias", 0.0))
+    except Exception:
+        winprob_bias = 0.0
+
+    projected_spread = -float(margin_mean)
+    adjusted_spread = projected_spread - winprob_bias
+    logistic_prob = logistic_win_prob(adjusted_spread, win_prob_k)
+
+    projection.update(
+        {
+            "projected_win_prob": logistic_prob,
+            "model_p_home_win": logistic_prob,
+            "logistic_home_win_prob": logistic_prob,
+            "win_prob_source": "logistic",
+            "margin_dist_assumption": projection.get(
+                "margin_dist_assumption", "normal_approx"
+            ),
+        }
+    )
+    return projection
+
+
 def _bt_projection_engine(
     home_team: str,
     away_team: str,
@@ -350,39 +468,28 @@ def _poisson_projection_engine(
         }
 
     home_samples, away_samples = samples
-    total_samples = home_samples + away_samples
-    margin_samples = home_samples - away_samples
-
-    projected_home_score = float(np.mean(home_samples))
-    projected_away_score = float(np.mean(away_samples))
-    projected_total = float(np.mean(total_samples))
-    margin_mean = float(np.mean(margin_samples))
-    margin_sd = float(np.std(margin_samples))
-    total_mean = projected_total
-    total_sd = float(np.std(total_samples))
-    win_prob = float(
-        np.mean(margin_samples > 0)
-        + 0.5 * np.mean(margin_samples == 0)
-    )
+    canonical = poisson_canonical_from_samples(home_samples, away_samples)
 
     return {
-        "projected_home_score": projected_home_score,
-        "projected_away_score": projected_away_score,
-        "projected_total": projected_total,
-        "projected_win_prob": None,
-        "model_p_home_win": win_prob,
+        "projected_home_score": canonical["projected_home_score"],
+        "projected_away_score": canonical["projected_away_score"],
+        "projected_total": canonical["total_mean"],
+        "projected_win_prob": canonical["p_home_win"],
+        "model_p_home_win": canonical["p_home_win"],
         "normal_p_home_win": None,
-        "win_prob_source": "sample",
-        "margin_dist_assumption": "empirical",
-        "margin_mean": margin_mean,
-        "margin_sd": margin_sd,
-        "total_mean": total_mean,
-        "total_sd": total_sd,
-        "logistic_home_win_prob": None,
+        "win_prob_source": canonical["win_prob_source"],
+        "margin_dist_assumption": canonical["margin_dist_assumption"],
+        "margin_mean": canonical["margin_mean"],
+        "margin_sd": canonical["margin_sd"],
+        "total_mean": canonical["total_mean"],
+        "total_sd": canonical["total_sd"],
+        "logistic_home_win_prob": canonical["p_home_win"],
     }
 
 
 register_projection_engine(_DEFAULT_ENGINE_KEY, _rating_projection_engine)
 register_projection_engine("elo", _elo_projection_engine)
+register_projection_engine("toor", _toor_projection_engine)
+register_projection_engine("gssd", _gssd_projection_engine)
 register_projection_engine("bradley-terry", _bt_projection_engine)
 register_projection_engine("poisson", _poisson_projection_engine)

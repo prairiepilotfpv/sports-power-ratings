@@ -77,3 +77,11 @@ Summary: concise reference to help an AI code agent be productive in this reposi
 ---
 If anything here looks incomplete or unclear (model naming, a missing example, or a workflow you want covered), tell me which section to expand and I’ll iterate.  
 (Author: GitHub Copilot — using Raptor mini (Preview))
+
+“When working on models, follow docs/model_canonization_playbook.md”
+
+“Never change model math unless explicitly requested”
+
+“Prefer dedicated projection engine registration over branching in default engine”
+
+“Add regression tests for semantic drift + metric dropout”
