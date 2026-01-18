@@ -35,8 +35,8 @@ python -m src.cli.pipeline tune --model elo --csv data/raw/nba_history.csv \
 3) (Optional) Tune per-market and ensemble weights if you use ensembles:
 
 ```bash
-# Per-model, per-market tuning (ML example)
-python -m src.cli.pipeline tune-model --sport nba --season 2025-26 --model elo --market ML \
+# Per-model, per-market tuning (runs ML/SPREAD/TOTAL by default)
+python -m src.cli.pipeline tune-model --sport nba --season 2025-26 --model elo \
   --csv data/raw/nba_history.csv --start 2020-01-01 --end 2024-12-31 \
   --output-dir outputs/tuning/nba/2025-26/elo
 

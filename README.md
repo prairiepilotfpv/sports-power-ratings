@@ -149,10 +149,10 @@ python -m src.cli.pipeline rank --sport nhl --season 2025-26
 python -m src.cli.pipeline tune --model elo --csv data/raw/nhl_history.csv --start 2020-01-01 --end 2024-12-31 --metric log_loss --apply-best --sport nhl --season 2025-26 --db data/db/nhl/2025-26.db
 ```
 
-4) (Optional) Tune model performance per-market using `tune-model` to persist per-market runs (ML/SPREAD/TOTAL):
+4) (Optional) Tune model performance per-market using `tune-model`. By default the command runs ML, SPREAD and TOTAL sequentially; use `--market` for a subset, `--market-metrics` to override per-market objectives, and `--activate` to promote the freshly tuned params.
 
 ```bash
-python -m src.cli.pipeline tune-model --sport nhl --season 2025-26 --model elo --market ML --csv data/raw/nhl_history.csv --start 2020-01-01 --end 2024-12-31 --output-dir outputs/tuning/nhl/2025-26/elo
+python -m src.cli.pipeline tune-model --sport nhl --season 2025-26 --model elo --csv data/raw/nhl_history.csv --start 2020-01-01 --end 2024-12-31 --output-dir outputs/tuning/nhl/2025-26/elo
 ```
 
 5) (Optional) Tune ensemble weights per market (if using ensembles):

@@ -696,7 +696,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     tune_model_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
     tune_model_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
     tune_model_parser.add_argument("--model", required=True, help="Backtest model to tune (e.g., elo, gssd).")
-    tune_model_parser.add_argument("--market", default="ML", help="Market identifier (ML, SPREAD, TOTAL).")
+    tune_model_parser.add_argument(
+        "--market",
+        help="Market identifier(s) (ML, SPREAD, TOTAL). Defaults to all three when omitted.",
+    )
     tune_model_parser.add_argument("--start", required=True, help="Backtest start date (YYYY-MM-DD).")
     tune_model_parser.add_argument("--end", required=True, help="Backtest end date (YYYY-MM-DD).")
     tune_model_parser.add_argument(
@@ -718,6 +721,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     tune_model_parser.add_argument(
         "--metric",
         help="Metric to optimize (overrides market default).",
+    )
+    tune_model_parser.add_argument(
+        "--market-metrics",
+        help="Optional JSON map of market->metric overrides (e.g., '{\"ML\":\"log_loss\"}').",
     )
     tune_model_parser.add_argument(
         "--output-dir",
@@ -742,6 +749,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--allow-worse",
         action="store_true",
         help="Allow worse results than the default parameters (disables improvement guard).",
+    )
+    tune_model_parser.add_argument(
+        "--activate",
+        action="store_true",
+        help="Activate tuned params per market after tuning completes.",
     )
     tune_model_parser.add_argument(
         "--db",
@@ -1484,7 +1496,7 @@ def _run_init_ensemble_config(args: argparse.Namespace) -> None:
 
 def _run_tune_model(args: argparse.Namespace) -> None:
     _ensure_src_on_path()
-    from pipelines.market_tuning import run_model_market_tuning
+    from pipelines.market_tuning import SUPPORTED_MARKETS, run_model_markets_tuning
     from data.paths import db_path_for
 
     start_date = _require_iso_date(args.start, field="--start")
@@ -1494,11 +1506,26 @@ def _run_tune_model(args: argparse.Namespace) -> None:
         grid_override = _load_grid_override(args.grid_file)
     db_path = args.db or db_path_for(args.sport, args.season)
     _echo_db_path(Path(db_path))
-    result = run_model_market_tuning(
+    markets = _parse_markets_arg(args.market)
+    metric_overrides = _parse_market_metrics_arg(args.market_metrics)
+    target_markets = markets if markets is not None else list(SUPPORTED_MARKETS)
+    combined_metrics: dict[str, str] = {}
+    if args.metric:
+        metric_value = args.metric.strip()
+        if metric_value:
+            for market in target_markets:
+                combined_metrics[market] = metric_value
+    if metric_overrides:
+        combined_metrics.update(metric_overrides)
+    if not combined_metrics:
+        metric_map = None
+    else:
+        metric_map = combined_metrics
+    outcomes = run_model_markets_tuning(
         sport=args.sport,
         season=args.season,
         model=args.model,
-        market=args.market,
+        markets=markets,
         start_date=start_date,
         end_date=end_date,
         window=args.window,
@@ -1508,16 +1535,36 @@ def _run_tune_model(args: argparse.Namespace) -> None:
         output_dir=args.output_dir,
         grid_override=grid_override,
         db_path=db_path,
-        metric_override=args.metric,
+        metric_overrides=metric_map,
         allow_worse=args.allow_worse,
         jobs=args.jobs,
+        activate_best=bool(getattr(args, "activate", False)),
     )
+    succeeded: list[str] = []
+    failed: list[str] = []
+    for outcome in outcomes:
+        if outcome.result:
+            result = outcome.result
+            activated_flag = "yes" if result.activated else "no"
+            print(
+                f"{result.market}: metric={result.metric_optimized} "
+                f"best_score={result.best_score} params_source={result.params_source} "
+                f"activated={activated_flag}"
+            )
+            succeeded.append(result.market)
+        else:
+            print(f"{outcome.market}: failed -> {outcome.error}")
+            failed.append(outcome.market)
+    if not failed:
+        overall = "success"
+    elif succeeded:
+        overall = "partial success"
+    else:
+        overall = "failure"
     print(
-        "Model tuning completed: "
-        f"model={result.model} market={result.market} "
-        f"metric={result.metric_optimized} run_id={result.run_id}"
+        f"Model tuning overall: {overall} "
+        f"({len(succeeded)} succeeded, {len(failed)} failed)"
     )
-    print(f"Saved tuning outputs -> {result.output_dir}")
 
 
 def _run_tune_ensemble(args: argparse.Namespace) -> None:
@@ -2206,6 +2253,40 @@ def _parse_json_arg(raw: str | None) -> dict | None:
     if not isinstance(data, dict):
         raise ValueError("--model-params must be a JSON object.")
     return data
+
+
+def _parse_markets_arg(raw: str | None) -> list[str] | None:
+    if raw is None:
+        return None
+    markets = [item.strip() for item in raw.split(",") if item.strip()]
+    if not markets:
+        raise ValueError("Provide at least one market identifier via --market.")
+    return markets
+
+
+def _parse_market_metrics_arg(raw: str | None) -> dict[str, str] | None:
+    if raw is None:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON for --market-metrics: {raw}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("--market-metrics must be a JSON object.")
+    cleaned: dict[str, str] = {}
+    for market_key, metric_value in payload.items():
+        if not isinstance(market_key, str):
+            raise ValueError("Market keys in --market-metrics must be strings.")
+        if not isinstance(metric_value, str):
+            raise ValueError("Metric values in --market-metrics must be strings.")
+        key = market_key.strip()
+        metric = metric_value.strip()
+        if not key:
+            raise ValueError("Market keys in --market-metrics cannot be blank.")
+        if not metric:
+            raise ValueError("Metric values in --market-metrics cannot be blank.")
+        cleaned[key] = metric
+    return cleaned
 
 
 def _load_grid_override(path: str | Path) -> dict | None:

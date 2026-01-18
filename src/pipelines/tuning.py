@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import inspect
 import itertools
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Iterable
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 from backtest.runner import load_games_df_from_csv, run_backtest
 from data.repository import save_tuned_params, set_active_tuned_params
@@ -316,8 +320,9 @@ def _default_param_grid(model: str) -> dict[str, Iterable[Any]]:
         }
     if model == "bradley-terry":
         return {
-            "max_iter": [200, 500, 800],
-            "tol": [1e-6, 1e-8],
+            "temp": [2.0, 3.0, 4.0],
+            "l2_lambda": [1e-4, 1e-3, 1e-2],
+            "learn_hfa": [False, True],
         }
     # HFA backtest variants removed; no separate grid needed.
     if model == "toor":
@@ -449,6 +454,43 @@ def _resolve_jobs(jobs: int | None) -> int:
     return jobs
 
 
+def _filter_candidate_kwargs(
+    params: dict[str, Any],
+    func: Any,
+) -> tuple[dict[str, Any], set[str]]:
+    if not params:
+        return {}, set()
+    sig = inspect.signature(func)
+    allowed: set[str] = set()
+    for name, param in sig.parameters.items():
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            return dict(params), set()
+        if name in ("self", "cls"):
+            continue
+        if param.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            allowed.add(name)
+    filtered = {k: v for k, v in params.items() if k in allowed}
+    dropped = {k for k in params.keys() if k not in allowed}
+    return filtered, dropped
+
+
+def _warn_dropped_candidate_params(
+    model_name: str, index: int, dropped_keys: set[str]
+) -> None:
+    if not dropped_keys:
+        return
+    sorted_keys = sorted(dropped_keys)
+    message = (
+        f"Tuning candidate {index} for model={model_name} dropped unsupported params: "
+        f"{sorted_keys}"
+    )
+    logger.warning(message)
+    print("WARNING:", message)
+
+
 def _eval_candidate(index: int, params: dict[str, Any], context: dict[str, Any], games_df: pd.DataFrame) -> dict[str, Any]:
     """Worker function to evaluate a single candidate.
 
@@ -465,8 +507,11 @@ def _eval_candidate(index: int, params: dict[str, Any], context: dict[str, Any],
         candidate_dir = Path(context.get("base_dir")) / f"{context.get('run_id')}__{params_label}"
         candidate_dir.mkdir(parents=True, exist_ok=True)
 
+        safe_params, dropped_keys = _filter_candidate_kwargs(params, model_cls)
+        _warn_dropped_candidate_params(model_name, index, dropped_keys)
+
         outputs = run_backtest(
-            lambda params=params: model_cls(**params),
+            lambda params=safe_params: model_cls(**params),
             games_df,
             start_date=context.get("start_date"),
             end_date=context.get("end_date"),

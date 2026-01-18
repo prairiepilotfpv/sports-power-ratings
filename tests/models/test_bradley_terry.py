@@ -168,3 +168,35 @@ def test_backtest_prediction_fields_are_canonical() -> None:
     )
     assert prediction.win_prob_source == "direct"
     assert prediction.extra.get("normal_p_home_win") is not None
+
+
+def test_backtest_prediction_margin_and_total_populated() -> None:
+    games = pd.DataFrame(
+        [
+            {
+                "date": "2024-11-01",
+                "home_team": "Alpha",
+                "away_team": "Beta",
+                "home_score": 110,
+                "away_score": 95,
+            }
+        ]
+    )
+    backtest = BradleyTerryBacktest()
+    backtest.fit(games)
+
+    upcoming = pd.DataFrame(
+        [
+            {
+                "date": "2024-12-01",
+                "home_team": "Alpha",
+                "away_team": "Beta",
+            }
+        ]
+    )
+    prediction = backtest.predict(upcoming)[0]
+
+    assert prediction.margin_mean is not None
+    assert prediction.total_mean is not None
+    assert prediction.pred_margin is not None
+    assert prediction.pred_total is not None

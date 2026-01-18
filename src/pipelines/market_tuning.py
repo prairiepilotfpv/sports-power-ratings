@@ -20,6 +20,8 @@ from models.registry import get_backtest_model, normalize_model_name
 from pipelines.ensemble_tuning import tune_market_ensemble
 from pipelines.tuning import run_tuning_pipeline
 
+SUPPORTED_MARKETS = ("ML", "SPREAD", "TOTAL")
+
 
 @dataclass(frozen=True)
 class ModelMarketTuningResult:
@@ -31,6 +33,87 @@ class ModelMarketTuningResult:
     best_params: dict[str, Any]
     summary_metrics: dict[str, Any]
     output_dir: Path
+    params_source: str
+    activated: bool
+
+
+@dataclass(frozen=True)
+class ModelMarketTuningOutcome:
+    market: str
+    result: ModelMarketTuningResult | None
+    error: str | None
+
+
+def run_model_markets_tuning(
+    *,
+    sport: str,
+    season: str,
+    model: str,
+    markets: Iterable[str] | None,
+    start_date: str,
+    end_date: str,
+    window: str,
+    rolling_days: int | None,
+    rolling_games: int | None,
+    csv_path: str | Path,
+    output_dir: str | Path | None,
+    grid_override: dict[str, Any] | None,
+    db_path: str | Path,
+    metric_overrides: dict[str, str] | None = None,
+    allow_worse: bool = False,
+    jobs: int = 1,
+    activate_best: bool = False,
+) -> list[ModelMarketTuningOutcome]:
+    normalized_markets: list[str] = []
+    seen: set[str] = set()
+    raw_markets = markets if markets is not None else SUPPORTED_MARKETS
+    for market in raw_markets:
+        normalized = _normalize_market(market)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        normalized_markets.append(normalized)
+    if not normalized_markets:
+        raise ValueError("No valid markets provided for tuning.")
+
+    overrides: dict[str, str] = {}
+    if metric_overrides:
+        for market_name, metric in metric_overrides.items():
+            overrides[_normalize_market(market_name)] = metric
+
+    outcomes: list[ModelMarketTuningOutcome] = []
+    for market in normalized_markets:
+        metric_override = overrides.get(market)
+        try:
+            result = run_model_market_tuning(
+                sport=sport,
+                season=season,
+                model=model,
+                market=market,
+                start_date=start_date,
+                end_date=end_date,
+                window=window,
+                rolling_days=rolling_days,
+                rolling_games=rolling_games,
+                csv_path=csv_path,
+                output_dir=output_dir,
+                grid_override=grid_override,
+                db_path=db_path,
+                metric_override=metric_override,
+                allow_worse=allow_worse,
+                jobs=jobs,
+                activate_best=activate_best,
+            )
+            outcomes.append(ModelMarketTuningOutcome(market=market, result=result, error=None))
+        except Exception as exc:  # pragma: no cover - errors bubble to CLI
+            outcomes.append(
+                ModelMarketTuningOutcome(
+                    market=market,
+                    result=None,
+                    error=str(exc),
+                )
+            )
+    return outcomes
 
 
 def run_model_market_tuning(
@@ -51,6 +134,7 @@ def run_model_market_tuning(
     metric_override: str | None = None,
     allow_worse: bool = False,
     jobs: int = 1,
+    activate_best: bool = False,
 ) -> ModelMarketTuningResult:
     normalized_market = _normalize_market(market)
     tuning_metric, metric_optimized = _resolve_market_metric(
@@ -101,6 +185,13 @@ def run_model_market_tuning(
     )
     finished_at = _utc_now()
 
+    if grid_override is not None:
+        params_source = "file"
+    elif best_params:
+        params_source = "db"
+    else:
+        params_source = "default"
+
     save_model_market_tuning_run(
         db_path,
         sport=sport,
@@ -116,15 +207,18 @@ def run_model_market_tuning(
         finished_at=finished_at,
         notes=None,
     )
-    set_active_model_market_params(
-        db_path,
-        sport=sport,
-        season=season,
-        model=model_name,
-        market=normalized_market,
-        params=best_params,
-        source_run_id=run_id,
-    )
+    activated = False
+    if activate_best and best_params:
+        set_active_model_market_params(
+            db_path,
+            sport=sport,
+            season=season,
+            model=model_name,
+            market=normalized_market,
+            params=best_params,
+            source_run_id=run_id,
+        )
+        activated = True
     return ModelMarketTuningResult(
         model=model_name,
         market=normalized_market,
@@ -134,6 +228,8 @@ def run_model_market_tuning(
         best_params=best_params,
         summary_metrics=summary_metrics,
         output_dir=Path(tuning_outputs.output_dir),
+        params_source=params_source,
+        activated=activated,
     )
 
 
