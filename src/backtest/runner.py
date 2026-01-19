@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import logging
 import json
 from pathlib import Path
 from typing import Callable, Iterable
+import os
+import time
 
 import numpy as np
 import pandas as pd
@@ -16,6 +19,11 @@ from pipelines.guardrails import apply_prediction_validation
 from pipelines.metadata import prediction_hash
 from eval.validation import get_validation_config
 from models.calibration import guardrail_margin_sd
+from backtest.eval_schema import (
+    REQUIRED_ACTUAL_COLS,
+    REQUIRED_EVAL_COLUMNS,
+    REQUIRED_PRED_COLS,
+)
 
 DEFAULT_BUCKET_EDGES = np.linspace(0.0, 1.0, 11)
 REQUIRED_BACKTEST_PREDICTION_COLUMNS = [
@@ -36,6 +44,8 @@ REQUIRED_BACKTEST_PREDICTION_COLUMNS = [
     "model_id",
 ]
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class BacktestOutputs:
@@ -44,6 +54,13 @@ class BacktestOutputs:
     metrics_overall: pd.DataFrame
     calibration: pd.DataFrame
     output_dir: Path
+
+
+@dataclass(frozen=True)
+class BacktestSlice:
+    date: pd.Timestamp
+    train_idx: np.ndarray
+    eval_idx: np.ndarray
 
 
 def load_games_df_from_db(
@@ -205,6 +222,95 @@ def _has_required_data(df: pd.DataFrame) -> bool:
     return True
 
 
+def _precompute_actual_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute actual outcome columns once for the full dataset."""
+    result = df.copy()
+    index = result.index
+    if "home_score" not in result.columns:
+        result["home_score"] = pd.Series(pd.NA, index=index, dtype="Float64")
+    if "away_score" not in result.columns:
+        result["away_score"] = pd.Series(pd.NA, index=index, dtype="Float64")
+
+    home = pd.to_numeric(result.get("home_score"), errors="coerce")
+    away = pd.to_numeric(result.get("away_score"), errors="coerce")
+
+    if "actual_margin" not in result.columns:
+        result["actual_margin"] = (home - away).astype("Float64")
+    else:
+        actual_margin = pd.to_numeric(result.get("actual_margin"), errors="coerce")
+        missing = actual_margin.isna()
+        if missing.any():
+            actual_margin.loc[missing] = (home - away)[missing]
+        result["actual_margin"] = actual_margin.astype("Float64")
+
+    if "actual_total" not in result.columns:
+        result["actual_total"] = (home + away).astype("Float64")
+    else:
+        actual_total = pd.to_numeric(result.get("actual_total"), errors="coerce")
+        missing = actual_total.isna()
+        if missing.any():
+            actual_total.loc[missing] = (home + away)[missing]
+        result["actual_total"] = actual_total.astype("Float64")
+
+    if "home_win" not in result.columns:
+        home_win = pd.Series(pd.NA, index=index, dtype="Float64")
+    else:
+        home_win = pd.to_numeric(result.get("home_win"), errors="coerce")
+    missing = home_win.isna()
+    score_mask = home.notna() & away.notna() & missing
+    if score_mask.any():
+        home_win.loc[score_mask] = np.where(
+            home[score_mask] > away[score_mask],
+            1.0,
+            np.where(home[score_mask] < away[score_mask], 0.0, 0.5),
+        )
+    result["home_win"] = home_win.astype("Float64")
+    return result
+
+
+def _prepare_backtest_slices(
+    games: pd.DataFrame,
+    *,
+    start_dt: pd.Timestamp,
+    end_dt: pd.Timestamp,
+    window: str,
+    rolling_days: int | None,
+    rolling_games: int | None,
+) -> list[BacktestSlice]:
+    date_values = pd.to_datetime(games["date"], errors="coerce").dt.normalize()
+    evaluation_mask = (date_values >= start_dt) & (date_values <= end_dt)
+    evaluation_dates = sorted(date_values[evaluation_mask].dropna().unique())
+    if not evaluation_dates:
+        raise ValueError(
+            "No evaluation dates found for backtest window "
+            f"{start_dt.date().isoformat()} to {end_dt.date().isoformat()}. "
+            "Confirm the --start/--end dates overlap the dataset."
+        )
+
+    slices: list[BacktestSlice] = []
+    index_values = games.index.to_numpy()
+    for current_date in evaluation_dates:
+        eval_mask = date_values == current_date
+        eval_idx = index_values[eval_mask.to_numpy()]
+
+        train_mask = date_values < current_date
+        if window == "rolling" and rolling_days is not None:
+            cutoff = pd.Timestamp(current_date) - pd.Timedelta(days=rolling_days)
+            train_mask &= date_values >= cutoff
+        train_idx = index_values[train_mask.to_numpy()]
+        if window == "rolling" and rolling_games is not None and len(train_idx) > rolling_games:
+            train_idx = train_idx[-rolling_games:]
+
+        slices.append(
+            BacktestSlice(
+                date=pd.Timestamp(current_date),
+                train_idx=train_idx,
+                eval_idx=eval_idx,
+            )
+        )
+    return slices
+
+
 def run_backtest(
     model_factory: Callable[[], BaseModel],
     games_df: pd.DataFrame,
@@ -231,50 +337,103 @@ def run_backtest(
     games = validate_dataset(games_df)
     if "neutral" not in games.columns:
         games["neutral"] = False
+    games = games.copy()
+    games["date"] = pd.to_datetime(games["date"], errors="coerce").dt.normalize()
 
     start_dt = (
         pd.to_datetime(start_date).normalize() if start_date else games["date"].min()
     )
     end_dt = pd.to_datetime(end_date).normalize() if end_date else games["date"].max()
 
-    evaluation = games[(games["date"] >= start_dt) & (games["date"] <= end_dt)]
-    evaluation_dates = sorted(evaluation["date"].unique())
-    if not evaluation_dates:
-        raise ValueError(
-            "No evaluation dates found for backtest window "
-            f"{start_dt.date().isoformat()} to {end_dt.date().isoformat()}. "
-            "Confirm the --start/--end dates overlap the dataset."
+    precompute_start = time.perf_counter()
+    games = _precompute_actual_columns(games)
+    precompute_actuals_time = time.perf_counter() - precompute_start
+
+    slice_start = time.perf_counter()
+    slices = _prepare_backtest_slices(
+        games,
+        start_dt=start_dt,
+        end_dt=end_dt,
+        window=window,
+        rolling_days=rolling_days,
+        rolling_games=rolling_games,
+    )
+    slice_prep_time = time.perf_counter() - slice_start
+
+    model_instance = model_factory()
+    meta = None
+    try:
+        meta = model_instance.metadata()
+    except Exception:
+        meta = None
+
+    if (
+        bool(getattr(meta, "supports_streaming_backtest", False))
+        and window == "expanding"
+        and rolling_days is None
+        and rolling_games is None
+    ):
+        return run_backtest_streaming(
+            model_instance=model_instance,
+            games=games,
+            slices=slices,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            output_dir=output_dir,
+            model_name=model_name,
+            db_path=db_path,
+            sport=sport,
+            season=season,
+            calibrate=calibrate,
+            calib_dir=calib_dir,
+            calibrator_override=calibrator_override,
+            window=window,
+            rolling_days=rolling_days,
+            rolling_games=rolling_games,
+            precompute_actuals_time=precompute_actuals_time,
+            slice_prep_time=slice_prep_time,
         )
 
     prediction_frames: list[pd.DataFrame] = []
     calibration_eval_rows: list[dict] = []
     model_identity: dict[str, str] | None = None
-    for current_date in evaluation_dates:
-        train_data = games[games["date"] < current_date]
-        if window == "rolling":
-            if rolling_days is not None:
-                cutoff = current_date - pd.Timedelta(days=rolling_days)
-                train_data = train_data[train_data["date"] >= cutoff]
-            if rolling_games is not None:
-                train_data = train_data.tail(rolling_games)
-
+    # Profiling timers (seconds)
+    profile_enabled = os.getenv("TUNE_PROFILE", "0").strip() == "1" or logging.getLogger().isEnabledFor(logging.DEBUG)
+    fit_time_total = 0.0
+    predict_time_total = 0.0
+    pred_to_frame_time_total = 0.0
+    merge_time_total = 0.0
+    ensure_schema_time_total = 0.0
+    for slice_info in slices:
+        current_date = slice_info.date
+        train_data = games.loc[slice_info.train_idx]
         if train_data.empty:
             continue
 
         model = model_factory()
         if model_identity is None:
             model_identity = resolve_model_identity(model)
+        # Time model.fit
+        t0 = time.perf_counter()
         model.fit(train_data)
+        t1 = time.perf_counter()
+        fit_time_total += (t1 - t0)
 
-        day_games = evaluation[evaluation["date"] == current_date]
+        day_games = games.loc[slice_info.eval_idx]
         predict_input = day_games.drop(
             columns=["home_score", "away_score"], errors="ignore"
         )
         predict_input = validate_model_input(predict_input, context="Backtest model input")
+        t0 = time.perf_counter()
         predictions = model.predict(predict_input)
+        t1 = time.perf_counter()
+        predict_time_total += (t1 - t0)
         predictions = validate_predictions(predictions, context="Backtest model output")
         _attach_prediction_metadata(predictions, model=model, train_data=train_data)
+        t0 = time.perf_counter()
         pred_df = _predictions_to_frame(predictions)
+        t1 = time.perf_counter()
+        pred_to_frame_time_total += (t1 - t0)
         # Ensure an empty predictions return value yields a DataFrame with the
         # expected columns so downstream normalization and merges don't fail.
         if pred_df.empty:
@@ -294,138 +453,92 @@ def run_backtest(
             # Re-raise so upstream behavior remains unchanged for visible failures.
             raise
 
-        # Apply sport-specific guardrails to predicted SDs so downstream
-        # evaluation and calibration see clamped, sensible variances.
-        try:
-            cfg = get_validation_config(sport)
-            if "margin_sd" in pred_df.columns:
-                pred_df["margin_sd"] = pred_df["margin_sd"].apply(
-                    lambda v: guardrail_margin_sd(
-                        float(v) if v is not None and not pd.isna(v) else None,
-                        guardrail_min=cfg.margin_sd_min,
-                        guardrail_max=cfg.margin_sd_max,
-                    )[0]
-                )
-            if "total_mean" in pred_df.columns and "total_sd" in pred_df.columns:
-                pred_df["total_sd"] = pred_df["total_sd"].apply(
-                    lambda v: guardrail_margin_sd(
-                        float(v) if v is not None and not pd.isna(v) else None,
-                        guardrail_min=cfg.total_sd_min,
-                        guardrail_max=cfg.total_sd_max,
-                    )[0]
-                )
-        except Exception:
-            # Best-effort; do not fail backtests on guardrail application errors.
-            pass
+        _apply_guardrails(pred_df, sport=sport)
 
+        t0 = time.perf_counter()
         merged = day_games.merge(
             pred_df,
             on=["date", "home_team", "away_team"],
             how="left",
             suffixes=("", "_pred"),
         )
-        merged["home_win"] = _home_win_flag(merged)
-        merged["actual_margin"] = merged["home_score"] - merged["away_score"]
+        t1 = time.perf_counter()
+        merge_time_total += (t1 - t0)
+        t0 = time.perf_counter()
+        merged = ensure_eval_schema(merged, precomputed_actuals=True)
+        t1 = time.perf_counter()
+        ensure_schema_time_total += (t1 - t0)
 
         # Optional calibration: use previously produced out-of-sample predictions
         # (prediction_frames) as training data to fit a calibrator and transform
         # today's predictions. This avoids leakage because training folds are
         # previous test folds in the walk-forward loop.
-        if calibrate:
-            try:
-                from src.calibration.registry import get_calibrator
-                from src.calibration.platt import PlattScalingCalibrator
-                from src.calibration.isotonic import IsotonicCalibrator
-                from src.calibration.eval import brier_score, log_loss
-                import time
-
-                past = pd.concat(prediction_frames, ignore_index=True) if prediction_frames else pd.DataFrame()
-                # Build training set: past out-of-sample predictions with p_home_win and home_win
-                if not past.empty and "p_home_win" in past.columns and "home_win" in past.columns:
-                    train_df = past.dropna(subset=["p_home_win", "home_win"]).copy()
-                else:
-                    train_df = pd.DataFrame()
-
-                calib = None
-                method = None
-                calibration_id = None
-                if not train_df.empty:
-                    n_train = len(train_df)
-                    # Allow explicit override from CLI: 'platt', 'isotonic', or 'auto'
-                    override = (calibrator_override or "").strip().lower()
-                    if override in {"platt", "isotonic"}:
-                        if override == "isotonic":
-                            calib = IsotonicCalibrator()
-                            method = "isotonic"
-                        else:
-                            calib = PlattScalingCalibrator()
-                            method = "platt"
-                    else:
-                        # check registry for a registered calibrator for this sport/model
-                        try:
-                            reg = get_calibrator(sport or "", model_name or "", "ML")
-                        except Exception:
-                            reg = None
-                        if reg:
-                            # registry entries may be classes or factory callables
-                            if callable(reg):
-                                calib = reg() if isinstance(reg, type) else reg()
-                            else:
-                                calib = reg
-                            method = getattr(calib, "metadata", {}).get("method", "registered")
-                        else:
-                            # default threshold: use isotonic when n >= 500, else Platt
-                            N_THRESH = 500
-                            if n_train >= N_THRESH:
-                                calib = IsotonicCalibrator()
-                                method = "isotonic"
-                            else:
-                                calib = PlattScalingCalibrator()
-                                method = "platt"
-                    calib.fit(train_df.rename(columns={"p_home_win": "p_home_win", "home_win": "home_win"}))
-                    # generate id and persist if requested
-                    ts = int(time.time())
-                    model_name = model_name or "model"
-                    calibration_id = f"{model_name}-ML-{ts}"
-                    if calib_dir:
-                        p_out = Path(calib_dir) / model_name
-                        p_out.mkdir(parents=True, exist_ok=True)
-                        calib_path = p_out / f"{calibration_id}.joblib"
-                        calib.save(calib_path)
-
-                    # transform today's predictions if available
-                    if "p_home_win" in merged.columns:
-                        merged["p_home_win_calibrated"] = calib.transform(merged["p_home_win"]) if not merged["p_home_win"].isna().all() else pd.NA
-                        merged["calibration_id"] = calibration_id
-                        merged["calibration_method"] = method
-
-                        # evaluation on this day's test fold
-                        test_mask = merged["p_home_win"].notna() & merged["home_win"].notna()
-                        if test_mask.any():
-                            raw_brier = brier_score(merged.loc[test_mask, "p_home_win"], merged.loc[test_mask, "home_win"])
-                            cal_brier = brier_score(merged.loc[test_mask, "p_home_win_calibrated"], merged.loc[test_mask, "home_win"])
-                            raw_ll = log_loss(merged.loc[test_mask, "p_home_win"], merged.loc[test_mask, "home_win"])
-                            cal_ll = log_loss(merged.loc[test_mask, "p_home_win_calibrated"], merged.loc[test_mask, "home_win"])
-                            calibration_eval_rows.append({
-                                "date": current_date,
-                                "n_test": int(test_mask.sum()),
-                                "method": method,
-                                "calibration_id": calibration_id,
-                                "brier_raw": raw_brier,
-                                "brier_calibrated": cal_brier,
-                                "logloss_raw": raw_ll,
-                                "logloss_calibrated": cal_ll,
-                            })
-                else:
-                    if "p_home_win" in merged.columns:
-                        merged["p_home_win_calibrated"] = merged["p_home_win"]
-                        merged["calibration_id"] = pd.NA
-                        merged["calibration_method"] = "identity"
-            except Exception:
-                # best-effort: if calibration fails, continue without it
-                pass
+        _apply_optional_calibration(
+            merged,
+            prediction_frames,
+            calibration_eval_rows=calibration_eval_rows,
+            calibrate=calibrate,
+            calib_dir=calib_dir,
+            calibrator_override=calibrator_override,
+            sport=sport,
+            model_name=model_name,
+            current_date=current_date,
+        )
 
         prediction_frames.append(merged)
+
+    outputs, run_id, apply_validation_time, metrics_agg_time = _finalize_backtest_outputs(
+        prediction_frames,
+        calibration_eval_rows,
+        model_identity=model_identity,
+        start_dt=start_dt,
+        end_dt=end_dt,
+        window=window,
+        rolling_days=rolling_days,
+        rolling_games=rolling_games,
+        output_dir=output_dir,
+        model_name=model_name,
+        db_path=db_path,
+        sport=sport,
+        season=season,
+    )
+
+    # Print profiling summary when enabled. Use candidate identification when available.
+    if profile_enabled:
+        model_id = model_identity.get("model_id") if model_identity else (model_name or "model")
+        date_range = f"{start_dt.date().isoformat()}_to_{end_dt.date().isoformat()}"
+        summary = (
+            f"PROFILE model={model_id} range={date_range} "
+            f"fit={fit_time_total:.3f}s predict={predict_time_total:.3f}s "
+            f"pred_to_frame={pred_to_frame_time_total:.3f}s merge={merge_time_total:.3f}s "
+            f"ensure_schema={ensure_schema_time_total:.3f}s apply_validation={apply_validation_time:.3f}s "
+            f"metrics_agg={metrics_agg_time:.3f}s precompute_actuals={precompute_actuals_time:.3f}s "
+            f"slice_prep={slice_prep_time:.3f}s"
+        )
+        try:
+            print(summary)
+        except Exception:
+            logger.debug("Failed to print tuning profile summary")
+
+    return outputs
+
+
+def _finalize_backtest_outputs(
+    prediction_frames: list[pd.DataFrame],
+    calibration_eval_rows: list[dict],
+    *,
+    model_identity: dict[str, str] | None,
+    start_dt: pd.Timestamp,
+    end_dt: pd.Timestamp,
+    window: str,
+    rolling_days: int | None,
+    rolling_games: int | None,
+    output_dir: str | Path | None,
+    model_name: str | None,
+    db_path: str | Path | None,
+    sport: str | None,
+    season: str | None,
+) -> tuple[BacktestOutputs, str, float, float]:
     def _has_data(frame: pd.DataFrame) -> bool:
         """Return True when the frame has rows, columns, and at least one non-NA value."""
         return (
@@ -439,21 +552,33 @@ def run_backtest(
     for _frame in prediction_frames:
         if not _has_data(_frame):
             continue
-        # Drop columns that are entirely NA to avoid dtype inference warnings during concat.
-        keep_columns = _frame.columns.isin(REQUIRED_BACKTEST_PREDICTION_COLUMNS)
+        # Preserve required schema columns even when all-NA; allow optional columns
+        # to be dropped if completely empty to avoid dtype inference warnings.
+        required_cols = set(REQUIRED_BACKTEST_PREDICTION_COLUMNS) | REQUIRED_EVAL_COLUMNS
+        keep_columns = _frame.columns.isin(required_cols)
         cleaned = _frame.loc[:, _frame.notna().any(axis=0) | keep_columns]
-        cleaned = cleaned.dropna(axis=1, how="all")
+
+        # Drop only optional columns that are entirely NA; retain required schema
+        # columns even when empty to keep downstream concatenations stable.
+        drop_candidates = [
+            col
+            for col in cleaned.columns
+            if col not in required_cols and cleaned[col].isna().all()
+        ]
+        if drop_candidates:
+            cleaned = cleaned.drop(columns=drop_candidates)
         if _has_data(cleaned):
             valid_frames.append(cleaned)
     if valid_frames:
         # Filter out empty/all-NA frames to avoid dtype inference changes in future pandas versions.
-        filtered = [
-            frame
-            for frame in valid_frames
-            if isinstance(frame, pd.DataFrame)
-            and not frame.empty
-            and frame.notna().any().any()
-        ]
+        filtered = []
+        for frame in valid_frames:
+            if not isinstance(frame, pd.DataFrame):
+                continue
+            non_empty_cols = frame.columns[frame.notna().any(axis=0)]
+            if len(non_empty_cols) == 0:
+                continue
+            filtered.append(frame.loc[:, non_empty_cols])
         if not filtered:
             raise ValueError(
                 "Backtest produced no usable prediction frames after cleaning."
@@ -470,15 +595,92 @@ def run_backtest(
         if column not in predictions_df.columns:
             predictions_df[column] = pd.NA
 
-    # Evaluation-only exclusion: drop invalid predictions before computing metrics.
+    for column in REQUIRED_EVAL_COLUMNS:
+        if column not in predictions_df.columns:
+            predictions_df[column] = pd.Series(
+                pd.NA, index=predictions_df.index, dtype="Float64"
+            )
+
+    # Evaluation-only exclusion: validate predictions but keep rows for scoring
+    # so outcomes do not change the evaluation set. Extreme corruption may still
+    # be dropped by the validator.
+    validation_reason_counts: dict[str, int] | None = None
+    validation_drop_counts: dict[str, int] | None = None
     try:
-        eval_df, _ = apply_prediction_validation(predictions_df, sport=sport)
+        t0 = time.perf_counter()
+        eval_df, validation_exclusions = apply_prediction_validation(
+            predictions_df,
+            sport=sport,
+            drop_invalid=False,
+            include_reasons=True,
+            log_reasons_per_row=False,
+        )
+        t1 = time.perf_counter()
+        apply_validation_time = t1 - t0
     except Exception:
         eval_df = predictions_df
+        validation_exclusions = []
+        apply_validation_time = 0.0
 
+    if "__invalid_reasons" in eval_df.columns:
+        validation_reason_counts = {}
+        for reasons in eval_df["__invalid_reasons"]:
+            if not reasons:
+                continue
+            for reason in reasons:
+                validation_reason_counts[reason] = (
+                    validation_reason_counts.get(reason, 0) + 1
+                )
+
+    if validation_exclusions:
+        validation_drop_counts = {}
+        for _, _, reasons in validation_exclusions:
+            for reason in reasons:
+                validation_drop_counts[reason] = (
+                    validation_drop_counts.get(reason, 0) + 1
+                )
+
+    if validation_reason_counts == {}:
+        validation_reason_counts = None
+    if validation_drop_counts == {}:
+        validation_drop_counts = None
+
+    # Emit a single summary of validation counts for backtests. Log at DEBUG
+    # when debug is enabled, otherwise emit at INFO when verbose logging is
+    # requested. Avoid per-row warnings during bulk backtests.
+    if logger.isEnabledFor(logging.DEBUG):
+        if validation_reason_counts:
+            logger.debug(
+                "Backtest validation reasons (kept rows): %s",
+                validation_reason_counts,
+            )
+        if validation_drop_counts:
+            logger.debug(
+                "Backtest validation drops: %s",
+                validation_drop_counts,
+            )
+    elif logger.isEnabledFor(logging.INFO):
+        if validation_reason_counts:
+            logger.info(
+                "Backtest validation reasons (kept rows): %s",
+                validation_reason_counts,
+            )
+        if validation_drop_counts:
+            logger.info(
+                "Backtest validation drops: %s",
+                validation_drop_counts,
+            )
+
+    t0 = time.perf_counter()
     metrics_by_date = _aggregate_metrics_by_date(eval_df)
     metrics_overall = _aggregate_overall_metrics(eval_df)
+    t1 = time.perf_counter()
+    metrics_agg_time = t1 - t0
     calibration = _calibration_table(eval_df)
+    if validation_reason_counts is not None:
+        metrics_overall["validation_reason_counts"] = [validation_reason_counts]
+    if validation_drop_counts is not None:
+        metrics_overall["validation_drop_counts"] = [validation_drop_counts]
     model_id = model_identity.get("model_id") if model_identity else None
     for frame in (metrics_by_date, metrics_overall, calibration):
         frame["model_id"] = model_id
@@ -499,25 +701,36 @@ def run_backtest(
         calibration=calibration,
         output_dir=target_dir,
     )
+
     # Persist per-fold calibration evaluation rows (if any) to outputs/calibrators
     try:
         if calibration_eval_rows:
             calib_df = pd.DataFrame(calibration_eval_rows)
             # Determine base path for calibrator eval outputs
             if sport and season:
-                calib_out_dir = Path("outputs/calibrators") / sport / season / (model_name or "model")
+                calib_out_dir = (
+                    Path("outputs/calibrators")
+                    / sport
+                    / season
+                    / (model_name or "model")
+                )
             elif sport:
-                calib_out_dir = Path("outputs/calibrators") / sport / (model_name or "model")
+                calib_out_dir = (
+                    Path("outputs/calibrators") / sport / (model_name or "model")
+                )
             else:
                 calib_out_dir = Path("outputs/calibrators") / (model_name or "model")
             calib_out_dir.mkdir(parents=True, exist_ok=True)
             csv_path = calib_out_dir / f"calibration_eval_{run_id}.csv"
             json_path = calib_out_dir / f"calibration_eval_{run_id}.json"
             calib_df.to_csv(csv_path, index=False)
-            json_path.write_text(calib_df.to_json(orient="records", indent=2), encoding="utf-8")
+            json_path.write_text(
+                calib_df.to_json(orient="records", indent=2), encoding="utf-8"
+            )
     except Exception:
         # best-effort persistence; do not fail the backtest on I/O errors
         pass
+
     export_backtest_outputs(outputs, run_id=run_id)
     _persist_backtest_metrics(
         outputs,
@@ -527,6 +740,376 @@ def run_backtest(
         season=season,
         model_name=model_name,
     )
+    return outputs, run_id, apply_validation_time, metrics_agg_time
+
+
+def _supports_streaming_backtest(model: BaseModel) -> bool:
+    try:
+        meta = model.metadata()
+    except Exception:
+        meta = None
+    return bool(
+        getattr(meta, "supports_streaming_backtest", False)
+        and getattr(model, "supports_incremental_update", False)
+        and hasattr(model, "predict_one")
+        and hasattr(model, "update_with_result")
+    )
+
+
+def _apply_guardrails(pred_df: pd.DataFrame, *, sport: str | None) -> None:
+    # Apply sport-specific guardrails to predicted SDs so downstream
+    # evaluation and calibration see clamped, sensible variances.
+    try:
+        cfg = get_validation_config(sport)
+        if "margin_sd" in pred_df.columns:
+            pred_df["margin_sd"] = pred_df["margin_sd"].apply(
+                lambda v: guardrail_margin_sd(
+                    float(v) if v is not None and not pd.isna(v) else None,
+                    guardrail_min=cfg.margin_sd_min,
+                    guardrail_max=cfg.margin_sd_max,
+                )[0]
+            )
+        if "total_mean" in pred_df.columns and "total_sd" in pred_df.columns:
+            pred_df["total_sd"] = pred_df["total_sd"].apply(
+                lambda v: guardrail_margin_sd(
+                    float(v) if v is not None and not pd.isna(v) else None,
+                    guardrail_min=cfg.total_sd_min,
+                    guardrail_max=cfg.total_sd_max,
+                )[0]
+            )
+    except Exception:
+        # Best-effort; do not fail backtests on guardrail application errors.
+        pass
+
+
+def _apply_optional_calibration(
+    merged: pd.DataFrame,
+    prediction_frames: list[pd.DataFrame],
+    *,
+    calibration_eval_rows: list[dict],
+    calibrate: bool,
+    calib_dir: str | Path | None,
+    calibrator_override: str | None,
+    sport: str | None,
+    model_name: str | None,
+    current_date: object,
+) -> None:
+    if not calibrate:
+        return
+    try:
+        from src.calibration.registry import get_calibrator
+        from src.calibration.platt import PlattScalingCalibrator
+        from src.calibration.isotonic import IsotonicCalibrator
+        from src.calibration.eval import brier_score, log_loss
+        import time
+
+        past = (
+            pd.concat(prediction_frames, ignore_index=True)
+            if prediction_frames
+            else pd.DataFrame()
+        )
+        # Build training set: past out-of-sample predictions with p_home_win and home_win
+        if not past.empty and "p_home_win" in past.columns and "home_win" in past.columns:
+            train_df = past.dropna(subset=["p_home_win", "home_win"]).copy()
+        else:
+            train_df = pd.DataFrame()
+
+        calib = None
+        method = None
+        calibration_id = None
+        if not train_df.empty:
+            n_train = len(train_df)
+            # Allow explicit override from CLI: 'platt', 'isotonic', or 'auto'
+            override = (calibrator_override or "").strip().lower()
+            if override in {"platt", "isotonic"}:
+                if override == "isotonic":
+                    calib = IsotonicCalibrator()
+                    method = "isotonic"
+                else:
+                    calib = PlattScalingCalibrator()
+                    method = "platt"
+            else:
+                # check registry for a registered calibrator for this sport/model
+                try:
+                    reg = get_calibrator(sport or "", model_name or "", "ML")
+                except Exception:
+                    reg = None
+                if reg:
+                    # registry entries may be classes or factory callables
+                    if callable(reg):
+                        calib = reg() if isinstance(reg, type) else reg()
+                    else:
+                        calib = reg
+                    method = getattr(calib, "metadata", {}).get("method", "registered")
+                else:
+                    # default threshold: use isotonic when n >= 500, else Platt
+                    N_THRESH = 500
+                    if n_train >= N_THRESH:
+                        calib = IsotonicCalibrator()
+                        method = "isotonic"
+                    else:
+                        calib = PlattScalingCalibrator()
+                        method = "platt"
+            calib.fit(
+                train_df.rename(
+                    columns={"p_home_win": "p_home_win", "home_win": "home_win"}
+                )
+            )
+            # generate id and persist if requested
+            ts = int(time.time())
+            model_name = model_name or "model"
+            calibration_id = f"{model_name}-ML-{ts}"
+            if calib_dir:
+                p_out = Path(calib_dir) / model_name
+                p_out.mkdir(parents=True, exist_ok=True)
+                calib_path = p_out / f"{calibration_id}.joblib"
+                calib.save(calib_path)
+
+            # transform today's predictions if available
+            if "p_home_win" in merged.columns:
+                merged["p_home_win_calibrated"] = (
+                    calib.transform(merged["p_home_win"])
+                    if not merged["p_home_win"].isna().all()
+                    else pd.NA
+                )
+                merged["calibration_id"] = calibration_id
+                merged["calibration_method"] = method
+
+                # evaluation on this day's test fold
+                test_mask = merged["p_home_win"].notna() & merged["home_win"].notna()
+                if test_mask.any():
+                    raw_brier = brier_score(
+                        merged.loc[test_mask, "p_home_win"],
+                        merged.loc[test_mask, "home_win"],
+                    )
+                    cal_brier = brier_score(
+                        merged.loc[test_mask, "p_home_win_calibrated"],
+                        merged.loc[test_mask, "home_win"],
+                    )
+                    raw_ll = log_loss(
+                        merged.loc[test_mask, "p_home_win"],
+                        merged.loc[test_mask, "home_win"],
+                    )
+                    cal_ll = log_loss(
+                        merged.loc[test_mask, "p_home_win_calibrated"],
+                        merged.loc[test_mask, "home_win"],
+                    )
+                    calibration_eval_rows.append(
+                        {
+                            "date": current_date,
+                            "n_test": int(test_mask.sum()),
+                            "method": method,
+                            "calibration_id": calibration_id,
+                            "brier_raw": raw_brier,
+                            "brier_calibrated": cal_brier,
+                            "logloss_raw": raw_ll,
+                            "logloss_calibrated": cal_ll,
+                        }
+                    )
+        else:
+            if "p_home_win" in merged.columns:
+                merged["p_home_win_calibrated"] = merged["p_home_win"]
+                merged["calibration_id"] = pd.NA
+                merged["calibration_method"] = "identity"
+    except Exception:
+        # best-effort: if calibration fails, continue without it
+        pass
+
+
+def run_backtest_streaming(
+    *,
+    model_instance: BaseModel,
+    games: pd.DataFrame,
+    slices: list[BacktestSlice],
+    start_dt: pd.Timestamp,
+    end_dt: pd.Timestamp,
+    output_dir: str | Path | None,
+    model_name: str | None,
+    db_path: str | Path | None,
+    sport: str | None,
+    season: str | None,
+    calibrate: bool,
+    calib_dir: str | Path | None,
+    calibrator_override: str | None,
+    window: str,
+    rolling_days: int | None,
+    rolling_games: int | None,
+    precompute_actuals_time: float,
+    slice_prep_time: float,
+) -> BacktestOutputs:
+    # Guard: only models that explicitly opt-in to streaming should be run here.
+    try:
+        meta = model_instance.metadata()
+    except Exception:
+        meta = None
+    if not bool(getattr(meta, "supports_streaming_backtest", False)):
+        raise ValueError(
+            "Model does not support streaming backtest. This runner should not be invoked."
+        )
+    # Validate required streaming API methods exist on the instance.
+    if not hasattr(model_instance, "predict_one") or not hasattr(
+        model_instance, "update_with_result"
+    ):
+        raise ValueError(
+            "Model instance is missing required streaming methods: predict_one and/or update_with_result."
+        )
+    prediction_frames: list[pd.DataFrame] = []
+    calibration_eval_rows: list[dict] = []
+    model_identity = resolve_model_identity(model_instance)
+
+    profile_enabled = os.getenv("TUNE_PROFILE", "0").strip() == "1" or logging.getLogger().isEnabledFor(logging.DEBUG)
+    fit_time_total = 0.0
+    predict_time_total = 0.0
+    pred_to_frame_time_total = 0.0
+    merge_time_total = 0.0
+    ensure_schema_time_total = 0.0
+    update_time_total = 0.0
+    refit_time_total = 0.0
+
+    refit_days = os.getenv("ELO_STREAM_REFIT_DAYS")
+    refit_games = os.getenv("ELO_STREAM_REFIT_GAMES")
+    refit_days_val = int(refit_days) if refit_days and refit_days.isdigit() else None
+    refit_games_val = int(refit_games) if refit_games and refit_games.isdigit() else None
+
+    # Initial fit on first available training slice.
+    first_train_slice = next((s for s in slices if len(s.train_idx) > 0), None)
+    if first_train_slice is None:
+        raise ValueError(
+            "Backtest produced no predictions. "
+            "This happens when each evaluation date has no training data "
+            "(games must exist before each evaluation date)."
+        )
+    initial_train = games.loc[first_train_slice.train_idx]
+    t0 = time.perf_counter()
+    model_instance.fit(initial_train)
+    t1 = time.perf_counter()
+    fit_time_total += (t1 - t0)
+    last_refit_date = first_train_slice.date
+    last_refit_games = int(len(first_train_slice.train_idx))
+
+    for slice_info in slices:
+        current_date = slice_info.date
+        train_data = games.loc[slice_info.train_idx]
+        if train_data.empty:
+            continue
+
+        if refit_days_val is not None:
+            if (pd.Timestamp(current_date) - pd.Timestamp(last_refit_date)).days >= refit_days_val:
+                t0 = time.perf_counter()
+                model_instance.fit(train_data)
+                t1 = time.perf_counter()
+                refit_time_total += (t1 - t0)
+                last_refit_date = current_date
+                last_refit_games = int(len(slice_info.train_idx))
+        elif refit_games_val is not None:
+            if int(len(slice_info.train_idx)) - last_refit_games >= refit_games_val:
+                t0 = time.perf_counter()
+                model_instance.fit(train_data)
+                t1 = time.perf_counter()
+                refit_time_total += (t1 - t0)
+                last_refit_date = current_date
+                last_refit_games = int(len(slice_info.train_idx))
+
+        day_games = games.loc[slice_info.eval_idx]
+        predict_input = day_games.drop(
+            columns=["home_score", "away_score"], errors="ignore"
+        )
+        predict_input = validate_model_input(predict_input, context="Backtest model input")
+        t0 = time.perf_counter()
+        predictions = model_instance.predict(predict_input)
+        t1 = time.perf_counter()
+        predict_time_total += (t1 - t0)
+        predictions = validate_predictions(predictions, context="Backtest model output")
+        _attach_prediction_metadata(predictions, model=model_instance, train_data=train_data)
+        t0 = time.perf_counter()
+        pred_df = _predictions_to_frame(predictions)
+        t1 = time.perf_counter()
+        pred_to_frame_time_total += (t1 - t0)
+
+        if pred_df.empty:
+            pred_df = pd.DataFrame(columns=REQUIRED_BACKTEST_PREDICTION_COLUMNS)
+            _log_backtest_issue(model_name, current_date, pred_df, note="empty_predictions")
+
+        missing = [c for c in (REQUIRED_BACKTEST_PREDICTION_COLUMNS) if c not in pred_df.columns]
+        if missing:
+            _log_backtest_issue(model_name, current_date, pred_df, note=f"missing_columns:{missing}")
+
+        try:
+            pred_df["date"] = pd.to_datetime(pred_df["date"]).dt.normalize()
+        except Exception as exc:
+            _log_backtest_issue(model_name, current_date, pred_df, note=f"date_normalize_error:{type(exc).__name__}")
+            raise
+
+        _apply_guardrails(pred_df, sport=sport)
+
+        t0 = time.perf_counter()
+        merged = day_games.merge(
+            pred_df,
+            on=["date", "home_team", "away_team"],
+            how="left",
+            suffixes=("", "_pred"),
+        )
+        t1 = time.perf_counter()
+        merge_time_total += (t1 - t0)
+        t0 = time.perf_counter()
+        merged = ensure_eval_schema(merged, precomputed_actuals=True)
+        t1 = time.perf_counter()
+        ensure_schema_time_total += (t1 - t0)
+
+        _apply_optional_calibration(
+            merged,
+            prediction_frames,
+            calibration_eval_rows=calibration_eval_rows,
+            calibrate=calibrate,
+            calib_dir=calib_dir,
+            calibrator_override=calibrator_override,
+            sport=sport,
+            model_name=model_name,
+            current_date=current_date,
+        )
+
+        prediction_frames.append(merged)
+
+        # Update model state after all predictions for the date.
+        t0 = time.perf_counter()
+        for row in day_games.to_dict(orient="records"):
+            model_instance.update_with_result(row)
+        t1 = time.perf_counter()
+        update_time_total += (t1 - t0)
+
+    outputs, run_id, apply_validation_time, metrics_agg_time = _finalize_backtest_outputs(
+        prediction_frames,
+        calibration_eval_rows,
+        model_identity=model_identity,
+        start_dt=start_dt,
+        end_dt=end_dt,
+        window=window,
+        rolling_days=rolling_days,
+        rolling_games=rolling_games,
+        output_dir=output_dir,
+        model_name=model_name,
+        db_path=db_path,
+        sport=sport,
+        season=season,
+    )
+
+    if profile_enabled:
+        model_id = model_identity.get("model_id") if model_identity else (model_name or "model")
+        date_range = f"{start_dt.date().isoformat()}_to_{end_dt.date().isoformat()}"
+        summary = (
+            f"PROFILE model={model_id} range={date_range} streaming=1 "
+            f"fit={fit_time_total:.3f}s refit={refit_time_total:.3f}s "
+            f"predict={predict_time_total:.3f}s update={update_time_total:.3f}s "
+            f"pred_to_frame={pred_to_frame_time_total:.3f}s merge={merge_time_total:.3f}s "
+            f"ensure_schema={ensure_schema_time_total:.3f}s apply_validation={apply_validation_time:.3f}s "
+            f"metrics_agg={metrics_agg_time:.3f}s precompute_actuals={precompute_actuals_time:.3f}s "
+            f"slice_prep={slice_prep_time:.3f}s"
+        )
+        try:
+            print(summary)
+        except Exception:
+            logger.debug("Failed to print tuning profile summary")
+
     return outputs
 
 
@@ -667,6 +1250,60 @@ def _predictions_to_frame(predictions: Iterable[GamePrediction]) -> pd.DataFrame
     return pd.DataFrame(rows)
 
 
+def ensure_eval_schema(df: pd.DataFrame, *, precomputed_actuals: bool = False) -> pd.DataFrame:
+    """Ensure evaluation frames contain required columns with safe defaults.
+
+    Existing non-null values are preserved; derived values are only populated
+    where missing to avoid overwriting model outputs or precomputed outcomes.
+    """
+    if df is None:
+        return pd.DataFrame(
+            {col: pd.Series(dtype="Float64") for col in sorted(REQUIRED_EVAL_COLUMNS)}
+        )
+
+    result = df.copy()
+    index = result.index
+
+    # Ensure actual-side columns exist before deriving margins/wins.
+    for col in REQUIRED_ACTUAL_COLS:
+        if col not in result.columns:
+            result[col] = pd.Series(pd.NA, index=index, dtype="Float64")
+
+    if not precomputed_actuals:
+        home = pd.to_numeric(result.get("home_score"), errors="coerce")
+        away = pd.to_numeric(result.get("away_score"), errors="coerce")
+
+        actual_margin = pd.to_numeric(result.get("actual_margin"), errors="coerce")
+        margin_missing = actual_margin.isna()
+        computed_margin = home - away
+        actual_margin.loc[margin_missing] = computed_margin[margin_missing]
+        result["actual_margin"] = actual_margin.astype("Float64")
+
+        actual_total = pd.to_numeric(result.get("actual_total"), errors="coerce")
+        total_missing = actual_total.isna()
+        computed_total = home + away
+        actual_total.loc[total_missing] = computed_total[total_missing]
+        result["actual_total"] = actual_total.astype("Float64")
+
+        home_win = pd.to_numeric(result.get("home_win"), errors="coerce")
+        home_win_missing = home_win.isna()
+        score_mask = home.notna() & away.notna() & home_win_missing
+        if score_mask.any():
+            home_win.loc[score_mask] = np.where(
+                home[score_mask] > away[score_mask],
+                1.0,
+                np.where(home[score_mask] < away[score_mask], 0.0, 0.5),
+            )
+        result["home_win"] = home_win.astype("Float64")
+
+    # Ensure prediction-side columns exist without overwriting existing values.
+    for col in REQUIRED_PRED_COLS:
+        if col not in result.columns:
+            result[col] = pd.Series(pd.NA, index=index, dtype="Float64")
+
+    return result
+
+
 def _log_backtest_issue(model_name: str | None, current_date: object, pred_df: pd.DataFrame, note: str | None = None) -> None:
     try:
         out_dir = Path("outputs") / "logs"
@@ -779,6 +1416,7 @@ def _aggregate_metrics_by_date(predictions_df: pd.DataFrame) -> pd.DataFrame:
             columns=[
                 "date",
                 "games",
+                "ml_games",
                 "log_loss",
                 "brier_score",
                 "mae_margin",
@@ -806,6 +1444,7 @@ def _aggregate_overall_metrics(predictions_df: pd.DataFrame) -> pd.DataFrame:
 def _compute_metrics(df: pd.DataFrame) -> dict[str, float | int | None]:
     metrics: dict[str, float | int | None] = {
         "games": int(len(df)),
+        "ml_games": 0,
         "log_loss": None,
         "brier_score": None,
         "mae_margin": None,
@@ -817,8 +1456,13 @@ def _compute_metrics(df: pd.DataFrame) -> dict[str, float | int | None]:
         "ece": None,
     }
 
-    prob_df = df.dropna(subset=["p_home_win", "home_win"])
-    if not prob_df.empty:
+    prob_df = (
+        df.dropna(subset=["p_home_win", "home_win"])
+        if {"p_home_win", "home_win"}.issubset(df.columns)
+        else pd.DataFrame()
+    )
+    metrics["ml_games"] = int(len(prob_df))
+    if metrics["ml_games"] > 0:
         probs = np.clip(prob_df["p_home_win"].astype(float), 1e-6, 1 - 1e-6)
         actuals = prob_df["home_win"].astype(float)
         metrics["log_loss"] = float(
@@ -831,20 +1475,38 @@ def _compute_metrics(df: pd.DataFrame) -> dict[str, float | int | None]:
         metrics["calibration_slope"] = float(coeffs[1])
         metrics["ece"] = float(_expected_calibration_error(probs, actuals))
 
-    margin_df = df.dropna(subset=["pred_margin", "actual_margin"])
-    if not margin_df.empty:
+    margin_df = (
+        df.dropna(subset=["pred_margin", "actual_margin"])
+        if {"pred_margin", "actual_margin"}.issubset(df.columns)
+        else pd.DataFrame()
+    )
+    metrics["margin_games"] = int(len(margin_df))
+    if metrics["margin_games"] > 0:
         metrics["mae_margin"] = float(
             np.mean(np.abs(margin_df["pred_margin"] - margin_df["actual_margin"]))
         )
-        metrics["margin_games"] = int(len(margin_df))
 
-    total_df = df.dropna(subset=["pred_total", "home_score", "away_score"])
-    if not total_df.empty:
-        actual_total = total_df["home_score"] + total_df["away_score"]
+    total_df = (
+        df.dropna(subset=["pred_total", "actual_total"])
+        if {"pred_total", "actual_total"}.issubset(df.columns)
+        else pd.DataFrame()
+    )
+    metrics["total_games"] = int(len(total_df))
+    if metrics["total_games"] > 0:
+        actual_total = total_df["actual_total"]
         metrics["mae_total"] = float(
             np.mean(np.abs(total_df["pred_total"] - actual_total))
         )
-        metrics["total_games"] = int(len(total_df))
+
+    # Explicitly return NaN for metrics with zero scorable games to keep
+    # downstream summaries informative and avoid confusing None/0 mixes.
+    for key in ("log_loss", "brier_score", "calibration_intercept", "calibration_slope", "ece"):
+        if metrics[key] is None and metrics["ml_games"] == 0:
+            metrics[key] = np.nan
+    if metrics["mae_margin"] is None and metrics["margin_games"] == 0:
+        metrics["mae_margin"] = np.nan
+    if metrics["mae_total"] is None and metrics["total_games"] == 0:
+        metrics["mae_total"] = np.nan
 
     return metrics
 
@@ -877,6 +1539,9 @@ def _expected_calibration_error(
 
 def _calibration_table(predictions_df: pd.DataFrame) -> pd.DataFrame:
     if predictions_df.empty:
+        return pd.DataFrame(columns=["bucket", "count", "avg_pred", "avg_actual"])
+
+    if not {"p_home_win", "home_win"}.issubset(predictions_df.columns):
         return pd.DataFrame(columns=["bucket", "count", "avg_pred", "avg_actual"])
 
     prob_df = predictions_df.dropna(subset=["p_home_win", "home_win"]).copy()

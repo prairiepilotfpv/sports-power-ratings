@@ -787,6 +787,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Optional SQLite DB path override (default: data/db/<sport>/<season>.db)",
     )
 
+    show_active_params_parser = subparsers.add_parser(
+        "show-active-params",
+        help="Show active model params per market with provenance (read-only).",
+    )
+    show_active_params_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
+    show_active_params_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
+    show_active_params_parser.add_argument(
+        "--models",
+        help="Comma-separated list of models to report (default: all registered models).",
+    )
+    show_active_params_parser.add_argument(
+        "--db",
+        help="Optional SQLite DB path override (default: data/db/<sport>/<season>.db)",
+    )
+
     bootstrap_market_actives_parser = subparsers.add_parser(
         "bootstrap-market-actives",
         help="Populate missing active model market params from tuning runs or defaults.",
@@ -1662,6 +1677,8 @@ def main(argv: list[str] | None = None) -> None:
         _run_activate_tuning(args)
     elif args.command == "tuning-status":
         _run_tuning_status(args)
+    elif args.command == "show-active-params":
+        _run_show_active_params(args)
     elif args.command == "bootstrap-market-actives":
         _run_bootstrap_market_actives(args)
     elif args.command == "betting":
@@ -2045,8 +2062,8 @@ def _run_activate_tuning(args: argparse.Namespace) -> None:
     from data.repository import (
         load_model_market_tuning_run_by_run_id,
         load_best_model_market_tuning_params_by_optimized_metric,
-        set_active_model_market_params,
     )
+    from pipelines.model_params import activate_best_params
     from pipelines.market_tuning import _resolve_market_metric
 
     db_path = _resolve_db_path(args)
@@ -2063,8 +2080,10 @@ def _run_activate_tuning(args: argparse.Namespace) -> None:
 
     params = None
     source_run_id = None
+    metric_optimized = None
+    best_score = None
     if run_id:
-        params, source_run_id, _ = load_model_market_tuning_run_by_run_id(
+        params, source_run_id, metric_optimized, best_score = load_model_market_tuning_run_by_run_id(
             db_path, run_id=run_id
         )
         if params is None:
@@ -2077,18 +2096,23 @@ def _run_activate_tuning(args: argparse.Namespace) -> None:
         )
         if params is None:
             raise ValueError(f"No tuning runs found for model={model} market={market} metric={metric_name}")
+        _, _, metric_from_run, best_score = load_model_market_tuning_run_by_run_id(db_path, run_id=source_run_id)
+        metric_optimized = metric_optimized or metric_from_run
 
-    # Persist as active
-    set_active_model_market_params(
-        db_path,
+    activate_best_params(
+        db_path=db_path,
         sport=sport,
         season=season,
         model=model,
         market=market,
-        params=params,
-        source_run_id=source_run_id,
+        run_id=source_run_id,
+        best_params=params,
+        best_score=best_score,
+        metric_optimized=metric_optimized,
     )
-    print(f"Activated tuning run -> model={model} market={market} run_id={source_run_id}")
+    print(
+        f"Activated tuning run -> model={model} market={market} run_id={source_run_id} metric={metric_optimized}"
+    )
 
 
 def _run_tuning_status(args: argparse.Namespace) -> None:
@@ -2125,14 +2149,20 @@ def _run_tuning_status(args: argparse.Namespace) -> None:
             status = "DEFAULT"
             details = ""
             if resolved.params is not None:
-                if resolved.params_source == "db_market_active":
-                    status = "ACTIVE"
-                    details = f"(source_run_id={resolved.source_run_id})"
-                elif resolved.params_source == "db_market_best_run":
-                    status = "AUTO-SELECT"
-                    details = f"(metric={resolved.tuned_metric_used} run_id={resolved.source_run_id})"
-                else:
-                    status = resolved.params_source.upper()
+                    label = resolved.params_source
+                    if label in {"tuned_active", "db_market_active"}:
+                        status = "ACTIVE"
+                        details = f"(source_run_id={resolved.source_run_id})"
+                    elif label == "legacy_active":
+                        status = "LEGACY_ACTIVE"
+                        details = f"(source_run_id={resolved.source_run_id})"
+                    elif label == "default_active":
+                        status = "DEFAULT_ACTIVE"
+                        details = f"(source_run_id={resolved.source_run_id})"
+                    elif label == "missing_active":
+                        status = "MISSING"
+                    else:
+                        status = label.upper()
             print(f"    {model}: {status} {details}")
 
     # Ensembles
@@ -2164,6 +2194,45 @@ def _run_tuning_status(args: argparse.Namespace) -> None:
             print(f"  {market.name} -> ensemble={eid}: {status} {details}")
     else:
         print("\nNo ensemble config found for this sport/season.")
+
+
+def _run_show_active_params(args: argparse.Namespace) -> None:
+    _ensure_src_on_path()
+    from data.paths import db_path_for
+    from markets.base import Market
+    from models.registry import list_models
+    from pipelines.model_params import resolve_effective_params
+
+    db_path = Path(args.db) if getattr(args, "db", None) else db_path_for(args.sport, args.season)
+    _echo_db_path(db_path)
+
+    requested_models = None
+    if getattr(args, "models", None):
+        requested_models = [m.strip() for m in args.models.split(",") if m.strip()]
+    models = requested_models if requested_models else list_models()
+
+    header = f"{'model':<16} {'market':<6} {'source_label':<18} {'run_id':<28} {'metric':<12} {'best_score':<12} {'fingerprint':<12} {'keys':>4}"
+    print(header)
+    print("-" * len(header))
+    for model in models:
+        for market in (Market.ML, Market.SPREAD, Market.TOTAL):
+            resolved = resolve_effective_params(
+                db_path=db_path,
+                sport=args.sport,
+                season=args.season,
+                model=model,
+                market=market.name,
+            )
+            metric_display = resolved.metric_optimized or ""
+            if metric_display.startswith("backtest_"):
+                metric_display = metric_display.replace("backtest_", "", 1)
+            best_score_display = "" if resolved.best_score is None else f"{resolved.best_score:.6g}"
+            fingerprint = resolved.params_fingerprint or ""
+            run_id = resolved.source_run_id or ""
+            print(
+                f"{model:<16} {market.name:<6} {resolved.params_source_label:<18} {run_id:<28} {metric_display:<12} "
+                f"{best_score_display:<12} {fingerprint[:12]:<12} {len(resolved.params or {}):>4}"
+            )
 
 
 def _run_bootstrap_market_actives(args: argparse.Namespace) -> None:

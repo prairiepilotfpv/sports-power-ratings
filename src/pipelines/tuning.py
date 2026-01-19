@@ -22,6 +22,32 @@ from utils.parallel import limit_blas_threads, parallel_map
 
 _METRICS = {"log_loss", "brier_score", "mae_margin", "mae_total"}
 
+_ELO_ML_KEYS = {
+    "k_factor",
+    "home_advantage",
+    "initial_rating",
+    "min_rating",
+    "recency_lambda",
+    "learn_home_advantage",
+    "conditional_sd",
+    "winprob_bias",
+    "learn_winprob_bias",
+}
+_ELO_SPREAD_KEYS = {
+    "k_factor",
+    "home_advantage",
+    "initial_rating",
+    "min_rating",
+    "recency_lambda",
+    "learn_home_advantage",
+    "conditional_sd",
+}
+_ELO_TOTAL_KEYS = {
+    "total_shrinkage",
+    "total_team_prior_games",
+    "total_sd_floor",
+}
+
 
 @dataclass(frozen=True)
 class TuningOutputs:
@@ -76,10 +102,14 @@ def run_tuning_pipeline(
         f"sport={sport} season={season}"
     )
 
-    grid = _resolve_param_grid(model_name, grid_override)
-    candidates = list(_iter_param_grid(grid))
-    if not candidates:
-        candidates = [{}]
+    candidates, fixed_params = _resolve_tuning_candidates(
+        model_name,
+        metric,
+        grid_override,
+        db_path=db_path,
+        sport=sport,
+        season=season,
+    )
 
     base_dir = _resolve_tuning_output_dir(
         output_dir=output_dir,
@@ -168,6 +198,11 @@ def run_tuning_pipeline(
                     "brier_score": metrics.get("brier_score"),
                     "mae_margin": metrics.get("mae_margin"),
                     "mae_total": metrics.get("mae_total"),
+                    "ml_games": metrics.get("ml_games"),
+                    "margin_games": metrics.get("margin_games"),
+                    "total_games": metrics.get("total_games"),
+                    "validation_reason_counts": metrics.get("validation_reason_counts"),
+                    "validation_drop_counts": metrics.get("validation_drop_counts"),
                     "metric": metric,
                     "metric_value": metric_value,
                     "output_dir": str(candidate_dir),
@@ -194,6 +229,11 @@ def run_tuning_pipeline(
                     "brier_score": r.get("brier_score"),
                     "mae_margin": r.get("mae_margin"),
                     "mae_total": r.get("mae_total"),
+                    "ml_games": r.get("ml_games"),
+                    "margin_games": r.get("margin_games"),
+                    "total_games": r.get("total_games"),
+                    "validation_reason_counts": r.get("validation_reason_counts"),
+                    "validation_drop_counts": r.get("validation_drop_counts"),
                     "metric": metric,
                     "metric_value": r.get("metric_value"),
                     "output_dir": r.get("output_dir"),
@@ -294,6 +334,99 @@ def _resolve_param_grid(
     return _default_param_grid(model)
 
 
+def _resolve_tuning_candidates(
+    model: str,
+    metric: str,
+    grid_override: dict[str, Any] | None,
+    *,
+    db_path: str | Path | None,
+    sport: str | None,
+    season: str | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    grid = _resolve_param_grid(model, grid_override)
+    market, _ = _metric_market(metric)
+    filtered_grid, dropped = _filter_grid_for_market(model, market, grid)
+    if dropped:
+        logger.info(
+            "Dropping non-%s params from tuning grid for model=%s: %s",
+            market,
+            model,
+            sorted(dropped),
+        )
+    fixed_params = _resolve_fixed_params_for_market(
+        model,
+        market,
+        db_path=db_path,
+        sport=sport,
+        season=season,
+    )
+    candidates = list(_iter_param_grid(filtered_grid))
+    if not candidates:
+        candidates = [{}]
+    combined = [dict(fixed_params, **params) for params in candidates]
+    return combined, fixed_params
+
+
+def _filter_grid_for_market(
+    model: str,
+    market: str,
+    grid: dict[str, Iterable[Any]],
+) -> tuple[dict[str, Iterable[Any]], set[str]]:
+    if model != "elo":
+        return dict(grid), set()
+    if market == "ML":
+        allowed = _ELO_ML_KEYS
+    elif market == "SPREAD":
+        allowed = _ELO_SPREAD_KEYS
+    elif market == "TOTAL":
+        allowed = _ELO_TOTAL_KEYS
+    else:
+        return dict(grid), set()
+    filtered = {k: v for k, v in grid.items() if k in allowed}
+    dropped = {k for k in grid.keys() if k not in allowed}
+    return filtered, dropped
+
+
+def _resolve_fixed_params_for_market(
+    model: str,
+    market: str,
+    *,
+    db_path: str | Path | None,
+    sport: str | None,
+    season: str | None,
+) -> dict[str, Any]:
+    if model != "elo" or market != "TOTAL":
+        return {}
+    model_cls = get_backtest_model(model)
+    defaults = model_cls().metadata().params
+    fixed = {
+        "k_factor": defaults.get("k_factor"),
+        "home_advantage": defaults.get("home_advantage"),
+    }
+    if db_path is None or sport is None or season is None:
+        return fixed
+    try:
+        from pipelines.model_params import resolve_active_model_market_params
+
+        for market_name in ("ML", "SPREAD"):
+            resolved = resolve_active_model_market_params(
+                db_path=db_path,
+                sport=sport,
+                season=season,
+                model=model,
+                market=market_name,
+            )
+            if resolved.params:
+                for key in ("k_factor", "home_advantage"):
+                    if key in resolved.params:
+                        fixed[key] = resolved.params[key]
+                if any(key in resolved.params for key in ("k_factor", "home_advantage")):
+                    break
+    except Exception:
+        return fixed
+    return fixed
+
+
 def _normalize_grid_override(
     model: str, grid_override: dict[str, Any]
 ) -> dict[str, Iterable[Any]]:
@@ -357,9 +490,31 @@ def _iter_param_grid(grid: dict[str, Iterable[Any]]) -> Iterable[dict[str, Any]]
         yield dict(zip(keys, combo, strict=False))
 
 
+def _metric_market(metric: str) -> tuple[str, str]:
+    metric = metric.strip().lower()
+    if metric in {"log_loss", "brier_score"}:
+        return "ML", "ml_games"
+    if metric == "mae_margin":
+        return "SPREAD", "margin_games"
+    if metric == "mae_total":
+        return "TOTAL", "total_games"
+    return metric.upper(), ""
+
+
 def _select_best_index(results: pd.DataFrame, metric: str) -> int:
     metrics = pd.to_numeric(results["metric_value"], errors="coerce")
     if metrics.isna().all():
+        market_label, count_col = _metric_market(metric)
+        if count_col and count_col in results.columns:
+            scorable = pd.to_numeric(results[count_col], errors="coerce").fillna(0)
+            if scorable.sum() == 0:
+                logger.warning(
+                    "0 scorable games for %s during tuning (metric=%s). "
+                    "Defaulting to the first candidate.",
+                    market_label,
+                    metric,
+                )
+                return int(results.index[0])
         logger.warning(
             "No numeric metric values found in tuning results for metric=%s. "
             "Defaulting to the first candidate.",
@@ -540,6 +695,11 @@ def _eval_candidate(index: int, params: dict[str, Any], context: dict[str, Any],
             "brier_score": metrics.get("brier_score"),
             "mae_margin": metrics.get("mae_margin"),
             "mae_total": metrics.get("mae_total"),
+            "ml_games": metrics.get("ml_games"),
+            "margin_games": metrics.get("margin_games"),
+            "total_games": metrics.get("total_games"),
+            "validation_reason_counts": metrics.get("validation_reason_counts"),
+            "validation_drop_counts": metrics.get("validation_drop_counts"),
             "output_dir": str(candidate_dir),
         }
     except Exception as exc:  # pragma: no cover - bubble up with candidate index

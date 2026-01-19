@@ -28,6 +28,12 @@ class SpyModel(BaseModel):
         self._counter[model_id] += 1
         return self._model.predict(upcoming_games_df)
 
+    def predict_one(self, game_row):
+        return self._model.predict_one(game_row)
+
+    def update_with_result(self, game_row):
+        return self._model.update_with_result(game_row)
+
 
 def test_backtest_pipeline_runs_all_models(tmp_path, monkeypatch) -> None:
     games_df = pd.read_csv(FIXTURE_PATH)

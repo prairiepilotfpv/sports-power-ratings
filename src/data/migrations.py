@@ -207,11 +207,21 @@ def _add_market_tuning_tables(conn: sqlite3.Connection) -> None:
             market TEXT NOT NULL,
             params_json TEXT NOT NULL,
             source_run_id TEXT,
+            params_source TEXT,
+            metric_optimized TEXT,
+            best_score REAL,
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(sport, season, model, market)
         );
         """
     )
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(model_market_active_params)")]
+    if "params_source" not in cols:
+        conn.execute("ALTER TABLE model_market_active_params ADD COLUMN params_source TEXT")
+    if "metric_optimized" not in cols:
+        conn.execute("ALTER TABLE model_market_active_params ADD COLUMN metric_optimized TEXT")
+    if "best_score" not in cols:
+        conn.execute("ALTER TABLE model_market_active_params ADD COLUMN best_score REAL")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS ensemble_market_tuning_runs (

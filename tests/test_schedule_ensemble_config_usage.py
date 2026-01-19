@@ -33,6 +33,7 @@ def test_market_forecasts_respect_allowed_models(monkeypatch) -> None:
         tuned_metric_used,
         params_run_id=None,
         params_market=Market.ML.name,
+        **kwargs,
     ) -> pd.DataFrame:
         calls.append(model)
         return pd.DataFrame(
@@ -49,7 +50,6 @@ def test_market_forecasts_respect_allowed_models(monkeypatch) -> None:
                 }
             ]
         )
-
     monkeypatch.setattr(schedule, "_build_schedule_dataframe", fake_build_schedule_dataframe)
     monkeypatch.setattr(schedule, "get_active_model_market_params", lambda *a, **k: None)
     monkeypatch.setattr(schedule, "resolve_model_params_with_metadata", lambda *a, **k: _DummyResolution())

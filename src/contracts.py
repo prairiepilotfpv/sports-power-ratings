@@ -26,7 +26,13 @@ SCHEDULE_EXPORT_COLUMNS: list[str] = [
     "status",
     "projection_status",
     "params_source",
+    "params_source_label",
+    "params_source_run_id",
     "tuned_metric_used",
+    "params_metric_optimized",
+    "params_best_score",
+    "params_fingerprint",
+    "params_nonempty",
     "tuning_run_id",
     "params_market",
     "home_team",
@@ -113,46 +119,52 @@ class ScheduleExportRow:
     status: str
     projection_status: str
     params_source: str
-    tuned_metric_used: str | None
-    home_team: str
-    away_team: str
-    neutral: bool
-    overtime: bool
-    home_score: int | float | None
-    away_score: int | float | None
-    result_margin: int | float | None
-    result_total: int | float | None
-    home_rating: float | None
-    away_rating: float | None
-    home_advantage: float | None
-    projected_winner: str | None
-    projected_spread: float | None
-    projected_home_spread: float | None
-    projected_win_prob: float | None
-    model_p_home_win: float | None
-    normal_p_home_win: float | None
-    home_win_prob: float | None
-    away_win_prob: float | None
-    home_win_prob_raw: float | None
-    away_win_prob_raw: float | None
-    home_win_prob_calibrated: float | None
-    away_win_prob_calibrated: float | None
-    winner_win_prob: float | None
-    logistic_home_win_prob: float | None
-    win_prob_source: str | None
-    margin_dist_assumption: str | None
-    projected_win_prob_dist: str | None
-    projected_home_score: float | None
-    projected_away_score: float | None
-    projected_total: float | None
-    margin_mean: float | None
-    margin_sd: float | None
-    total_mean: float | None
-    total_sd: float | None
-    margin_dist_params: str | None
-    total_dist_params: str | None
-    model_win_prob_samples: str | None
-    model_win_prob: float | None
+    params_source_label: str | None = None
+    params_source_run_id: str | None = None
+    tuned_metric_used: str | None = None
+    params_metric_optimized: str | None = None
+    params_best_score: float | None = None
+    params_fingerprint: str | None = None
+    params_nonempty: bool | None = None
+    home_team: str | None = None
+    away_team: str | None = None
+    neutral: bool = False
+    overtime: bool = False
+    home_score: int | float | None = None
+    away_score: int | float | None = None
+    result_margin: int | float | None = None
+    result_total: int | float | None = None
+    home_rating: float | None = None
+    away_rating: float | None = None
+    home_advantage: float | None = None
+    projected_winner: str | None = None
+    projected_spread: float | None = None
+    projected_home_spread: float | None = None
+    projected_win_prob: float | None = None
+    model_p_home_win: float | None = None
+    normal_p_home_win: float | None = None
+    home_win_prob: float | None = None
+    away_win_prob: float | None = None
+    home_win_prob_raw: float | None = None
+    away_win_prob_raw: float | None = None
+    home_win_prob_calibrated: float | None = None
+    away_win_prob_calibrated: float | None = None
+    winner_win_prob: float | None = None
+    logistic_home_win_prob: float | None = None
+    win_prob_source: str | None = None
+    margin_dist_assumption: str | None = None
+    projected_win_prob_dist: str | None = None
+    projected_home_score: float | None = None
+    projected_away_score: float | None = None
+    projected_total: float | None = None
+    margin_mean: float | None = None
+    margin_sd: float | None = None
+    total_mean: float | None = None
+    total_sd: float | None = None
+    margin_dist_params: str | None = None
+    total_dist_params: str | None = None
+    model_win_prob_samples: str | None = None
+    model_win_prob: float | None = None
 
 
 def build_game_id(date_value: Any, home_team: str, away_team: str) -> str:

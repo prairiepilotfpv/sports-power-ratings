@@ -92,8 +92,16 @@ def _coerce_float(value: Any) -> float | None:
 
 def _first_present(row: Mapping[str, Any], keys: Iterable[str]) -> Any:
     for key in keys:
-        if key in row:
-            return row.get(key)
+        if key not in row:
+            continue
+        value = row.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str) and value.strip() == "":
+            continue
+        if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+            continue
+        return value
     return None
 
 
@@ -105,10 +113,11 @@ def validate_prediction_row(
 ) -> Tuple[bool, List[str]]:
     """Validate a single prediction row and return (is_valid, reasons).
 
-    If `require_score_bounds` is False, the projected/home/away score bounds
-    checks are skipped. This is used by callers that do not supply an explicit
-    sport context (e.g., generic backtests) to avoid applying NBA-specific
-    score guardrails.
+    Checks are limited to prediction sanity and internal consistency; actual
+    outcomes must never influence validity. If `require_score_bounds` is False,
+    the projected home/away score bounds checks are skipped. This is used by
+    callers that do not supply an explicit sport context (e.g., generic
+    backtests) to avoid applying NBA-specific score guardrails.
     """
     reasons: list[str] = []
 
@@ -119,7 +128,7 @@ def validate_prediction_row(
         reasons.append("invalid_margin_sd")
 
     # Determine if a total/total_mean is present; only then require a total SD.
-    total_raw = _first_present(row, ("projected_total", "total", "total_mean"))
+    total_raw = _first_present(row, ("projected_total", "pred_total", "total", "total_mean"))
     total_val = _coerce_float(total_raw)
 
     total_sd_val = _coerce_float(row.get("total_sd") or row.get("total_std"))
@@ -129,8 +138,8 @@ def validate_prediction_row(
         elif not (config.total_sd_min <= total_sd_val <= config.total_sd_max):
             reasons.append("invalid_total_sd")
 
-    home_score_raw = _first_present(row, ("projected_home_score", "home_score_pred", "home_score"))
-    away_score_raw = _first_present(row, ("projected_away_score", "away_score_pred", "away_score"))
+    home_score_raw = _first_present(row, ("projected_home_score", "home_score_pred"))
+    away_score_raw = _first_present(row, ("projected_away_score", "away_score_pred"))
     extra_raw = row.get("extra")
     extra: dict[str, Any] = {}
     if isinstance(extra_raw, dict):
@@ -149,17 +158,20 @@ def validate_prediction_row(
         away_score_raw = extra.get("projected_away_score")
     home_score_val = _coerce_float(home_score_raw)
     away_score_val = _coerce_float(away_score_raw)
-    if home_score_val is None or away_score_val is None:
+    scores_present = home_score_val is not None and away_score_val is not None
+    partial_scores = (home_score_val is None) != (away_score_val is None)
+
+    if require_score_bounds and partial_scores:
         reasons.append("missing_score")
-    else:
-        if require_score_bounds:
-            if not (config.score_min <= home_score_val <= config.score_max):
-                reasons.append("score_out_of_bounds")
-            if not (config.score_min <= away_score_val <= config.score_max):
-                reasons.append("score_out_of_bounds")
+
+    if require_score_bounds and scores_present:
+        if not (config.score_min <= home_score_val <= config.score_max):
+            reasons.append("score_out_of_bounds")
+        if not (config.score_min <= away_score_val <= config.score_max):
+            reasons.append("score_out_of_bounds")
 
     # total_val computed above
-    if total_val is not None and home_score_val is not None and away_score_val is not None:
+    if total_val is not None and scores_present:
         derived_total = home_score_val + away_score_val
         if abs(derived_total - total_val) > config.total_tolerance:
             if _DEBUG_PRED_VALIDATE:

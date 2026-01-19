@@ -626,7 +626,17 @@ def test_schedule_excel_report_matches_csv_outputs(tmp_path: Path) -> None:
             skiprows=MODEL_METADATA_DATA_START_ROW - 1,
         )
         assert list(actual.columns) == SCHEDULE_EXPORT_COLUMNS
-        pd.testing.assert_frame_equal(actual, expected, check_dtype=False)
+        assert set(actual["params_market"]) == {"ML", "SPREAD", "TOTAL"}
+
+        ml_actual = (
+            actual[actual["params_market"] == "ML"]
+            .sort_values(["date", "game_id", "away_team", "home_team"])
+            .reset_index(drop=True)
+        )
+        expected_sorted = expected.sort_values(["date", "game_id", "away_team", "home_team"]).reset_index(
+            drop=True
+        )
+        pd.testing.assert_frame_equal(ml_actual, expected_sorted, check_dtype=False)
 
     dashboard = pd.read_excel(workbook_path, sheet_name="dashboard")
     assert list(dashboard.columns) == DASHBOARD_COLUMNS
@@ -690,33 +700,26 @@ def test_schedule_excel_dashboard_includes_today_games(tmp_path: Path) -> None:
     assert set(dashboard["model"]) == {"bradley-terry"}
     assert dashboard["model_version"].notna().all()
     assert set(dashboard["game"]) == {"Team B @ Team A"}
-    assert (
-        dashboard.loc[dashboard["game"] == "Team B @ Team A", "projected_winner"]
-        .notna()
-        .all()
-    )
-    assert (
-        dashboard.loc[dashboard["game"] == "Team B @ Team A", "projected_spread"]
-        .notna()
-        .all()
-    )
-    assert (
-        dashboard.loc[dashboard["game"] == "Team B @ Team A", "home_win_prob"]
-        .notna()
-        .all()
-    )
-    assert (
-        dashboard.loc[dashboard["game"] == "Team B @ Team A", "winner_win_prob"]
-        .notna()
-        .all()
-    )
-    total_value = dashboard.loc[dashboard["game"] == "Team B @ Team A", "total"].iloc[0]
-    home_score = dashboard.loc[
-        dashboard["game"] == "Team B @ Team A", "projected_home_score"
+    assert set(dashboard["params_market"]) == {"ML", "SPREAD", "TOTAL"}
+
+    params_market_idx = dashboard.columns.get_loc("params_market")
+    date_idx = dashboard.columns.get_loc("date")
+    assert params_market_idx == date_idx + 1
+
+    for market in {"ML", "SPREAD", "TOTAL"}:
+        market_rows = dashboard[dashboard["params_market"] == market]
+        assert not market_rows.empty
+        assert market_rows["projected_winner"].notna().all()
+        assert market_rows["projected_spread"].notna().all()
+        assert market_rows["home_win_prob"].notna().all()
+        assert market_rows["winner_win_prob"].notna().all()
+
+    ml_row = dashboard[
+        (dashboard["game"] == "Team B @ Team A") & (dashboard["params_market"] == "ML")
     ].iloc[0]
-    away_score = dashboard.loc[
-        dashboard["game"] == "Team B @ Team A", "projected_away_score"
-    ].iloc[0]
+    total_value = ml_row["total"]
+    home_score = ml_row["projected_home_score"]
+    away_score = ml_row["projected_away_score"]
     assert total_value == pytest.approx(home_score + away_score)
 
 
@@ -758,6 +761,7 @@ def test_schedule_excel_report_includes_elo_dashboard_rows(tmp_path: Path) -> No
     dashboard = pd.read_excel(workbook_path, sheet_name="dashboard")
     assert "elo" in set(dashboard["model"])
     elo_rows = dashboard[dashboard["model"] == "elo"]
+    assert set(elo_rows["params_market"]) == {"ML", "SPREAD", "TOTAL"}
     assert elo_rows["projected_winner"].notna().all()
     assert elo_rows["projected_spread"].notna().all()
 
@@ -798,13 +802,21 @@ def test_schedule_excel_report_includes_model_metadata(tmp_path: Path) -> None:
         ws = workbook[model]
         metadata: dict[str, str] = {}
         for row in ws.iter_rows(
-            min_row=2, max_row=10, min_col=1, max_col=2, values_only=True
+            min_row=2,
+            max_row=MODEL_METADATA_DATA_START_ROW - 1,
+            min_col=1,
+            max_col=2,
+            values_only=True,
         ):
             key, value = row
             if key:
                 metadata[str(key)] = str(value) if value is not None else ""
 
         assert metadata.get("model_id") == model
+        assert metadata.get("export_markets") == "ML,SPREAD,TOTAL"
+        for market in ["ML", "SPREAD", "TOTAL"]:
+            assert metadata.get(f"{market}.params_market") == market
+            assert metadata.get(f"{market}.params_source")
 
         schedule_df = pd.read_excel(
             workbook_path,
@@ -813,3 +825,57 @@ def test_schedule_excel_report_includes_model_metadata(tmp_path: Path) -> None:
         )
         expected_hash = prediction_hash(schedule_df, SCHEDULE_EXPORT_COLUMNS)
         assert metadata.get("prediction_hash") == expected_hash
+
+
+def test_schedule_excel_model_and_dashboard_markets(tmp_path: Path) -> None:
+    db_path = tmp_path / "games.db"
+    scheduled_date = date(2024, 1, 5)
+    games = [
+        GameResult(
+            date=date(2024, 1, 1),
+            home_team="Team A",
+            away_team="Team B",
+            home_score=100,
+            away_score=90,
+            sport="nba",
+            season="2024-25",
+        ),
+        GameResult(
+            date=scheduled_date,
+            home_team="Team B",
+            away_team="Team C",
+            home_score=None,
+            away_score=None,
+            sport="nba",
+            season="2024-25",
+            game_id="g-1",
+        ),
+    ]
+    save_games(db_path, games)
+
+    workbook_path = build_schedule_excel_report(
+        db_path,
+        sport="nba",
+        season="2024-25",
+        output_path=tmp_path / "schedule.xlsx",
+        as_of_date=scheduled_date,
+        model="bradley-terry",
+    )
+
+    schedule_df = pd.read_excel(
+        workbook_path,
+        sheet_name="bradley-terry",
+        skiprows=MODEL_METADATA_DATA_START_ROW - 1,
+    )
+    order = {"ML": 0, "SPREAD": 1, "TOTAL": 2}
+    for _, group in schedule_df.groupby("game_id"):
+        markets = list(group["params_market"])
+        assert set(markets) == set(order.keys())
+        assert markets == sorted(markets, key=lambda m: order[m])
+
+    dashboard = pd.read_excel(workbook_path, sheet_name="dashboard")
+    brad_rows = dashboard[dashboard["model"] == "bradley-terry"]
+    for _, group in brad_rows.groupby("game"):
+        markets = list(group["params_market"])
+        assert set(markets) == set(order.keys())
+        assert markets == sorted(markets, key=lambda m: order[m])

@@ -83,11 +83,14 @@ def apply_prediction_validation(
     sport: str | None = None,
     validation_config: ValidationConfig | None = None,
     include_reasons: bool = False,
+    drop_invalid: bool = True,
+    log_reasons_per_row: bool = True,
 ) -> Tuple[pd.DataFrame, list[tuple[str | None, str | None, list[str]]]]:
     """Filter predictions using the centralized validator.
 
     Returns (filtered_df, exclusions) where exclusions is a list of
-    (model, game_id, reasons).
+    (model, game_id, reasons). When drop_invalid is False, rows are kept but
+    annotated with invalid reasons; only extreme corruption triggers a drop.
     """
     if predictions_df.empty:
         return predictions_df, []
@@ -95,6 +98,7 @@ def apply_prediction_validation(
     reasons_col: list[list[str]] = []
     validity: list[bool] = []
     exclusions: list[tuple[str | None, str | None, list[str]]] = []
+    hard_drop_reasons = {"prob_out_of_bounds"}
     # Try to infer sport from the predictions frame when one isn't explicitly passed in.
     if sport is None and "sport" in predictions_df.columns:
         non_null = predictions_df["sport"].dropna()
@@ -107,23 +111,34 @@ def apply_prediction_validation(
         ok, reasons = validate_prediction_row(
             row.to_dict(), config=config, require_score_bounds=(sport is not None)
         )
-        validity.append(ok)
+        hard_invalid = any(reason in hard_drop_reasons for reason in reasons)
+        keep_row = ok or (not drop_invalid and not hard_invalid)
+        validity.append(keep_row)
         reasons_col.append(reasons)
-        if not ok:
+        if not keep_row:
             model_ref = row.get("model") or row.get("model_id")
             exclusions.append((model_ref, row.get("game_id"), reasons))
 
     filtered = predictions_df.loc[validity].copy()
-    if include_reasons:
-        filtered["validation_reasons"] = [r for ok, r in zip(validity, reasons_col, strict=False) if ok]
 
-    for model, game_id, reasons in exclusions:
-        logger.warning(
-            "Excluding prediction model=%s game_id=%s sport=%s reasons=%s",
-            model,
-            game_id,
-            sport or "",
-            reasons,
-        )
+    kept_reasons = [r for keep, r in zip(validity, reasons_col, strict=False) if keep]
+    if include_reasons:
+        filtered["validation_reasons"] = kept_reasons
+    if not drop_invalid:
+        filtered["__invalid_reasons"] = kept_reasons
+
+    # Emit per-row exclusion warnings when requested. For bulk workflows
+    # (e.g., tuning/backtest) callers may pass `log_reasons_per_row=False`
+    # to avoid noisy logs; those callers should instead aggregate `exclusions`
+    # and emit a single summary per candidate when appropriate.
+    if log_reasons_per_row:
+        for model, game_id, reasons in exclusions:
+            logger.warning(
+                "Excluding prediction model=%s game_id=%s sport=%s reasons=%s",
+                model,
+                game_id,
+                sport or "",
+                reasons,
+            )
 
     return filtered, exclusions

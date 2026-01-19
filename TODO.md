@@ -1,5 +1,5 @@
 # TODO
-
+ - make config files for things like tables and data ouput
 - change how model/head combos report, make useful report that shows whatever most useful metric is, and how it scores. so RMSE, or log loss, etc. 
 
  - clean up the Dashboard sheet in the schedule output - hasn't been updated to represent the ensembles

@@ -14,7 +14,7 @@ python -m src.cli.pipeline <command> [options]
 
 ### Activating and verifying tuned runs
 
-- After tuning you may optionally promote a tuned run to be the explicit active params used by `rank`/`schedule` with `activate-tuning`:
+- Tuning now auto-activates the best params per market when a numeric `best_score` is produced. Use `activate-tuning` only to re-point to a specific historical run:
 
 ```bash
 python -m src.cli.pipeline activate-tuning --sport <sport> --season <season> --model <model> --market <ML|SPREAD|TOTAL> --run-id <run_id>
@@ -28,6 +28,12 @@ python -m src.cli.pipeline tuning-status --sport <sport> --season <season>
 
 This prints, per market, each model's status as `ACTIVE` (explicitly promoted), `AUTO-SELECT` (best tuning run auto-selected), or `DEFAULT` (no tuned params found).
 When multiple models run, outputs are prefixed with abbreviations (`bt`, `elo`, `gssd`, `toor`).
+
+- To see the exact active params/fingerprint per model+market, use the provenance helper:
+
+```bash
+python -m src.cli.pipeline show-active-params --sport <sport> --season <season> [--models elo,poisson]
+```
 
 ## Development notes
 - `schema_meta` tracks the current schema version; both `src/data/repository.py:init_db` and

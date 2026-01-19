@@ -112,6 +112,44 @@ class EloPowerRating:
 
         self._ratings = ratings
 
+    def update_with_result(self, game: Mapping[str, Any]) -> None:
+        """Update ratings with a single game result."""
+        home = str(game.get("home_team", "")).strip()
+        away = str(game.get("away_team", "")).strip()
+        if not home or not away:
+            return
+        try:
+            home_score = float(game.get("home_score"))
+            away_score = float(game.get("away_score"))
+        except Exception:
+            return
+
+        if home_score == away_score:
+            outcome_home = 0.5
+        elif home_score > away_score:
+            outcome_home = 1.0
+        else:
+            outcome_home = 0.0
+        outcome_away = 1.0 - outcome_home
+
+        neutral_raw = game.get("neutral", False)
+        if isinstance(neutral_raw, float) and isnan(neutral_raw):
+            neutral = False
+        else:
+            neutral = False if neutral_raw is None else bool(neutral_raw)
+        home_advantage = 0.0 if neutral else self.home_advantage
+
+        home_rating = self._ratings[home]
+        away_rating = self._ratings[away]
+        expected_home = self._expected_score(home_rating, away_rating, home_advantage)
+        expected_away = 1.0 - expected_home
+
+        home_rating += self.k_factor * (outcome_home - expected_home)
+        away_rating += self.k_factor * (outcome_away - expected_away)
+
+        self._ratings[home] = max(self.min_rating, home_rating)
+        self._ratings[away] = max(self.min_rating, away_rating)
+
     def rankings(self) -> list[tuple[str, float]]:
         """Return ratings ordered from strongest to weakest."""
         return sorted(self._ratings.items(), key=lambda item: item[1], reverse=True)
@@ -203,6 +241,8 @@ class EloModel(BaseModel):
             supports_win_prob=True,
             role="primary",
             ensemble_weight=1.0,
+            supports_incremental_update=True,
+            supports_streaming_backtest=True,
         )
 
     def fit(self, games_df: Any) -> None:
@@ -373,102 +413,108 @@ class EloModel(BaseModel):
             self._team_total_adj = {}
             self._total_sd = float(DEFAULT_TOTAL_SD_FALLBACK)
 
-    def predict(self, upcoming_games_df: Any) -> list[GamePrediction]:
-        require_columns(upcoming_games_df, ["date", "home_team", "away_team"])
-        predictions: list[GamePrediction] = []
+    def predict_one(self, row: Mapping[str, Any]) -> GamePrediction:
+        home = str(row.get("home_team", "")).strip()
+        away = str(row.get("away_team", "")).strip()
+        if not home or not away:
+            raise ValueError("home_team and away_team are required for prediction.")
+
         coefficients = self._coefficients
         win_prob_k = self._win_prob_k if self._win_prob_k > 0 else DEFAULT_WIN_PROB_K
         model_identity = self.metadata().identity_dict()
 
+        neutral_raw = row.get("neutral", False)
+        neutral = (
+            False
+            if isinstance(neutral_raw, float) and np.isnan(neutral_raw)
+            else bool(neutral_raw)
+        )
+        home_advantage_flag = 0.0 if neutral else 1.0
+
+        home_rating = float(self._elo._ratings[home])
+        away_rating = float(self._elo._ratings[away])
+        rating_diff = home_rating - away_rating
+
+        pred_margin = (
+            coefficients.home_advantage * home_advantage_flag
+            + coefficients.scale * rating_diff
+        )
+        projected_spread = -pred_margin
+        adjusted_spread = align_spread_with_margin(
+            pred_margin, projected_spread - self._win_prob_bias
+        )
+        p_home_win = logistic_win_prob(adjusted_spread, win_prob_k)
+        margin_sd = (
+            self._conditional_sd_model.predict(pred_margin)
+            if self._conditional_sd_model is not None
+            else coefficients.error_term
+        )
+        win_prob_dist = win_prob_distribution(
+            p_home_win,
+            win_prob_k=win_prob_k,
+            margin_std=margin_sd,
+        )
+
+        # Totals prediction
+        base_total = (
+            float(self._total_mean)
+            if self._total_mean is not None
+            else float(DEFAULT_TOTAL_MEAN_FALLBACK)
+        )
+        adj_home = float(self._team_total_adj.get(home, 0.0))
+        adj_away = float(self._team_total_adj.get(away, 0.0))
+        pred_total = base_total + self._total_shrinkage * 0.5 * (adj_home + adj_away)
+        total_sd_raw = (
+            float(self._total_sd) if self._total_sd is not None else float(DEFAULT_TOTAL_SD_FALLBACK)
+        )
+        total_sd = max(self._total_sd_floor, total_sd_raw)
+
+        game_id = row.get("game_id") or f"{row['date']}_{home}_{away}"
+        return GamePrediction(
+            game_id=str(game_id),
+            date=str(row["date"]),
+            home_team=home,
+            away_team=away,
+            p_home_win=p_home_win,
+            win_prob_dist=win_prob_dist,
+            pred_margin=pred_margin,
+            pred_total=pred_total,
+            margin_sd=margin_sd,
+            total_mean=pred_total,
+            total_sd=total_sd,
+            win_prob_source="logistic",
+            margin_dist_assumption="normal_approx",
+            metadata=dict(model_identity),
+            extra={
+                "home_advantage": coefficients.home_advantage,
+                "scale": coefficients.scale,
+                "error_term": coefficients.error_term,
+                "win_prob_k": win_prob_k,
+                "winprob_bias": self._win_prob_bias,
+                "conditional_sd": self._conditional_sd,
+                "projected_total": pred_total,
+                "conditional_sd_intercept": (
+                    self._conditional_sd_model.intercept
+                    if self._conditional_sd_model is not None
+                    else None
+                ),
+                "conditional_sd_slope": (
+                    self._conditional_sd_model.slope
+                    if self._conditional_sd_model is not None
+                    else None
+                ),
+            },
+        )
+
+    def predict(self, upcoming_games_df: Any) -> list[GamePrediction]:
+        require_columns(upcoming_games_df, ["date", "home_team", "away_team"])
+        predictions: list[GamePrediction] = []
         for row in upcoming_games_df.to_dict(orient="records"):
-            home = str(row.get("home_team", "")).strip()
-            away = str(row.get("away_team", "")).strip()
-            if not home or not away:
+            try:
+                predictions.append(self.predict_one(row))
+            except ValueError:
                 continue
-
-            neutral_raw = row.get("neutral", False)
-            neutral = (
-                False
-                if isinstance(neutral_raw, float) and np.isnan(neutral_raw)
-                else bool(neutral_raw)
-            )
-            home_advantage_flag = 0.0 if neutral else 1.0
-
-            home_rating = float(self._elo._ratings[home])
-            away_rating = float(self._elo._ratings[away])
-            rating_diff = home_rating - away_rating
-
-            pred_margin = (
-                coefficients.home_advantage * home_advantage_flag
-                + coefficients.scale * rating_diff
-            )
-            projected_spread = -pred_margin
-            adjusted_spread = align_spread_with_margin(
-                pred_margin, projected_spread - self._win_prob_bias
-            )
-            p_home_win = logistic_win_prob(adjusted_spread, win_prob_k)
-            margin_sd = (
-                self._conditional_sd_model.predict(pred_margin)
-                if self._conditional_sd_model is not None
-                else coefficients.error_term
-            )
-            win_prob_dist = win_prob_distribution(
-                p_home_win,
-                win_prob_k=win_prob_k,
-                margin_std=margin_sd,
-            )
-
-            # Totals prediction
-            base_total = (
-                float(self._total_mean)
-                if self._total_mean is not None
-                else float(DEFAULT_TOTAL_MEAN_FALLBACK)
-            )
-            adj_home = float(self._team_total_adj.get(home, 0.0))
-            adj_away = float(self._team_total_adj.get(away, 0.0))
-            pred_total = base_total + self._total_shrinkage * 0.5 * (adj_home + adj_away)
-            total_sd_raw = (
-                float(self._total_sd) if self._total_sd is not None else float(DEFAULT_TOTAL_SD_FALLBACK)
-            )
-            total_sd = max(self._total_sd_floor, total_sd_raw)
-
-            game_id = row.get("game_id") or f"{row['date']}_{home}_{away}"
-            predictions.append(
-                GamePrediction(
-                    game_id=str(game_id),
-                    date=str(row["date"]),
-                    home_team=home,
-                    away_team=away,
-                    p_home_win=p_home_win,
-                    win_prob_dist=win_prob_dist,
-                    pred_margin=pred_margin,
-                    pred_total=pred_total,
-                    margin_sd=margin_sd,
-                    total_mean=pred_total,
-                    total_sd=total_sd,
-                    win_prob_source="logistic",
-                    margin_dist_assumption="normal_approx",
-                    metadata=dict(model_identity),
-                    extra={
-                        "home_advantage": coefficients.home_advantage,
-                        "scale": coefficients.scale,
-                        "error_term": coefficients.error_term,
-                        "win_prob_k": win_prob_k,
-                        "winprob_bias": self._win_prob_bias,
-                        "conditional_sd": self._conditional_sd,
-                        "projected_total": pred_total,
-                        "conditional_sd_intercept": (
-                            self._conditional_sd_model.intercept
-                            if self._conditional_sd_model is not None
-                            else None
-                        ),
-                        "conditional_sd_slope": (
-                            self._conditional_sd_model.slope
-                            if self._conditional_sd_model is not None
-                            else None
-                        ),
-                    },
-                )
-            )
-
         return predictions
+
+    def update_with_result(self, game_row: Mapping[str, Any]) -> None:
+        self._elo.update_with_result(game_row)

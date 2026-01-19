@@ -27,14 +27,14 @@ from data import teams as team_repo
 from pipelines.model_params import (
     resolve_active_model_market_params,
     resolve_active_ensemble_weights,
+    resolve_effective_params,
     resolve_model_market_params_with_metadata,
 )
 resolve_model_params_with_metadata = resolve_model_market_params_with_metadata
 from pipelines.common import normalize_games, resolve_output_path
-from pipelines.market_tuning import _metric_name_for_market
 from ensemble.config import load_ensemble_config
 from ensemble.io import load_market_weights
-from pipelines.market_tuning import _metric_name_for_market
+from pipelines.market_utils import _metric_name_for_market
 from pipelines.matchups import team_home_advantages
 from config import CALIBRATION_RESIDUAL_GAMES, DEFAULT_WIN_PROB_K
 from pipelines.projection_engines import get_projection_engine
@@ -61,16 +61,25 @@ from ensemble.total_v1 import TotalWeightedAverageEnsemble
 from markets.base import Market
 
 
+EXPORT_MARKETS: List[Market] = [Market.ML, Market.SPREAD, Market.TOTAL]
+MARKET_ORDER: Dict[str, int] = {market.name: idx for idx, market in enumerate(EXPORT_MARKETS)}
+
 DASHBOARD_COLUMNS: List[str] = [
     "model",
     "model_version",
     "params_source",
+    "params_source_label",
+    "params_source_run_id",
     "tuned_metric_used",
+    "params_metric_optimized",
+    "params_best_score",
+    "params_fingerprint",
+    "params_nonempty",
     "tuning_run_id",
-    "params_market",
     "run_timestamp_utc",
     "prediction_hash",
     "date",
+    "params_market",
     "game",
     "projected_home_score",
     "projected_away_score",
@@ -90,7 +99,7 @@ DASHBOARD_COLUMNS: List[str] = [
     "total_sd",
 ]
 
-MODEL_METADATA_DATA_START_ROW = 20  # Ensure metadata+header always start at this row; bump if new metadata keys appear
+MODEL_METADATA_DATA_START_ROW = 50  # Allow multi-market metadata; bump if new metadata keys appear
 
 
 def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
@@ -212,7 +221,13 @@ def _project_row(
     status: str,
     home_advantage: float,
     params_source: str,
+    params_source_label: str | None = None,
+    params_source_run_id: str | None = None,
     tuned_metric_used: str | None,
+    params_metric_optimized: str | None = None,
+    params_best_score: float | None = None,
+    params_fingerprint: str | None = None,
+    params_nonempty: bool | None = None,
     params_run_id: str | None = None,
     params_market: str | None = None,
     model_instance: Any | None = None,
@@ -368,7 +383,13 @@ def _project_row(
             "status": status,
             "projection_status": projection_status,
             "params_source": params_source,
+            "params_source_label": params_source_label or params_source,
+            "params_source_run_id": params_source_run_id or params_run_id,
             "tuned_metric_used": tuned_metric_used,
+            "params_metric_optimized": params_metric_optimized,
+            "params_best_score": params_best_score,
+            "params_fingerprint": params_fingerprint,
+            "params_nonempty": bool(params_nonempty) if params_nonempty is not None else bool(params_source_run_id),
             "tuning_run_id": params_run_id,
             "params_market": market_label,
             "home_rating": home_rating,
@@ -467,9 +488,15 @@ def _build_schedule_dataframe(
     upcoming_only: bool,
     model_params: dict[str, float] | None,
     params_source: str,
-    tuned_metric_used: str | None,
-    params_run_id: str | None,
-    params_market: str,
+    params_source_label: str | None = None,
+    params_source_run_id: str | None = None,
+    tuned_metric_used: str | None = None,
+    params_metric_optimized: str | None = None,
+    params_best_score: float | None = None,
+    params_fingerprint: str | None = None,
+    params_nonempty: bool | None = None,
+    params_run_id: str | None = None,
+    params_market: str | None = None,
 ) -> pd.DataFrame:
     played = _completed_games(df)
     upcoming = _upcoming_games(df)
@@ -548,7 +575,13 @@ def _build_schedule_dataframe(
                     status="final",
                     home_advantage=home_advantages.get(home, fallback_home_advantage),
                     params_source=params_source,
+                    params_source_label=params_source_label,
+                    params_source_run_id=params_source_run_id,
                     tuned_metric_used=tuned_metric_used,
+                    params_metric_optimized=params_metric_optimized,
+                    params_best_score=params_best_score,
+                    params_fingerprint=params_fingerprint,
+                    params_nonempty=params_nonempty,
                     params_run_id=params_run_id,
                     params_market=params_market,
                     model_instance=model_instance,
@@ -566,7 +599,13 @@ def _build_schedule_dataframe(
                 status="scheduled",
                 home_advantage=home_advantages.get(home, fallback_home_advantage),
                 params_source=params_source,
+                    params_source_label=params_source_label,
+                    params_source_run_id=params_source_run_id,
                 tuned_metric_used=tuned_metric_used,
+                    params_metric_optimized=params_metric_optimized,
+                    params_best_score=params_best_score,
+                    params_fingerprint=params_fingerprint,
+                    params_nonempty=params_nonempty,
                 params_run_id=params_run_id,
                 params_market=params_market,
                 model_instance=model_instance,
@@ -701,7 +740,7 @@ def _build_market_forecasts_for_ensembles(
             metric_for_market = market_metrics.get(market.name)
         for model_name in model_iter:
             # Resolve active market params (active -> best run -> defaults)
-            resolved = resolve_active_model_market_params(
+            resolved = resolve_effective_params(
                 db_path=db_path,
                 sport=sport,
                 season=season,
@@ -709,8 +748,12 @@ def _build_market_forecasts_for_ensembles(
                 market=market.name,
             )
             params = resolved.params
-            params_source = resolved.params_source
-            tuned_metric_used = resolved.tuned_metric_used
+            params_source = resolved.params_source_label
+            tuned_metric_used = (
+                resolved.metric_optimized.replace("backtest_", "", 1)
+                if resolved.metric_optimized and str(resolved.metric_optimized).startswith("backtest_")
+                else resolved.metric_optimized
+            )
 
             model_df = schedule_df.copy(deep=True)
             market_schedule = _build_schedule_dataframe(
@@ -722,7 +765,13 @@ def _build_market_forecasts_for_ensembles(
                 upcoming_only=True,
                 model_params=params,
                 params_source=params_source,
+                params_source_label=resolved.params_source_label,
+                params_source_run_id=resolved.source_run_id,
                 tuned_metric_used=tuned_metric_used,
+                params_metric_optimized=resolved.metric_optimized,
+                params_best_score=resolved.best_score,
+                params_fingerprint=resolved.params_fingerprint,
+                params_nonempty=resolved.params_nonempty,
                 params_run_id=resolved.source_run_id,
                 params_market=market.name,
             )
@@ -802,7 +851,7 @@ def _validate_market_tuning_inputs(
     missing_ensemble_market: list[tuple[str, str]] = []
     for market in (Market.ML, Market.SPREAD, Market.TOTAL):
         for model_name in models:
-            resolved = resolve_active_model_market_params(
+            resolved = resolve_effective_params(
                 db_path=db_path,
                 sport=sport,
                 season=season,
@@ -862,7 +911,7 @@ def _collect_market_param_sources(
     for market in (Market.ML, Market.SPREAD, Market.TOTAL):
         market_sources: dict[str, str | None] = {}
         for model_name in models:
-            resolved = resolve_active_model_market_params(
+            resolved = resolve_effective_params(
                 db_path=db_path,
                 sport=sport,
                 season=season,
@@ -870,10 +919,16 @@ def _collect_market_param_sources(
                 market=market.name,
             )
             if resolved.params is not None:
-                tuned = resolved.tuned_metric_used or None
+                metric_display = (
+                    resolved.metric_optimized.replace("backtest_", "", 1)
+                    if resolved.metric_optimized and str(resolved.metric_optimized).startswith("backtest_")
+                    else resolved.metric_optimized
+                )
                 # Include tuned metric in reported source when available
                 market_sources[model_name] = (
-                    f"{resolved.params_source}/{tuned}" if tuned else resolved.params_source
+                    f"{resolved.params_source_label}/{metric_display}"
+                    if metric_display
+                    else resolved.params_source_label
                 )
             else:
                 market_sources[model_name] = None
@@ -959,7 +1014,13 @@ def _dashboard_rows_for_today(
                 "model": model_name,
                 "model_version": metadata.get("model_version"),
                 "params_source": metadata.get("params_source"),
+                "params_source_label": metadata.get("params_source_label"),
+                "params_source_run_id": metadata.get("params_source_run_id"),
                 "tuned_metric_used": metadata.get("tuned_metric_used"),
+                "params_metric_optimized": metadata.get("params_metric_optimized"),
+                "params_best_score": metadata.get("params_best_score"),
+                "params_fingerprint": metadata.get("params_fingerprint"),
+                "params_nonempty": metadata.get("params_nonempty"),
                 "tuning_run_id": metadata.get("tuning_run_id"),
                 "params_market": metadata.get("params_market"),
                 "run_timestamp_utc": metadata.get("run_timestamp_utc"),
@@ -1537,6 +1598,12 @@ def _build_model_metadata(
     schedule_df: pd.DataFrame,
     params_source: str,
     tuned_metric_used: str | None,
+    params_source_label: str | None,
+    params_source_run_id: str | None,
+    params_metric_optimized: str | None,
+    params_best_score: float | None,
+    params_fingerprint: str | None,
+    params_nonempty: bool | None,
     params_run_id: str | None,
     params_market: str | None = None,
 ) -> dict[str, Any]:
@@ -1548,7 +1615,13 @@ def _build_model_metadata(
         "prediction_hash": prediction_hash(schedule_df, SCHEDULE_EXPORT_COLUMNS),
         "params": _serialize_params(identity["params"]),
         "params_source": params_source,
+        "params_source_label": params_source_label or params_source,
+        "params_source_run_id": params_source_run_id or params_run_id,
         "tuned_metric_used": tuned_metric_used,
+        "params_metric_optimized": params_metric_optimized,
+        "params_best_score": params_best_score,
+        "params_fingerprint": params_fingerprint,
+        "params_nonempty": params_nonempty,
         "tuning_run_id": params_run_id,
         "params_market": params_market or Market.ML.name,
         "trained_on_date_range": _training_date_range(played),
@@ -1599,6 +1672,12 @@ def _build_schedule_for_model(
     )
     resolved_params = resolution.params
     params_run_id = resolution.source_run_id
+    params_source_label = resolution.params_source_label or resolution.params_source
+    params_source_run_id = resolution.source_run_id
+    params_metric_optimized = resolution.metric_optimized
+    params_best_score = resolution.best_score
+    params_fingerprint = resolution.params_fingerprint
+    params_nonempty = resolution.params_nonempty
     schedule_df = _build_schedule_dataframe(
         df,
         db_path=db_path,
@@ -1608,7 +1687,13 @@ def _build_schedule_for_model(
         upcoming_only=upcoming_only,
         model_params=resolved_params,
         params_source=resolution.params_source,
+        params_source_label=params_source_label,
+        params_source_run_id=params_source_run_id,
         tuned_metric_used=resolution.tuned_metric_used,
+        params_metric_optimized=params_metric_optimized,
+        params_best_score=params_best_score,
+        params_fingerprint=params_fingerprint,
+        params_nonempty=params_nonempty,
         params_run_id=params_run_id,
         params_market=resolution.market,
     )
@@ -1762,65 +1847,160 @@ def build_schedule_excel_report(
     with pd.ExcelWriter(report_path) as writer:
         for model_name in models:
             model_df = df.copy(deep=True)
-            resolution = resolve_model_market_params_with_metadata(
-                model_name,
-                params=model_params,
-                params_file=model_params_file,
-                db_path=db_path,
-                sport=sport,
-                season=season,
-                tuned_metric=tuned_metric,
-                market=Market.ML,
+            market_frames: list[pd.DataFrame] = []
+            market_metadatas: list[tuple[Market, dict[str, Any]]] = []
+            params_sources: set[str] = set()
+            tuned_metrics: set[str] = set()
+            params_run_ids: set[str] = set()
+
+            for market in EXPORT_MARKETS:
+                resolution = resolve_model_market_params_with_metadata(
+                    model_name,
+                    params=model_params,
+                    params_file=model_params_file,
+                    db_path=db_path,
+                    sport=sport,
+                    season=season,
+                    tuned_metric=tuned_metric,
+                    market=market,
+                )
+                resolved_params = resolution.params
+                params_source = resolution.params_source
+                tuned_metric_used = resolution.tuned_metric_used
+                params_source_label = resolution.params_source_label or params_source
+                params_source_run_id = resolution.source_run_id
+                params_metric_optimized = resolution.metric_optimized
+                params_best_score = resolution.best_score
+                params_fingerprint = resolution.params_fingerprint
+                params_nonempty = resolution.params_nonempty
+                schedule_df = _build_schedule_dataframe(
+                    model_df,
+                    db_path=db_path,
+                    sport=sport,
+                    season=season,
+                    model=model_name,
+                    upcoming_only=upcoming_only,
+                    model_params=resolved_params,
+                    params_source=params_source,
+                    params_source_label=params_source_label,
+                    params_source_run_id=params_source_run_id,
+                    tuned_metric_used=tuned_metric_used,
+                    params_metric_optimized=params_metric_optimized,
+                    params_best_score=params_best_score,
+                    params_fingerprint=params_fingerprint,
+                    params_nonempty=params_nonempty,
+                    params_run_id=resolution.source_run_id,
+                    params_market=market.name,
+                )
+                schedule_df = _apply_calibration_to_schedule_df(
+                    schedule_df,
+                    sport=sport,
+                    season=season,
+                    model=model_name,
+                )
+                schedule_df = _order_schedule_export(schedule_df)
+                market_frames.append(schedule_df)
+
+                metadata = _build_model_metadata(
+                    model_name=model_name,
+                    played=_completed_games(model_df),
+                    schedule_df=schedule_df,
+                    params_source=params_source,
+                    params_source_label=params_source_label,
+                    params_source_run_id=params_source_run_id,
+                    tuned_metric_used=tuned_metric_used,
+                    params_metric_optimized=params_metric_optimized,
+                    params_best_score=params_best_score,
+                    params_fingerprint=params_fingerprint,
+                    params_nonempty=params_nonempty,
+                    params_run_id=resolution.source_run_id,
+                    params_market=market.name,
+                )
+                market_metadatas.append((market, metadata))
+                if params_source_label:
+                    params_sources.add(str(params_source_label))
+                if tuned_metric_used:
+                    tuned_metrics.add(str(tuned_metric_used))
+                if params_source_run_id:
+                    params_run_ids.add(str(params_source_run_id))
+
+                dashboard_rows.extend(
+                    _dashboard_rows_for_today(
+                        schedule_df,
+                        model_name,
+                        resolved_as_of_date,
+                        model_metadata=metadata,
+                    )
+                )
+                if model_name == bets_model_name and market == Market.ML:
+                    bets_schedule_df = schedule_df
+
+            model_df_all_markets = (
+                pd.concat(market_frames, ignore_index=True)
+                if market_frames
+                else pd.DataFrame(columns=SCHEDULE_EXPORT_COLUMNS)
             )
-            resolved_params = resolution.params
-            params_source = resolution.params_source
-            tuned_metric_used = resolution.tuned_metric_used
-            schedule_df = _build_schedule_dataframe(
-                model_df,
-                db_path=db_path,
-                sport=sport,
-                season=season,
-                model=model_name,
-                upcoming_only=upcoming_only,
-                model_params=resolved_params,
-                params_source=params_source,
-                tuned_metric_used=tuned_metric_used,
-                params_run_id=resolution.source_run_id,
-                params_market=resolution.market,
-            )
-            schedule_df = _apply_calibration_to_schedule_df(
-                schedule_df,
-                sport=sport,
-                season=season,
-                model=model_name,
-            )
-            schedule_df = _order_schedule_export(schedule_df)
-            metadata = _build_model_metadata(
+            if not model_df_all_markets.empty:
+                model_df_all_markets = (
+                    model_df_all_markets.assign(
+                        _sort_dt=pd.to_datetime(model_df_all_markets["date"], errors="coerce"),
+                        _market_order=model_df_all_markets["params_market"].map(MARKET_ORDER).fillna(len(MARKET_ORDER)),
+                    )
+                    .sort_values(
+                        ["_sort_dt", "game_id", "_market_order", "away_team", "home_team"]
+                    )
+                    .drop(columns=["_sort_dt", "_market_order"], errors="ignore")
+                )
+
+            params_source_joined = ",".join(sorted(params_sources)) if params_sources else "multi_market"
+            params_source_labels = {md.get("params_source_label") for _, md in market_metadatas if md.get("params_source_label")}
+            params_metric_opts = {md.get("params_metric_optimized") for _, md in market_metadatas if md.get("params_metric_optimized")}
+            params_fingerprints = {md.get("params_fingerprint") for _, md in market_metadatas if md.get("params_fingerprint")}
+            params_nonempty_flags = {str(md.get("params_nonempty")) for _, md in market_metadatas if md.get("params_nonempty") is not None}
+
+            combined_metadata = _build_model_metadata(
                 model_name=model_name,
                 played=_completed_games(model_df),
-                schedule_df=schedule_df,
-                params_source=params_source,
-                tuned_metric_used=tuned_metric_used,
-                params_run_id=resolution.source_run_id,
-                params_market=resolution.market,
+                schedule_df=model_df_all_markets,
+                params_source=params_source_joined,
+                params_source_label=",".join(sorted(params_source_labels)) if params_source_labels else params_source_joined,
+                params_source_run_id=",".join(sorted(params_run_ids)) if params_run_ids else None,
+                tuned_metric_used=",".join(sorted(tuned_metrics)) if tuned_metrics else None,
+                params_metric_optimized=",".join(sorted(params_metric_opts)) if params_metric_opts else None,
+                params_best_score=None,
+                params_fingerprint=",".join(sorted(params_fingerprints)) if params_fingerprints else None,
+                params_nonempty=",".join(sorted(params_nonempty_flags)) if params_nonempty_flags else None,
+                params_run_id=",".join(sorted(params_run_ids)) if params_run_ids else None,
+                params_market="MULTI",
             )
-            start_row = _write_metadata_section(writer, model_name, metadata)
-            schedule_df.to_excel(
+            combined_metadata["export_markets"] = ",".join(market.name for market in EXPORT_MARKETS)
+            combined_metadata[
+                "note"
+            ] = "Multi-market schedule; rows are duplicated per market. See params_market for grouping and ordering."
+            for market, metadata in market_metadatas:
+                for key in (
+                    "params_market",
+                    "params_source",
+                    "params_source_label",
+                    "params_source_run_id",
+                    "tuned_metric_used",
+                    "params_metric_optimized",
+                    "params_best_score",
+                    "params_fingerprint",
+                    "params_nonempty",
+                    "tuning_run_id",
+                    "run_timestamp_utc",
+                    "prediction_hash",
+                ):
+                    combined_metadata[f"{market.name}.{key}"] = metadata.get(key)
+
+            start_row = _write_metadata_section(writer, model_name, combined_metadata)
+            model_df_all_markets.to_excel(
                 writer,
                 sheet_name=model_name,
                 index=False,
                 startrow=start_row,
             )
-            dashboard_rows.extend(
-                _dashboard_rows_for_today(
-                    schedule_df,
-                    model_name,
-                    resolved_as_of_date,
-                    model_metadata=metadata,
-                )
-            )
-            if model_name == bets_model_name:
-                bets_schedule_df = schedule_df
 
         dashboard_df = pd.DataFrame(dashboard_rows)
         if not dashboard_df.empty:
@@ -1841,11 +2021,12 @@ def build_schedule_excel_report(
                 .fillna(len(model_order)),
                 _sort_dt=sort_dt,
                 _sort_game_id=sort_game_id,
+                _market_order=dashboard_df["params_market"].map(MARKET_ORDER).fillna(len(MARKET_ORDER)),
             ).sort_values(
-                ["_sort_dt", "_sort_game_id", "game", "_model_order", "model"]
+                ["_sort_dt", "_sort_game_id", "_market_order", "_model_order", "model"]
             )
             dashboard_df = dashboard_df.drop(
-                columns=["_model_order", "_sort_dt", "_sort_game_id"],
+                columns=["_model_order", "_sort_dt", "_sort_game_id", "_market_order"],
                 errors="ignore",
             )
         dashboard_df = dashboard_df.reindex(columns=DASHBOARD_COLUMNS)

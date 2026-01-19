@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -13,11 +14,12 @@ from data.repository import (
     save_ensemble_market_tuning_run,
     save_model_market_tuning_run,
     set_active_ensemble_market_weights,
-    set_active_model_market_params,
 )
 from markets.base import Market
 from models.registry import get_backtest_model, normalize_model_name
 from pipelines.ensemble_tuning import tune_market_ensemble
+from pipelines.market_utils import _metric_optimized_label, _resolve_market_metric
+from pipelines.model_params import activate_best_params
 from pipelines.tuning import run_tuning_pipeline
 
 SUPPORTED_MARKETS = ("ML", "SPREAD", "TOTAL")
@@ -154,7 +156,7 @@ def run_model_market_tuning(
         grid_override=grid_override,
         apply_best=False,
         require_improvement=not allow_worse,
-        db_path=None,
+        db_path=db_path,
         jobs=jobs,
         sport=sport,
         season=season,
@@ -185,12 +187,25 @@ def run_model_market_tuning(
     )
     finished_at = _utc_now()
 
+    best_score_numeric: float | None
+    try:
+        best_score_numeric = float(tuning_outputs.best_score)
+    except Exception:
+        best_score_numeric = None
+    is_best_score_finite = best_score_numeric is not None and math.isfinite(best_score_numeric)
+
     if grid_override is not None:
         params_source = "file"
     elif best_params:
-        params_source = "db"
+        params_source = "tuned"
     else:
         params_source = "default"
+
+    notes: str | None = None
+    if not best_params:
+        notes = "skip: no_improvement"
+    elif not is_best_score_finite:
+        notes = "skip: missing_best_score"
 
     save_model_market_tuning_run(
         db_path,
@@ -200,23 +215,25 @@ def run_model_market_tuning(
         market=normalized_market,
         metric_optimized=metric_optimized,
         run_id=run_id,
-        best_score=tuning_outputs.best_score,
+        best_score=best_score_numeric,
         best_params_json=json.dumps(best_params, sort_keys=True),
         summary_metrics_json=_json_dumps(summary_metrics),
         started_at=started_at,
         finished_at=finished_at,
-        notes=None,
+        notes=notes,
     )
     activated = False
-    if activate_best and best_params:
-        set_active_model_market_params(
-            db_path,
+    if best_params and is_best_score_finite:
+        activate_best_params(
+            db_path=db_path,
             sport=sport,
             season=season,
             model=model_name,
             market=normalized_market,
-            params=best_params,
-            source_run_id=run_id,
+            run_id=run_id,
+            best_params=best_params,
+            best_score=best_score_numeric,
+            metric_optimized=metric_optimized,
         )
         activated = True
     return ModelMarketTuningResult(
@@ -224,7 +241,7 @@ def run_model_market_tuning(
         market=normalized_market,
         metric_optimized=metric_optimized,
         run_id=run_id,
-        best_score=tuning_outputs.best_score,
+        best_score=best_score_numeric,
         best_params=best_params,
         summary_metrics=summary_metrics,
         output_dir=Path(tuning_outputs.output_dir),
@@ -325,33 +342,6 @@ def _normalize_market(market: str) -> str:
         raise ValueError(f"Unsupported market: {market}")
     return normalized
 
-
-def _metric_optimized_label(market: str) -> str:
-    if market == "ML":
-        return "backtest_log_loss"
-    if market == "SPREAD":
-        return "backtest_mae_margin"
-    return "backtest_mae_total"
-
-
-def _resolve_market_metric(market: str, metric_override: str | None) -> tuple[str, str]:
-    if metric_override:
-        metric = metric_override.strip().lower()
-        if metric.startswith("backtest_"):
-            metric = metric.replace("backtest_", "", 1)
-        if metric not in {"log_loss", "brier_score", "mae_margin", "mae_total"}:
-            raise ValueError(f"Unsupported metric override: {metric_override}")
-        optimized = f"backtest_{metric}"
-        return metric, optimized
-    return _metric_name_for_market(market), _metric_optimized_label(market)
-
-
-def _metric_name_for_market(market: str) -> str:
-    if market == "ML":
-        return "log_loss"
-    if market == "SPREAD":
-        return "mae_margin"
-    return "mae_total"
 
 
 def _build_ensemble_run_id(start_date: str, end_date: str) -> str:

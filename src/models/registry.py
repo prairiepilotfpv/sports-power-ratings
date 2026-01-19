@@ -76,6 +76,7 @@ class ModelMetadata:
     is_experimental: bool = False
     is_deprecated: bool = False
     tags: tuple[str, ...] = ()
+    supports_streaming_backtest: bool = False
 
 
 def _default_experimental_flag(name: str) -> bool:

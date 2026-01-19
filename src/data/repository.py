@@ -8,7 +8,7 @@ import sqlite3
 from contextlib import closing
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterable, List
+from typing import Any, Iterable, List
 
 from config import DEFAULT_WIN_PROB_K
 from ingest.schema import GameResult
@@ -127,6 +127,9 @@ CREATE TABLE IF NOT EXISTS model_market_active_params (
     market TEXT NOT NULL,
     params_json TEXT NOT NULL,
     source_run_id TEXT,
+    params_source TEXT,
+    metric_optimized TEXT,
+    best_score REAL,
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(sport, season, model, market)
 );
@@ -209,7 +212,20 @@ def init_db(db_path: str | Path) -> None:
     with closing(sqlite3.connect(path)) as conn:
         conn.executescript(SCHEMA)
         apply_migrations(conn)
+        _ensure_model_market_active_params_columns(conn)
         conn.commit()
+
+
+def _ensure_model_market_active_params_columns(conn: sqlite3.Connection) -> None:
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(model_market_active_params)")]
+    if not cols:
+        return
+    if "params_source" not in cols:
+        conn.execute("ALTER TABLE model_market_active_params ADD COLUMN params_source TEXT")
+    if "metric_optimized" not in cols:
+        conn.execute("ALTER TABLE model_market_active_params ADD COLUMN metric_optimized TEXT")
+    if "best_score" not in cols:
+        conn.execute("ALTER TABLE model_market_active_params ADD COLUMN best_score REAL")
 
 
 def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
@@ -719,6 +735,9 @@ def set_active_model_market_params(
     market: str,
     params: dict,
     source_run_id: str | None,
+    params_source: str | None = None,
+    metric_optimized: str | None = None,
+    best_score: float | None = None,
 ) -> None:
     if not isinstance(params, dict):
         raise ValueError("Active market params must be a JSON object (dict).")
@@ -734,14 +753,30 @@ def set_active_model_market_params(
                 market,
                 params_json,
                 source_run_id,
+                params_source,
+                metric_optimized,
+                best_score,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(sport, season, model, market) DO UPDATE SET
                 params_json = excluded.params_json,
                 source_run_id = excluded.source_run_id,
+                params_source = excluded.params_source,
+                metric_optimized = excluded.metric_optimized,
+                best_score = excluded.best_score,
                 updated_at = datetime('now')
             """,
-            (sport, season, model, market, params_json, source_run_id),
+            (
+                sport,
+                season,
+                model,
+                market,
+                params_json,
+                source_run_id,
+                params_source,
+                metric_optimized,
+                best_score,
+            ),
         )
         conn.commit()
 
@@ -770,6 +805,41 @@ def get_active_model_market_params(
     if not isinstance(data, dict):
         raise ValueError("Stored market params must be a JSON object.")
     return data
+
+
+def load_model_market_active_params(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+    market: str,
+) -> dict | None:
+    """Return the full active params record for a model/market, if present."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT params_json, source_run_id, params_source, metric_optimized, best_score, updated_at
+            FROM model_market_active_params
+            WHERE sport = ? AND season = ? AND model = ? AND market = ?
+            """,
+            (sport, season, model, market),
+        ).fetchone()
+    if row is None:
+        return None
+    params_json = row[0]
+    params = json.loads(params_json) if params_json is not None else None
+    if params is not None and not isinstance(params, dict):
+        raise ValueError("Stored market params must be a JSON object.")
+    return {
+        "params": params,
+        "source_run_id": row[1],
+        "params_source": row[2],
+        "metric_optimized": row[3],
+        "best_score": row[4],
+        "updated_at": row[5],
+    }
 
 
 def get_active_model_market_params_source(
@@ -811,6 +881,42 @@ def has_model_market_active_params(
     return bool(row)
 
 
+def list_model_market_active_params(
+    db_path: str | Path, *, sport: str, season: str
+) -> list[dict[str, object]]:
+    """Return all active params rows for a sport/season."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        rows = conn.execute(
+            """
+            SELECT model, market, params_json, source_run_id, params_source, metric_optimized, best_score, updated_at
+            FROM model_market_active_params
+            WHERE sport = ? AND season = ?
+            ORDER BY model, market
+            """,
+            (sport, season),
+        ).fetchall()
+    results: list[dict[str, object]] = []
+    for row in rows:
+        params_json = row[2]
+        params = json.loads(params_json) if params_json is not None else None
+        if params is not None and not isinstance(params, dict):
+            raise ValueError("Stored market params must be a JSON object.")
+        results.append(
+            {
+                "model": row[0],
+                "market": row[1],
+                "params": params,
+                "source_run_id": row[3],
+                "params_source": row[4],
+                "metric_optimized": row[5],
+                "best_score": row[6],
+                "updated_at": row[7],
+            }
+        )
+    return results
+
+
 def has_model_market_tuning_runs(
     db_path: str | Path, *, sport: str, season: str
 ) -> bool:
@@ -825,6 +931,24 @@ def has_model_market_tuning_runs(
             LIMIT 1
             """,
             (sport, season),
+        ).fetchone()
+    return bool(row)
+
+
+def model_market_tuning_run_exists(
+    db_path: str | Path, *, sport: str, season: str, model: str, market: str
+) -> bool:
+    """Return True when at least one tuning run exists for the model+market."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM model_market_tuning_runs
+            WHERE sport = ? AND season = ? AND model = ? AND market = ?
+            LIMIT 1
+            """,
+            (sport, season, model, market),
         ).fetchone()
     return bool(row)
 
@@ -845,6 +969,74 @@ def legacy_tuned_params_exist(
             (sport, season),
         ).fetchone()
     return bool(row)
+
+
+def upsert_model_tuned_params(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+    metric: str,
+    run_id: str,
+    params: dict,
+    best_score: float | None,
+) -> None:
+    """Persist legacy tuned params table (backward compatibility)."""
+    if not isinstance(params, dict):
+        raise ValueError("Legacy tuned params must be a JSON object (dict).")
+    init_db(db_path)
+    params_json = json.dumps(params, sort_keys=True)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        conn.execute(
+            """
+            INSERT INTO model_tuned_params (
+                sport,
+                season,
+                model,
+                metric,
+                run_id,
+                params_json,
+                best_score,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(sport, season, model, metric) DO UPDATE SET
+                run_id = excluded.run_id,
+                params_json = excluded.params_json,
+                best_score = excluded.best_score,
+                updated_at = datetime('now')
+            """,
+            (sport, season, model, metric, run_id, params_json, best_score),
+        )
+        conn.commit()
+
+
+def load_model_tuned_params(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+    metric: str,
+) -> tuple[dict | None, float | None, str | None]:
+    """Load legacy tuned params row by metric."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT params_json, best_score, run_id
+            FROM model_tuned_params
+            WHERE sport = ? AND season = ? AND model = ? AND metric = ?
+            LIMIT 1
+            """,
+            (sport, season, model, metric),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None, None, None
+    params = json.loads(row[0])
+    if params is not None and not isinstance(params, dict):
+        raise ValueError("Stored legacy tuned params must be a JSON object.")
+    return params, row[1], row[2]
 
 
 def save_ensemble_market_tuning_run(
@@ -1018,13 +1210,13 @@ def load_best_model_market_tuning_params_by_optimized_metric(
 
 def load_model_market_tuning_run_by_run_id(
     db_path: str | Path, *, run_id: str
-) -> tuple[dict | None, str | None, str | None]:
-    """Load a model_market_tuning_runs entry by run_id. Returns (params_dict, run_id, metric_optimized) or (None, None, None)."""
+) -> tuple[dict | None, str | None, str | None, float | None]:
+    """Load a model_market_tuning_runs entry by run_id. Returns (params_dict, run_id, metric_optimized, best_score) or (None, None, None, None)."""
     init_db(db_path)
     with closing(sqlite3.connect(Path(db_path))) as conn:
         row = conn.execute(
             """
-            SELECT best_params_json, run_id, metric_optimized
+            SELECT best_params_json, run_id, metric_optimized, best_score
             FROM model_market_tuning_runs
             WHERE run_id = ?
             LIMIT 1
@@ -1032,11 +1224,46 @@ def load_model_market_tuning_run_by_run_id(
             (run_id,),
         ).fetchone()
     if row is None or row[0] is None:
-        return None, None, None
+        return None, None, None, None
     data = json.loads(row[0])
     if not isinstance(data, dict):
         raise ValueError("Stored model market tuned params must be a JSON object.")
-    return data, row[1], row[2]
+    return data, row[1], row[2], row[3]
+
+
+def load_best_model_market_tuning_run(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+    market: str,
+) -> dict[str, Any] | None:
+    """Return the best tuning run for the given model and market, if present."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT run_id, metric_optimized, best_params_json, best_score
+            FROM model_market_tuning_runs
+            WHERE sport = ? AND season = ? AND model = ? AND market = ?
+            AND best_score IS NOT NULL
+            ORDER BY best_score ASC
+            LIMIT 1
+            """,
+            (sport, season, model, market),
+        ).fetchone()
+    if row is None or row[2] is None:
+        return None
+    params = json.loads(row[2])
+    if params is not None and not isinstance(params, dict):
+        raise ValueError("Stored model market tuned params must be a JSON object.")
+    return {
+        "run_id": row[0],
+        "metric_optimized": row[1],
+        "params": params,
+        "best_score": row[3],
+    }
 
 
 def load_best_ensemble_market_tuning_weights_by_optimized_metric(

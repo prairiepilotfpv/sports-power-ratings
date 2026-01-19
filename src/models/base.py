@@ -23,6 +23,8 @@ class ModelMetadata:
     supports_win_prob: bool
     role: str | None = None
     ensemble_weight: float | None = None
+    supports_incremental_update: bool = False
+    supports_streaming_backtest: bool = False
 
     def identity_dict(self) -> dict[str, Any]:
         return {
@@ -120,12 +122,23 @@ class BaseModel(ABC):
     def params(self) -> Mapping[str, Any]:
         return self.metadata().params
 
+    @property
+    def supports_incremental_update(self) -> bool:
+        meta = self.metadata()
+        return bool(getattr(meta, "supports_incremental_update", False))
+
     @abstractmethod
     def fit(self, games_df: Any) -> None:
         raise NotImplementedError
 
     @abstractmethod
     def predict(self, upcoming_games_df: Any) -> list[GamePrediction]:
+        raise NotImplementedError
+
+    def predict_one(self, game_row: Mapping[str, Any]) -> GamePrediction:
+        raise NotImplementedError
+
+    def update_with_result(self, game_row: Mapping[str, Any]) -> None:
         raise NotImplementedError
 
     def save(self, path: str) -> None:

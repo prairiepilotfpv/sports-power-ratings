@@ -154,3 +154,66 @@ def test_evaluator_is_deterministic():
     first, _ = evaluate_market_rows(preds, markets)
     second, _ = evaluate_market_rows(preds, markets)
     assert_frame_equal(first.reset_index(drop=True), second.reset_index(drop=True))
+
+
+def test_actual_scores_do_not_invalidate_predictions():
+    row = {
+        "game_id": "g1",
+        "margin_sd": 12.0,
+        "total_sd": 15.0,
+        "pred_total": 212.0,
+        # Actual outcomes merged into the row should be ignored by validation.
+        "home_score": 215.0,
+        "away_score": 210.0,
+    }
+
+    ok, reasons = validate_prediction_row(row, config=NBA_VALIDATION_CONFIG, require_score_bounds=True)
+
+    assert ok is True
+    assert "total_inconsistent" not in reasons
+    assert "score_out_of_bounds" not in reasons
+    assert "missing_score" not in reasons
+
+
+def test_predicted_total_inconsistent_with_component_scores():
+    row = {
+        "margin_sd": 12.0,
+        "total_sd": 15.0,
+        "projected_home_score": 110.0,
+        "projected_away_score": 105.0,
+        "pred_total": 210.0,  # derived total is 215 -> exceeds tolerance
+    }
+
+    ok, reasons = validate_prediction_row(row, config=NBA_VALIDATION_CONFIG, require_score_bounds=True)
+
+    assert ok is False
+    assert "total_inconsistent" in reasons
+
+
+def test_predicted_total_consistent_with_component_scores():
+    row = {
+        "margin_sd": 12.0,
+        "total_sd": 15.0,
+        "projected_home_score": 110.0,
+        "projected_away_score": 105.0,
+        "pred_total": 215.0,
+    }
+
+    ok, reasons = validate_prediction_row(row, config=NBA_VALIDATION_CONFIG, require_score_bounds=True)
+
+    assert ok is True
+    assert "total_inconsistent" not in reasons
+
+
+def test_missing_total_sd_still_blocks_total_predictions():
+    row = {
+        "margin_sd": 12.0,
+        "projected_home_score": 110.0,
+        "projected_away_score": 105.0,
+        "pred_total": 215.0,
+    }
+
+    ok, reasons = validate_prediction_row(row, config=NBA_VALIDATION_CONFIG, require_score_bounds=True)
+
+    assert ok is False
+    assert "missing_total_sd" in reasons

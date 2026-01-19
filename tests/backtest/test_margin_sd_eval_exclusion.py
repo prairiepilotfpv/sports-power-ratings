@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from models.base import GamePrediction, ModelMetadata, BaseModel
-from backtest.runner import run_backtest
+from backtest.runner import run_backtest, ensure_eval_schema
 
 
 class DummyModel(BaseModel):
@@ -68,13 +68,47 @@ def test_backtest_excludes_nba_margin_sd():
 
     outputs = run_backtest(lambda: DummyModel(), games, sport="nba")
 
-    # Raw predictions should be present (we don't mutate predictions),
-    # but evaluation metrics should have excluded the single prediction
-    # because margin_sd == 1.0 (< 5). Thus overall 'games' should be 0.
+    # Raw predictions should be present; metrics should report zero scorable
+    # games because outcomes are missing (no crash, stable schema).
     assert not outputs.predictions.empty
-    if "games" in outputs.metrics_overall.columns:
-        assert int(outputs.metrics_overall.iloc[0]["games"]) == 0
-    else:
-        # When no evaluation rows remain after filtering, the metrics
-        # DataFrame may contain only the injected `model_id` column.
-        assert outputs.metrics_overall.shape[1] == 1
+    row = outputs.metrics_overall.iloc[0]
+    assert int(row.get("ml_games", 0)) == 0
+    assert int(row.get("margin_games", 0)) == 0
+    assert int(row.get("total_games", 0)) == 0
+    assert pd.isna(row.get("mae_margin"))
+    assert pd.isna(row.get("mae_total"))
+
+
+def test_ensure_eval_schema_produces_required_columns():
+    base = pd.DataFrame(
+        [
+            {
+                "date": pd.to_datetime("2025-01-01"),
+                "home_team": "H",
+                "away_team": "A",
+                # intentionally omit scores and predictions
+            }
+        ]
+    )
+
+    framed = ensure_eval_schema(base)
+
+    required = {
+        "home_score",
+        "away_score",
+        "actual_margin",
+        "actual_total",
+        "home_win",
+        "pred_margin",
+        "pred_total",
+        "p_home_win",
+        "margin_sd",
+        "total_sd",
+        "total_mean",
+        "margin_mean",
+    }
+
+    assert required.issubset(set(framed.columns))
+    # All derived columns should be NA when inputs are missing
+    for col in required:
+        assert framed[col].isna().all()
