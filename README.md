@@ -57,7 +57,7 @@ outputs/               Backtest and tuning artifacts
 
 ## Model overview
 
-Note: The Bradley–Terry implementation now exposes multiple prediction "heads" (win probability, margin mean/sd, total mean/sd). See [docs/bradley_terry_heads.md](docs/bradley_terry_heads.md) for the canonical field contract and recommended usage. Tests fixtures for Bradley–Terry were renamed to `tests/fixtures/bradley_terry/`.
+Note: The Bradleyâ€“Terry implementation now exposes multiple prediction "heads" (win probability, margin mean/sd, total mean/sd). See [docs/bradley_terry_heads.md](docs/bradley_terry_heads.md) for the canonical field contract and recommended usage. Tests fixtures for Bradleyâ€“Terry were renamed to `tests/fixtures/bradley_terry/`.
 
 ## Requirements
 
@@ -200,8 +200,8 @@ python -m src.cli.pipeline schedule --sport nhl --season 2025-26 --strict
 
 When everything is configured and active, `rank`/`schedule` logs should show one of the following per model+market:
 
-- `Using active market params ...` — explicit activation via `activate-tuning`.
-- `Auto-selected tuned params from best run (metric=...)` — no explicit activation but a tuned run was chosen.
+- `Using active market params ...` â€” explicit activation via `activate-tuning`.
+- `Auto-selected tuned params from best run (metric=...)` â€” no explicit activation but a tuned run was chosen.
 - It should NOT print `Missing active params ... using defaults` when a tuned run exists and is active/auto-selected.
 
 If you see `Missing active params ... using defaults` while tuned runs exist, run `tuning-status` to verify activation and use `activate-tuning` to promote the desired run. If there are no actives yet, bootstrap them:
@@ -210,6 +210,16 @@ If you see `Missing active params ... using defaults` while tuned runs exist, ru
 python -m src.cli.pipeline bootstrap-market-actives --sport nhl --season 2025-26 --model all
 ```
 
+## Workflows
+
+- Ingest: import Sports-Reference CSV/HTML to SQLite.
+- Rank: build power ratings and store calibration.
+- Schedule: export played + upcoming games with projections.
+- Matchup: predict a single matchup.
+- Report: rankings-only Excel workbook.
+- Backtest: evaluate models on historical games.
+- Tune: grid-search hyperparameters via backtests.
+- Daily checklist: step-by-step runbook for ingest → bets → reports in [docs/daily-workflow.md](docs/daily-workflow.md).
 
 ## Bet Tracking Suite
 
@@ -272,7 +282,7 @@ To generate a review workbook from committed market snapshots, run `python -m sr
 - `--model-params` accepts a JSON object string; `--model-params-file` points to a JSON file. Provide only one. When multiple models run, the file may contain per-model keys.
 - If multiple models are run at once, outputs are prefixed with their abbreviations (bt, elo, gssd, toor).
 
-### `import` — ingest into SQLite
+### `import` â€” ingest into SQLite
 
 ```bash
 python -m src.cli.pipeline import --sport nba --season 2025-26 --input data/raw/nba_schedule.html
@@ -282,7 +292,7 @@ python -m src.cli.pipeline import --sport nba --season 2025-26 --input data/raw/
 - Input resolution: if the provided path does not exist, the CLI also checks `data/raw/<value>`.
 - Output: `data/db/<sport>/<season>.db` unless `--db` overrides it.
 
-### `rank` — build power ratings and store calibration
+### `rank` â€” build power ratings and store calibration
 
 ```bash
 python -m src.cli.pipeline rank --sport nba --season 2025-26
@@ -293,7 +303,7 @@ python -m src.cli.pipeline rank --sport nba --season 2025-26 --model elo --outpu
 - Default output: `data/processed/<sport>/<season>/rankings.csv`. When multiple models run, each file is prefixed (e.g., `bt_rankings.csv`).
 - Stores calibration metrics (`home_advantage`, `win_prob_k`, `base_total`, residual spreads/totals) in the SQLite DB for downstream projections.
 
-### `schedule` — export played + upcoming games with projections
+### `schedule` â€” export played + upcoming games with projections
 
 ```bash
 # Excel workbook (default)
@@ -303,7 +313,7 @@ python -m src.cli.pipeline schedule --sport nba --season 2025-26
 python -m src.cli.pipeline schedule --sport nba --season 2025-26 --output data/processed/nba/2025-26/schedule_with_projections.csv
 ```
 
-- Default output: Excel workbook at `data/processed/<sport>/<season>/schedule_with_projections.xlsx` with one sheet per model plus a `dashboard` sheet for today’s games.
+- Default output: Excel workbook at `data/processed/<sport>/<season>/schedule_with_projections.xlsx` with one sheet per model plus a `dashboard` sheet for todayâ€™s games.
 - The schedule workbook also includes a `BETS` sheet for manual bet entry plus a hidden `META` sheet so you can log bets without OCR:
   - `import -> rank -> schedule -> fill BETS -> betting log-bets -> settle-bets`
   - Optional filters: `--as-of-date YYYY-MM-DD` and `--bets-model <model>` for multi-model runs.
@@ -311,7 +321,7 @@ python -m src.cli.pipeline schedule --sport nba --season 2025-26 --output data/p
 - `--upcoming-only` limits the export to games without scores.
 - Each row includes schedule fields (`date`, `home_team`, `away_team`, `neutral`, `overtime`, `game_id`), projections (ratings, spreads, totals, win probabilities), calibration info (home advantage, uncertainty), and results when scores exist.
 
-### `matchup` — predict one matchup
+### `matchup` â€” predict one matchup
 
 ```bash
 python -m src.cli.pipeline matchup --sport nba --season 2025-26 --matchup "Lakers vs Celtics"
@@ -321,7 +331,7 @@ python -m src.cli.pipeline matchup --sport nba --season 2025-26 --home Lakers --
 - Uses stored games/rankings to produce winner, spread, total, win probability, and uncertainty bands.
 - Requires the teams to exist in the ingested dataset (run `rank` after new imports before predicting).
 
-### `report` — rankings-only Excel workbook
+### `report` â€” rankings-only Excel workbook
 
 ```bash
 python -m src.cli.pipeline report --sport nba --season 2025-26 --models bradley-terry,elo
@@ -329,7 +339,7 @@ python -m src.cli.pipeline report --sport nba --season 2025-26 --models bradley-
 
 - Default output: `data/processed/<sport>/<season>/report.xlsx` (one sheet per model). Prefixed filenames when multiple models are written.
 
-### `market-ocr` — capture sportsbook boards
+### `market-ocr` â€” capture sportsbook boards
 
 ```bash
 python -m src.cli.pipeline market-ocr \
@@ -345,7 +355,7 @@ python -m src.cli.pipeline market-ocr \
 - When JSON output is omitted, rows are inserted into `market_snapshot_staging` with fuzzy team matching results (`match_status`, `match_confidence`).
 - Requires Tesseract to be installed; the OCR wrapper auto-detects common Windows install paths when it is not on `PATH`.
 
-### `bet-report` — aggregate logged bets
+### `bet-report` â€” aggregate logged bets
 
 ```bash
 python -m src.cli.pipeline bet-report \
@@ -361,7 +371,7 @@ python -m src.cli.pipeline bet-report \
 - `--start` / `--end` bounds the reporting window; omit both to auto-span every logged bet.
 - Reports pull from the same SQLite DB used for schedule + betting pipelines, so make sure your ingest/rank runs targeted the same `--sport/--season` first.
 
-### `backtest` — evaluate models on historical games
+### `backtest` â€” evaluate models on historical games
 
 Backtesting evaluates model predictions against actual outcomes across a historical period. The backtest runner fits the model on all games before each evaluation date, then generates predictions for that day's games. This produces accuracy metrics (log loss, Brier score, margin MAE) and calibration tables showing how well predicted win probabilities match actual outcomes.
 
@@ -402,7 +412,7 @@ Each backtest produces four CSV files plus an Excel workbook:
 
 4. **`calibration_<run_id>.csv`**: Win probability calibration by bucket
    - Groups predictions by deciles (0-10%, 10-20%, ..., 90-100%) and compares average predicted vs actual win rates.
-   - Columns: `bucket`, `count`, `avg_pred`, `avg_actual`. A well-calibrated model has `avg_pred ≈ avg_actual` in each bucket.
+   - Columns: `bucket`, `count`, `avg_pred`, `avg_actual`. A well-calibrated model has `avg_pred â‰ˆ avg_actual` in each bucket.
 
 **Examples:**
 
@@ -427,96 +437,6 @@ What it does:
 6) Backtest and tune models on historical CSVs.
   --rolling-days 30
 
-# Rolling window by games (last 100 games only)
-python -m src.cli.pipeline backtest \
-  --csv data/raw/nba_2024_25.csv \
-  --model toor \
-  --start 2024-11-01 \
-  --end 2024-12-01 \
-  --window rolling \
-  --rolling-games 100
-
-  --model-params '{"k_factor": 20, "home_advantage": 60}'
-  --csv nba_results.csv \
-## Installation
-
-1) Create a virtual environment
-  --start 2024-11-01 \
-  --end 2024-12-01 \
-  --sport nba \
-2) Activate it
-
-- Windows (PowerShell): `./.pyenv/Scripts/Activate.ps1`
-- macOS/Linux: `source .pyenv/bin/activate`
-python -m src.cli.pipeline backtest \
-  --csv nba_results.csv \
-  --model bradley-terry \
-3) Install runtime dependencies
-
-```bash
-pip install -r requirements.txt
-```
-  --end 2024-12-01 \
-  --output-dir outputs/custom_backtest_run
-```
-4) (Optional) Install test/tooling extras
-
-```bash
-pip install -r requirements-dev.txt
-```
-
-## Data Locations
-
-- Default DB: `data/db/<sport>/<season>.db`
-- Default processed outputs: `data/processed/<sport>/<season>/`
-- Raw inputs: any path you provide; bare filenames are resolved under `data/raw/`.
-- Input CSV/HTML should be straight from Sports-Reference; future games (no scores) are allowed.
-- Backtest CSVs must contain `date`, `home_team`, `away_team`, `home_score`, `away_score` (common aliases are auto-detected). Optional: `neutral`, `overtime`, `game_id`.
-- The evaluation window (`--start` / `--end`) must overlap the CSV data or no evaluations will run.
-## Quickstart
-
-All commands run via `python -m src.cli.pipeline <command> ...`.
-
-Example for NBA 2025-26 with a CSV at `data/raw/nba_2025_26.csv`:
-
-```bash
-# 1) Ingest into SQLite (creates data/db/nba/2025-26.db by default)
-python -m src.cli.pipeline import --sport nba --season 2025-26 --input data/raw/nba_2025_26.csv
-
-# 2) Build rankings (runs all available models when --model is omitted)
-python -m src.cli.pipeline rank --sport nba --season 2025-26
-
-# 3) Export schedule projections (Excel workbook + dashboard by default)
-python -m src.cli.pipeline schedule --sport nba --season 2025-26
-
-# 4) Predict a single matchup
-python -m src.cli.pipeline matchup --sport nba --season 2025-26 --matchup "Lakers vs Celtics"
-
-# 5) Generate a rankings-only Excel report
-python -m src.cli.pipeline report --sport nba --season 2025-26
-
-# 6) Backtest a model on historical games
-python -m src.cli.pipeline backtest --csv nba_results.csv --model bradley-terry --start 2024-11-01 --end 2024-12-01
-
-# 7) Tune model hyperparameters via repeated backtests
-python -m src.cli.pipeline tune --model elo --csv nba_results.csv --start 2024-11-01 --end 2024-12-01 --metric log_loss
-```
-**Notes:**
-## Workflows
-
-- Ingest: import Sports-Reference CSV/HTML to SQLite.
-- Rank: build power ratings and store calibration.
-- Schedule: export played + upcoming games with projections.
-- Matchup: predict a single matchup.
-- Report: rankings-only Excel workbook.
-- Backtest: evaluate models on historical games.
-- Tune: grid-search hyperparameters via backtests.
-- Daily checklist: step-by-step runbook for ingest → bets → reports in [docs/daily-workflow.md](docs/daily-workflow.md).
-```bash
-## CLI Reference
-
-See the complete command and option documentation in [docs/CLI.md](docs/CLI.md).
-```
 - Output directory defaults to `outputs/tuning/<sport>/<season>/<model>/<metric>/` (or `outputs/tuning/<model>/<metric>/` when sport/season are omitted). Artifacts per run: `tuning_results_<run_id>.csv`, `best_params_<run_id>.json`, and per-candidate backtest outputs.
 - `--model all` tunes all backtest models; `--metric all` tunes all metrics; use `--fail-fast` to stop on the first failure.
 - `--apply-best` reruns the best candidate and persists calibrated metrics when it beats the default-parameter baseline (disable the guard with `--allow-worse`). When tuning multiple metrics, `--apply-metric` chooses which metric becomes the active tuned parameters in the DB.

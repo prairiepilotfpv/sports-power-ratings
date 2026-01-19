@@ -96,10 +96,13 @@ def run_tuning_pipeline(
     model_cls = get_backtest_model(model_name)
     games_df = load_games_df_from_csv(csv_path, sport=sport, season=season)
     rows_count = _validate_tuning_games(games_df, start_date, end_date)
-    print(
-        "TUNING "
-        f"model={model_name} metric={metric} rows={rows_count} "
-        f"sport={sport} season={season}"
+    logger.info(
+        "TUNING model=%s metric=%s rows=%s sport=%s season=%s",
+        model_name,
+        metric,
+        rows_count,
+        sport,
+        season,
     )
 
     candidates, fixed_params = _resolve_tuning_candidates(
@@ -120,10 +123,13 @@ def run_tuning_pipeline(
     )
     base_dir.mkdir(parents=True, exist_ok=True)
     run_id = _build_run_id(start_date, end_date, window, rolling_days, rolling_games)
-    print(
-        "TUNING "
-        f"model={model_name} metric={metric} run_id={run_id} "
-        f"rows={rows_count} out={base_dir}"
+    logger.info(
+        "TUNING model=%s metric=%s run_id=%s rows=%s out=%s",
+        model_name,
+        metric,
+        run_id,
+        rows_count,
+        base_dir,
     )
 
     baseline_score = None
@@ -648,7 +654,6 @@ def _warn_dropped_candidate_params(
         f"{sorted_keys}"
     )
     logger.warning(message)
-    print("WARNING:", message)
 
 
 def _eval_candidate(index: int, params: dict[str, Any], context: dict[str, Any], games_df: pd.DataFrame) -> dict[str, Any]:
