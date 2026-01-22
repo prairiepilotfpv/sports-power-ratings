@@ -10,8 +10,11 @@ import pytest
 from data.repository import load_games, save_games
 from ingest.schema import GameResult
 from models.bradley_terry import BradleyTerry
+from pipelines.common import normalize_games
 from pipelines.metadata import prediction_hash
 from pipelines.projection_engines import get_projection_engine
+from forecasting import build_forecasts_df
+from forecasting.forecast_service import _build_forecasts_df_legacy
 from pipelines.schedule import (
     DASHBOARD_COLUMNS,
     MODEL_METADATA_DATA_START_ROW,
@@ -90,6 +93,60 @@ def test_build_schedule_with_projections(tmp_path: Path) -> None:
     assert upcoming["win_prob_source"] == "direct"
     assert upcoming["margin_dist_assumption"] == "none"
     assert pd.isna(upcoming["normal_p_home_win"])
+
+
+def test_forecast_service_matches_legacy_schedule(tmp_path: Path) -> None:
+    db_path = tmp_path / "games.db"
+    games = [
+        GameResult(
+            date=date(2024, 1, 1),
+            home_team="Team A",
+            away_team="Team B",
+            home_score=100,
+            away_score=90,
+            sport="nba",
+            season="2024-25",
+        ),
+        GameResult(
+            date=date(2024, 1, 5),
+            home_team="Team B",
+            away_team="Team C",
+            home_score=None,
+            away_score=None,
+            sport="nba",
+            season="2024-25",
+        ),
+    ]
+    save_games(db_path, games)
+
+    rows = load_games(db_path, sport="nba", season="2024-25")
+    games_df = normalize_games(rows)
+    legacy_df = _build_forecasts_df_legacy(
+        games_df,
+        db_path=db_path,
+        sport="nba",
+        season="2024-25",
+        model="bradley-terry",
+        upcoming_only=False,
+        model_params=None,
+        params_source="default",
+    )
+    forecast_df = build_forecasts_df(
+        db_path=db_path,
+        sport="nba",
+        season="2024-25",
+        model="bradley-terry",
+        games_df=games_df,
+        include_upcoming=True,
+        include_played=True,
+        params_source="default",
+    )
+    sort_cols = ["date", "game_id", "params_market", "status"]
+    pd.testing.assert_frame_equal(
+        forecast_df.sort_values(sort_cols).reset_index(drop=True),
+        legacy_df.sort_values(sort_cols).reset_index(drop=True),
+        check_dtype=False,
+    )
 
 
 def test_gssd_schedule_projected_scores_populated(tmp_path: Path) -> None:

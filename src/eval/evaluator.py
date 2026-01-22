@@ -11,7 +11,7 @@ import statistics
 import pandas as pd
 
 from eval.validation import ValidationConfig, get_validation_config, validate_prediction_row
-from pipelines.projections import _normal_cdf
+from pipelines.projections import cover_prob, over_prob
 from utils.normalization import normalize_evaluation_market_type
 from utils.odds import american_to_implied, expected_value
 
@@ -111,16 +111,35 @@ def _is_home_selection(selection: str | None, home_team: str | None, away_team: 
     return None
 
 
-def _cover_probability(line: float, margin_mean: float, margin_sd: float, is_home: bool) -> float:
-    threshold = -line if is_home else line
-    # P(home margin > -line) for home, P(home margin < line) for away
+def _cover_probability(
+    line: float | None, margin_mean: float | None, margin_sd: float | None, is_home: bool
+) -> float | None:
+    """Probability of covering the spread.
+
+    Delegates to projections.cover_prob (canonical implementation).
+    For is_home=True: P(margin > -line) where line is away_minus_home.
+    For is_home=False: P(margin < line) = 1 - P(margin > line).
+    Returns None when inputs are invalid (never raises).
+    """
     if is_home:
-        return 1.0 - _normal_cdf(threshold, mean=margin_mean, sd=margin_sd)
-    return _normal_cdf(threshold, mean=margin_mean, sd=margin_sd)
+        return cover_prob(line, margin_mean, margin_sd, sign_convention="away_minus_home")
+    # Away cover: need P(margin < line) = 1 - cover_prob(-line, ...)
+    # cover_prob(-line, ...) computes P(margin > -(-line)) = P(margin > line)
+    result = cover_prob(-line if line is not None else None, margin_mean, margin_sd, sign_convention="away_minus_home")
+    if result is None:
+        return None
+    return 1.0 - result
 
 
-def _over_probability(line: float, total_mean: float, total_sd: float) -> float:
-    return 1.0 - _normal_cdf(line, mean=total_mean, sd=total_sd)
+def _over_probability(
+    line: float | None, total_mean: float | None, total_sd: float | None
+) -> float | None:
+    """Probability of going over the total line.
+
+    Delegates to projections.over_prob (canonical implementation).
+    Returns None when inputs are invalid (never raises).
+    """
+    return over_prob(line, total_mean, total_sd)
 
 
 def _validation_frame(predictions: pd.DataFrame, config: ValidationConfig, *, require_score_bounds: bool = True) -> pd.DataFrame:

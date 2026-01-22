@@ -41,6 +41,7 @@ ProjectionEngine = Callable[[str, str, Any, ProjectionContext], ProjectionOutput
 
 _ENGINES: dict[str, ProjectionEngine] = {}
 _DEFAULT_ENGINE_KEY = "default"
+BT_NATIVE_PROJECTION_KEY = "_bt_native_projection"
 
 
 def register_projection_engine(model_id: str, engine: ProjectionEngine) -> None:
@@ -400,16 +401,24 @@ def _gssd_projection_engine(
     return projection
 
 
+def _bt_native_matchup(
+    model: Any, home_team: str, away_team: str, neutral: bool
+) -> dict[str, float] | None:
+    if not hasattr(model, "project_matchup"):
+        return None
+    return model.project_matchup(home_team, away_team, neutral=neutral)
+
+
 def _bt_projection_engine(
     home_team: str,
     away_team: str,
     model: Any,
     context: ProjectionContext,
 ) -> ProjectionOutput:
-    if not hasattr(model, "project_matchup"):
-        return _rating_projection_engine(home_team, away_team, model, context)
     neutral = bool(context.get("neutral", False))
-    projection = model.project_matchup(home_team, away_team, neutral=neutral)
+    projection = _bt_native_matchup(model, home_team, away_team, neutral)
+    if projection is None:
+        return _rating_projection_engine(home_team, away_team, model, context)
     # For pipeline projections (model-based scheduling, reporting), the
     # projection engine should expose the model's direct logistic win
     # probability as authoritative and suppress the margin-derived
@@ -433,6 +442,7 @@ def _bt_projection_engine(
         "total_mean": projection.get("total_mean"),
         "total_sd": projection.get("total_sd"),
         "margin_dist_assumption": projection.get("margin_dist_assumption", "none"),
+        BT_NATIVE_PROJECTION_KEY: projection,
         "logistic_home_win_prob": model_p,
     }
 
