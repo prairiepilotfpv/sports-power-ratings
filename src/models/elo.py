@@ -8,6 +8,7 @@ from math import isnan
 from typing import Any, DefaultDict, Iterable, Mapping
 
 import numpy as np
+import pandas as pd
 
 from config import DEFAULT_WIN_PROB_K, DEFAULT_TOTAL_SD_FALLBACK, DEFAULT_TOTAL_MEAN_FALLBACK
 from models.base import BaseModel, GamePrediction, ModelMetadata, require_columns
@@ -245,7 +246,7 @@ class EloModel(BaseModel):
             supports_streaming_backtest=True,
         )
 
-    def fit(self, games_df: Any) -> None:
+    def fit(self, games_df: Any, *, fit_end_date: pd.Timestamp | None = None) -> None:
         require_columns(
             games_df, ["home_team", "away_team", "home_score", "away_score"]
         )
@@ -264,7 +265,8 @@ class EloModel(BaseModel):
         team_total_weighted_sum: DefaultDict[str, float] = defaultdict(float)
         team_weight_sum: DefaultDict[str, float] = defaultdict(float)
 
-        fit_end_date = resolve_fit_end_date(games_df)
+        # Use explicit fit_end_date when provided; otherwise fall back to resolving from the DataFrame
+        fit_end_date = fit_end_date if fit_end_date is not None else resolve_fit_end_date(games_df)
         for game in games:
             home = str(game.get("home_team", "")).strip()
             away = str(game.get("away_team", "")).strip()

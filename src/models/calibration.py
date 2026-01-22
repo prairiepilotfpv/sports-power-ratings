@@ -85,7 +85,17 @@ def recency_weight(
     fit_end_date: pd.Timestamp | None,
     recency_lambda: float | None,
 ) -> float:
-    """Compute a recency weight from a game date."""
+    """Compute a recency weight from a game date.
+
+    Suite-wide semantics:
+    - Age unit: days (integer difference between fit_end_date and game_date)
+    - Curve: exponential decay (exp(-lambda * days))
+    - As-of date: fit_end_date must be resolved by the calling pipeline and
+      passed explicitly to model.fit; models must not redefine recency locally.
+
+    Note: When recency_lambda is None/<=0 or fit_end_date is None, returns 1.0
+    to preserve historical defaults.
+    """
     if recency_lambda is None or recency_lambda <= 0 or fit_end_date is None:
         return 1.0
     dt = pd.to_datetime(game_date, errors="coerce")

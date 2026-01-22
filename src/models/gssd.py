@@ -255,12 +255,13 @@ class GSSDModel(BaseModel):
             ensemble_weight=1.0,
         )
 
-    def fit(self, games_df: Any) -> None:
+    def fit(self, games_df: Any, *, fit_end_date: pd.Timestamp | None = None) -> None:
         require_columns(
             games_df, ["home_team", "away_team", "home_score", "away_score"]
         )
         games = games_df.to_dict(orient="records")
-        fit_end_date = resolve_fit_end_date(games_df)
+        # Use explicit fit_end_date when provided; otherwise fall back to resolving from the DataFrame
+        fit_end_date = fit_end_date if fit_end_date is not None else resolve_fit_end_date(games_df)
         self._gssd.fit(
             games,
             recency_lambda=self._recency_lambda,
@@ -269,7 +270,8 @@ class GSSDModel(BaseModel):
 
         design_matrix: list[list[float]] = []
         margins: list[float] = []
-        weights: list[float] = []
+        # Recency weighting is applied in the core power-rating fit (GSSDPowerRating.fit).
+        # Do not apply additional recency weighting in calibration to keep a single application.
         win_prob_samples: list[tuple[float, int]] = []
         win_prob_spreads: list[float] = []
         win_prob_outcomes: list[int] = []
@@ -306,26 +308,23 @@ class GSSDModel(BaseModel):
                 row.append(home_advantage_flag)
             design_matrix.append(row)
             margins.append(margin)
-            weight = recency_weight(
-                game.get("date"), fit_end_date, self._recency_lambda
-            )
-            weights.append(weight)
             try:
                 total_points = float(game.get("home_score")) + float(
                     game.get("away_score")
                 )
-                total_accumulator.add(total_points, weight)
+                # Unweighted totals accumulation; recency applied once in core fit.
+                total_accumulator.add(total_points, 1.0)
             except Exception:
                 pass
 
         if design_matrix:
             matrix = np.asarray(design_matrix, dtype=float)
             target = np.asarray(margins, dtype=float)
-            weight_arr = np.asarray(weights, dtype=float)
-            coeffs = weighted_least_squares(matrix, target, weights=weight_arr)
+            # Unweighted calibration to standardize single recency application.
+            coeffs = weighted_least_squares(matrix, target, weights=None)
             predictions = matrix @ coeffs
             residuals = predictions - target
-            error_term = weighted_rmse(residuals, weight_arr)
+            error_term = weighted_rmse(residuals, None)
             home_advantage_points = (
                 float(coeffs[5]) if self._learn_home_advantage else 0.0
             )
@@ -341,7 +340,7 @@ class GSSDModel(BaseModel):
 
             if self._conditional_sd:
                 self._conditional_sd_model = fit_conditional_sd(
-                    predictions, residuals, weights=weight_arr
+                    predictions, residuals, weights=None
                 )
             else:
                 self._conditional_sd_model = None

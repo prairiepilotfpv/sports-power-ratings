@@ -9,6 +9,7 @@ from math import log
 from typing import Any, Iterable, Mapping
 
 import numpy as np
+import pandas as pd
 
 from config import (
     DEFAULT_MARGIN_SD_FALLBACK,
@@ -94,12 +95,13 @@ class TOORPowerRating:
             ensemble_weight=1.0,
         )
 
-    def fit(self, games: Iterable[Mapping[str, Any]]) -> None:
+    def fit(self, games: Iterable[Mapping[str, Any]], *, fit_end_date: pd.Timestamp | None = None) -> None:
         teams: list[str] = []
         seen: set[str] = set()
         samples: list[tuple[str, str, float, float]] = []
         weights: list[float] = []
-        fit_end_date = resolve_fit_end_date_from_games(games)
+        # Use explicit fit_end_date when provided; otherwise fall back to resolving from the games iterable
+        fit_end_date = fit_end_date if fit_end_date is not None else resolve_fit_end_date_from_games(games)
 
         for game in games:
             home = str(game.get("home_team", "")).strip()
@@ -157,6 +159,7 @@ class TOORPowerRating:
 
         matrix = np.asarray(design_matrix, dtype=float)
         target = np.asarray(margins, dtype=float)
+        # Apply recency weighting once in the core OLS step
         weight_arr = np.asarray(design_weights, dtype=float) if design_weights else None
         coeffs = weighted_least_squares(matrix, target, weights=weight_arr)
         team_coeffs = coeffs[: len(teams)]
@@ -278,24 +281,26 @@ class TOORModel(BaseModel):
                 "residual_max": None,
             }
 
-    def fit(self, games_df: Any) -> None:
+    def fit(self, games_df: Any, *, fit_end_date: pd.Timestamp | None = None) -> None:
         require_columns(
             games_df, ["home_team", "away_team", "home_score", "away_score"]
         )
         games = games_df.to_dict(orient="records")
         # Fit internal OLS team strengths (signed, mean-centered)
-        self._rating_model.fit(games)
+        # Use explicit fit_end_date when provided; otherwise fall back within rating model
+        self._rating_model.fit(games, fit_end_date=fit_end_date)
 
         design_matrix: list[list[float]] = []
         margins: list[float] = []
         totals: list[float] = []
-        weights: list[float] = []
+        # Recency weighting is applied in TOORPowerRating.fit; do not apply again here.
         win_prob_samples: list[tuple[float, int]] = []
         win_prob_spreads: list[float] = []
         win_prob_outcomes: list[int] = []
         residuals_arr = np.array([], dtype=float)
 
-        fit_end_date = resolve_fit_end_date(games_df)
+        # Use explicit fit_end_date when provided; otherwise fall back to resolving from the DataFrame
+        fit_end_date = fit_end_date if fit_end_date is not None else resolve_fit_end_date(games_df)
         strengths = self._rating_model.signed_strengths()
 
         for game in games:
@@ -324,39 +329,27 @@ class TOORModel(BaseModel):
             design_matrix.append([home_advantage, home_strength, away_strength])
             margins.append(margin)
             totals.append(home_score + away_score)
-            weights.append(
-                recency_weight(game.get("date"), fit_end_date, self._recency_lambda)
-            )
+            # No additional recency weighting here.
 
-        # compute recency-weighted league total mean/sd for TOTAL head
+        # Compute unweighted league total mean/sd for TOTAL head
         if totals:
-            w = np.asarray(weights, dtype=float) if weights else None
             tot_arr = np.asarray(totals, dtype=float)
-            if w is None:
-                self._total_mean = float(np.mean(tot_arr))
-                self._total_sd = float(np.std(tot_arr, ddof=0))
-            else:
-                denom = float(np.sum(w)) if float(np.sum(w)) > 0 else None
-                if denom:
-                    self._total_mean = float(np.sum(w * tot_arr) / np.sum(w))
-                    residuals = tot_arr - self._total_mean
-                    self._total_sd = float(weighted_rmse(residuals, w))
-                else:
-                    self._total_mean = float(np.mean(tot_arr))
-                    self._total_sd = float(np.std(tot_arr, ddof=0))
+            self._total_mean = float(np.mean(tot_arr))
+            self._total_sd = float(np.std(tot_arr, ddof=0))
 
         if design_matrix:
             matrix = np.asarray(design_matrix, dtype=float)
             target = np.asarray(margins, dtype=float)
-            weight_arr = np.asarray(weights, dtype=float)
+            # Unweighted calibration: keep a single recency application (in TOORPowerRating.fit)
+            weight_arr = None
 
             if self._learn_home_advantage:
                 # fit HFA together with strength coefficients
-                coeffs = weighted_least_squares(matrix, target, weights=weight_arr)
+                coeffs = weighted_least_squares(matrix, target, weights=None)
                 predictions = matrix @ coeffs
                 residuals = predictions - target
                 residuals_arr = np.asarray(residuals, dtype=float)
-                error_term = weighted_rmse(residuals_arr, weight_arr)
+                error_term = weighted_rmse(residuals_arr, None)
 
                 self._coefficients = ToorCoefficients(
                     home_advantage=float(coeffs[0]),
@@ -384,13 +377,13 @@ class TOORModel(BaseModel):
                 y_adj = target - (fixed_hfa * hfa_col)
 
                 coeffs_strength = weighted_least_squares(
-                    strength_matrix, y_adj, weights=weight_arr
+                    strength_matrix, y_adj, weights=None
                 )
                 # reconstruct full predictions to compute residuals / error term
                 predictions_full = (strength_matrix @ coeffs_strength) + (fixed_hfa * hfa_col)
                 residuals = predictions_full - target
                 residuals_arr = np.asarray(residuals, dtype=float)
-                error_term = weighted_rmse(residuals_arr, weight_arr)
+                error_term = weighted_rmse(residuals_arr, None)
 
                 self._coefficients = ToorCoefficients(
                     home_advantage=float(fixed_hfa),
@@ -402,7 +395,7 @@ class TOORModel(BaseModel):
                 if self._conditional_sd:
                     # fit conditional sd on the reconstructed predictions
                     self._conditional_sd_model = fit_conditional_sd(
-                        predictions_full, residuals_arr, weights=weight_arr
+                        predictions_full, residuals_arr, weights=None
                     )
                 else:
                     self._conditional_sd_model = None

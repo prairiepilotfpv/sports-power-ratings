@@ -415,7 +415,13 @@ def run_backtest(
             model_identity = resolve_model_identity(model)
         # Time model.fit
         t0 = time.perf_counter()
-        model.fit(train_data)
+        # Centralize as-of date: pass explicit fit_end_date for recency semantics
+        fit_end_date = pd.to_datetime(train_data["date"], errors="coerce").dropna().max()
+        try:
+            model.fit(train_data, fit_end_date=fit_end_date)
+        except TypeError:
+            # Backward compatibility: some models may not accept fit_end_date
+            model.fit(train_data)
         t1 = time.perf_counter()
         fit_time_total += (t1 - t0)
 

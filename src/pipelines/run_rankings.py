@@ -15,7 +15,7 @@ from data.paths import processed_path_for
 from data.repository import load_games, save_model_metrics
 from markets.base import Market
 from models.registry import get_model, list_models, normalize_model_name
-from models.calibration import fit_conditional_sd
+from models.calibration import fit_conditional_sd, resolve_fit_end_date
 from pipelines.common import normalize_games, resolve_output_path
 from pipelines.model_params import resolve_model_market_params_with_metadata
 from config import (
@@ -97,7 +97,13 @@ def build_rankings(
 
     # Filter kwargs for the model's fit method (e.g., recency_lambda for GSSD).
     fit_kwargs = _filter_kwargs(model_params or {}, model_instance.fit)
-    model_instance.fit(played.to_dict(orient="records"), **fit_kwargs)
+    # Resolve a single as-of date for recency semantics and pass explicitly when supported.
+    fit_end_date = resolve_fit_end_date(played)
+    try:
+        model_instance.fit(played.to_dict(orient="records"), fit_end_date=fit_end_date, **fit_kwargs)
+    except TypeError:
+        # Backward compatibility: models that do not accept fit_end_date
+        model_instance.fit(played.to_dict(orient="records"), **fit_kwargs)
 
     if played.empty:
         empty = _empty_rankings()
