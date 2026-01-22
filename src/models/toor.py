@@ -430,11 +430,180 @@ class TOORModel(BaseModel):
                 win_prob_k=self._win_prob_k if self._win_prob_k > 0 else DEFAULT_WIN_PROB_K,
             )
 
+    def _canonical_matchup_prediction(
+        self,
+        home: str,
+        away: str,
+        *,
+        neutral: bool,
+        sport: str | None,
+        date: str | None,
+        game_id: str | None,
+    ) -> dict[str, Any]:
+        coefficients = self._coefficients
+        win_prob_k = self._win_prob_k if self._win_prob_k > 0 else DEFAULT_WIN_PROB_K
+        safe_game_id = (
+            str(game_id)
+            if game_id is not None
+            else f"{date}_{home}_{away}"
+            if date is not None
+            else f"{home}_{away}"
+        )
+        safe_date = str(date) if date is not None else ""
+        cfg = get_validation_config(sport)
+        strengths = self._rating_model.signed_strengths()
+        home_strength = float(strengths.get(home, 0.0))
+        away_strength = float(strengths.get(away, 0.0))
+        pred_margin = (
+            coefficients.home_advantage * (0.0 if neutral else 1.0)
+            + coefficients.home_coeff * home_strength
+            + coefficients.away_coeff * away_strength
+        )
+        pred_total = (
+            float(self._total_mean)
+            if self._total_mean is not None
+            else DEFAULT_TOTAL_MEAN_FALLBACK
+        )
+        total_sd = (
+            float(self._total_sd) if self._total_sd is not None else None
+        )
+        if total_sd is None or not (cfg.total_sd_min <= total_sd <= cfg.total_sd_max):
+            total_sd = (
+                float(DEFAULT_TOTAL_SD_FALLBACK)
+                if DEFAULT_TOTAL_SD_FALLBACK is not None
+                else float(20.0)
+            )
+        projected_home = 0.5 * (pred_total + pred_margin)
+        projected_away = 0.5 * (pred_total - pred_margin)
+        projected_spread = -pred_margin
+        adjusted_spread = align_spread_with_margin(
+            pred_margin, projected_spread - self._win_prob_bias
+        )
+        p_home_win = logistic_win_prob(adjusted_spread, win_prob_k)
+        guardrail_context = {
+            "model_id": self.model_id,
+            "game_id": safe_game_id,
+            "date": safe_date,
+            "home_team": home,
+            "away_team": away,
+        }
+        if self._conditional_sd_model is not None:
+            margin_sd = self._conditional_sd_model.predict(
+                pred_margin,
+                guardrail_min=cfg.margin_sd_min,
+                guardrail_max=cfg.margin_sd_max,
+                fallback_sd=LEAGUE_MARGIN_SD_DEFAULT,
+                logger_override=_LOG,
+                log_context=guardrail_context,
+                debug_assert=self._debug_assert,
+            )
+        else:
+            raw_sd = coefficients.error_term
+            margin_sd, reason = guardrail_margin_sd(
+                raw_sd,
+                fallback_sd=LEAGUE_MARGIN_SD_DEFAULT,
+                guardrail_min=cfg.margin_sd_min,
+                guardrail_max=cfg.margin_sd_max,
+            )
+            if reason and _LOG.isEnabledFor(logging.DEBUG):
+                stats = self._sd_fit_stats or {}
+                parts = [
+                    f"reason={reason}",
+                    f"raw_sd={raw_sd}",
+                    f"applied_sd={margin_sd}",
+                    f"date={guardrail_context.get('date')}",
+                    f"game_id={guardrail_context.get('game_id')}",
+                    f"home={home}",
+                    f"away={away}",
+                    f"n={stats.get('n')}",
+                    f"resid_min={stats.get('residual_min')}",
+                    f"resid_max={stats.get('residual_max')}",
+                ]
+                message = "margin_sd guardrail applied; " + ", ".join(
+                    str(part) for part in parts if part is not None
+                )
+                _LOG.debug(
+                    message,
+                    extra={
+                        **guardrail_context,
+                        "reason": reason,
+                        "raw_margin_sd": raw_sd,
+                        "applied_margin_sd": margin_sd,
+                        "sd_sample_size": stats.get("n"),
+                        "residual_min": stats.get("residual_min"),
+                        "residual_max": stats.get("residual_max"),
+                        "pred_margin": pred_margin,
+                    },
+                )
+            if self._debug_assert and margin_sd < cfg.margin_sd_min:
+                raise AssertionError(
+                    f"margin_sd guardrail violated: applied={margin_sd} raw={raw_sd}"
+                )
+        win_prob_dist = win_prob_distribution(
+            p_home_win,
+            win_prob_k=win_prob_k,
+            margin_std=margin_sd,
+        )
+        return {
+            "game_id": safe_game_id,
+            "date": safe_date,
+            "home_team": home,
+            "away_team": away,
+            "p_home_win": p_home_win,
+            "win_prob_dist": win_prob_dist,
+            "pred_margin": pred_margin,
+            "pred_total": pred_total,
+            "margin_mean": pred_margin,
+            "total_mean": pred_total,
+            "margin_sd": margin_sd,
+            "total_sd": total_sd,
+            "projected_home_score": projected_home,
+            "projected_away_score": projected_away,
+            "projected_total": pred_total,
+            "projected_win_prob": p_home_win,
+            "model_p_home_win": p_home_win,
+            "normal_p_home_win": None,
+            "win_prob_source": "logistic",
+            "margin_dist_assumption": "normal_approx",
+            "logistic_home_win_prob": p_home_win,
+            "win_prob_k": win_prob_k,
+            "winprob_bias": self._win_prob_bias,
+            "conditional_sd": self._conditional_sd,
+            "conditional_sd_intercept": (
+                self._conditional_sd_model.intercept
+                if self._conditional_sd_model is not None
+                else None
+            ),
+            "conditional_sd_slope": (
+                self._conditional_sd_model.slope
+                if self._conditional_sd_model is not None
+                else None
+            ),
+        }
+
+    def project_matchup(
+        self,
+        home_team: str,
+        away_team: str,
+        *,
+        neutral: bool = False,
+        sport: str | None = None,
+        date: str | None = None,
+        game_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._canonical_matchup_prediction(
+            home_team,
+            away_team,
+            neutral=neutral,
+            sport=sport,
+            date=date,
+            game_id=game_id,
+        )
+
     def predict(self, upcoming_games_df: Any) -> list[GamePrediction]:
         require_columns(upcoming_games_df, ["date", "home_team", "away_team"])
         predictions: list[GamePrediction] = []
         coefficients = self._coefficients
-        win_prob_k = self._win_prob_k if self._win_prob_k > 0 else DEFAULT_WIN_PROB_K
         model_identity = self.metadata().identity_dict()
 
         for row in upcoming_games_df.to_dict(orient="records"):
@@ -449,157 +618,49 @@ class TOORModel(BaseModel):
                 if isinstance(neutral_raw, float) and np.isnan(neutral_raw)
                 else bool(neutral_raw)
             )
-            home_advantage = 0.0 if neutral else 1.0
-
-            # Use signed/team-indicator strengths from the internal OLS fit
-            strengths = self._rating_model.signed_strengths()
-            home_strength = float(strengths.get(home, 0.0))
-            away_strength = float(strengths.get(away, 0.0))
-
-            pred_margin = (
-                coefficients.home_advantage * home_advantage
-                + coefficients.home_coeff * home_strength
-                + coefficients.away_coeff * away_strength
-            )
-
-            # TOTAL head: provide league total mean/sd (computed at fit)
-            pred_total = (
-                float(self._total_mean)
-                if self._total_mean is not None
-                else DEFAULT_TOTAL_MEAN_FALLBACK
-            )
-            total_sd = (
-                float(self._total_sd) if self._total_sd is not None else None
-            )
-
-            # Guardrail total_sd for small/unreliable samples to avoid validator failures
             sport = row.get("sport") if isinstance(row, dict) else None
-            cfg = get_validation_config(sport)
-            if total_sd is None or not (cfg.total_sd_min <= total_sd <= cfg.total_sd_max):
-                total_sd = float(DEFAULT_TOTAL_SD_FALLBACK) if DEFAULT_TOTAL_SD_FALLBACK is not None else float(20.0)
-
-            # pred_total is guaranteed numeric (league-level fallback); compute projected scores
-            projected_home = 0.5 * (pred_total + pred_margin)
-            projected_away = 0.5 * (pred_total - pred_margin)
-
-            projected_spread = -pred_margin
-            adjusted_spread = align_spread_with_margin(
-                pred_margin, projected_spread - self._win_prob_bias
+            canonical = self._canonical_matchup_prediction(
+                home,
+                away,
+                neutral=neutral,
+                sport=sport,
+                date=row.get("date"),
+                game_id=row.get("game_id"),
             )
-            p_home_win = logistic_win_prob(adjusted_spread, win_prob_k)
-            guardrail_context = {
-                "model_id": self.model_id,
-                "game_id": row.get("game_id") or f"{row['date']}_{home}_{away}",
-                "date": str(row.get("date")),
-                "home_team": home,
-                "away_team": away,
-            }
-
-            if self._conditional_sd_model is not None:
-                sport = row.get("sport") if isinstance(row, dict) else None
-                cfg = get_validation_config(sport)
-                margin_sd = self._conditional_sd_model.predict(
-                    pred_margin,
-                    guardrail_min=cfg.margin_sd_min,
-                    guardrail_max=cfg.margin_sd_max,
-                    fallback_sd=LEAGUE_MARGIN_SD_DEFAULT,
-                    logger_override=_LOG,
-                    log_context=guardrail_context,
-                    debug_assert=self._debug_assert,
-                )
-            else:
-                raw_sd = coefficients.error_term
-                sport = row.get("sport") if isinstance(row, dict) else None
-                cfg = get_validation_config(sport)
-                margin_sd, reason = guardrail_margin_sd(
-                    raw_sd,
-                    fallback_sd=LEAGUE_MARGIN_SD_DEFAULT,
-                    guardrail_min=cfg.margin_sd_min,
-                    guardrail_max=cfg.margin_sd_max,
-                )
-                if reason and _LOG.isEnabledFor(logging.DEBUG):
-                    stats = self._sd_fit_stats or {}
-                    parts = [
-                        f"reason={reason}",
-                        f"raw_sd={raw_sd}",
-                        f"applied_sd={margin_sd}",
-                        f"date={guardrail_context.get('date')}",
-                        f"game_id={guardrail_context.get('game_id')}",
-                        f"home={home}",
-                        f"away={away}",
-                        f"n={stats.get('n')}",
-                        f"resid_min={stats.get('residual_min')}",
-                        f"resid_max={stats.get('residual_max')}",
-                    ]
-                    message = "margin_sd guardrail applied; " + ", ".join(
-                        str(part) for part in parts if part is not None
-                    )
-                    _LOG.debug(
-                        message,
-                        extra={
-                            **guardrail_context,
-                            "reason": reason,
-                            "raw_margin_sd": raw_sd,
-                            "applied_margin_sd": margin_sd,
-                            "sd_sample_size": stats.get("n"),
-                            "residual_min": stats.get("residual_min"),
-                            "residual_max": stats.get("residual_max"),
-                            "pred_margin": pred_margin,
-                        },
-                    )
-                if self._debug_assert and margin_sd < cfg.margin_sd_min:
-                    raise AssertionError(
-                        f"margin_sd guardrail violated: applied={margin_sd} raw={raw_sd}"
-                    )
-            win_prob_dist = win_prob_distribution(
-                p_home_win,
-                win_prob_k=win_prob_k,
-                margin_std=margin_sd,
-            )
-
-            game_id = row.get("game_id") or f"{row['date']}_{home}_{away}"
             predictions.append(
                 GamePrediction(
-                    game_id=str(game_id),
-                    date=str(row["date"]),
+                    game_id=str(canonical["game_id"]),
+                    date=str(canonical["date"]),
                     home_team=home,
                     away_team=away,
-                    p_home_win=p_home_win,
-                    win_prob_dist=win_prob_dist,
-                    pred_margin=pred_margin,
-                    pred_total=pred_total,
-                    margin_sd=margin_sd,
-                    total_sd=total_sd,
-                    total_mean=pred_total,
-                    win_prob_source="logistic",
-                    margin_dist_assumption="normal_approx",
+                    p_home_win=canonical["p_home_win"],
+                    win_prob_dist=canonical["win_prob_dist"],
+                    pred_margin=canonical["pred_margin"],
+                    pred_total=canonical["pred_total"],
+                    margin_sd=canonical["margin_sd"],
+                    total_sd=canonical["total_sd"],
+                    total_mean=canonical["total_mean"],
+                    win_prob_source=canonical["win_prob_source"],
+                    margin_dist_assumption=canonical["margin_dist_assumption"],
                     metadata=dict(model_identity),
                     extra={
                         "home_advantage": coefficients.home_advantage,
                         "home_coeff": coefficients.home_coeff,
                         "away_coeff": coefficients.away_coeff,
                         "error_term": coefficients.error_term,
-                        "win_prob_k": win_prob_k,
-                        "winprob_bias": self._win_prob_bias,
-                        "conditional_sd": self._conditional_sd,
-                        "conditional_sd_intercept": (
-                            self._conditional_sd_model.intercept
-                            if self._conditional_sd_model is not None
-                            else None
-                        ),
-                        "conditional_sd_slope": (
-                            self._conditional_sd_model.slope
-                            if self._conditional_sd_model is not None
-                            else None
-                        ),
-                        "projected_home_score": projected_home,
-                        "projected_away_score": projected_away,
-                        "projected_total": pred_total,
-                        "total_mean": pred_total,
-                        "total_sd": total_sd,
-                        "model_p_home_win": p_home_win,
-                        "normal_p_home_win": None,
-                        "win_prob_source": "logistic",
+                        "win_prob_k": canonical["win_prob_k"],
+                        "winprob_bias": canonical["winprob_bias"],
+                        "conditional_sd": canonical["conditional_sd"],
+                        "conditional_sd_intercept": canonical["conditional_sd_intercept"],
+                        "conditional_sd_slope": canonical["conditional_sd_slope"],
+                        "projected_home_score": canonical["projected_home_score"],
+                        "projected_away_score": canonical["projected_away_score"],
+                        "projected_total": canonical["projected_total"],
+                        "total_mean": canonical["total_mean"],
+                        "total_sd": canonical["total_sd"],
+                        "model_p_home_win": canonical["model_p_home_win"],
+                        "normal_p_home_win": canonical["normal_p_home_win"],
+                        "win_prob_source": canonical["win_prob_source"],
                     },
                 )
             )

@@ -223,7 +223,7 @@ def run_model_market_tuning(
         notes=notes,
     )
     activated = False
-    if best_params and is_best_score_finite:
+    if best_params and is_best_score_finite and activate_best:
         activate_best_params(
             db_path=db_path,
             sport=sport,

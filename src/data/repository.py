@@ -953,6 +953,27 @@ def model_market_tuning_run_exists(
     return bool(row)
 
 
+def has_nonempty_model_market_tuning_params(
+    db_path: str | Path, *, sport: str, season: str, model: str, market: str
+) -> bool:
+    """Return True when at least one tuning run with non-empty params exists."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM model_market_tuning_runs
+            WHERE sport = ? AND season = ? AND model = ? AND market = ?
+              AND best_params_json IS NOT NULL
+              AND best_params_json != ''
+              AND best_params_json != '{}'
+            LIMIT 1
+            """,
+            (sport, season, model, market),
+        ).fetchone()
+    return bool(row)
+
+
 def legacy_tuned_params_exist(
     db_path: str | Path, *, sport: str, season: str
 ) -> bool:

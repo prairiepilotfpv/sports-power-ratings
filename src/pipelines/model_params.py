@@ -17,6 +17,7 @@ from data.repository import (
     load_model_market_active_params,
     has_model_market_active_params,
     has_model_market_tuning_runs,
+    has_nonempty_model_market_tuning_params,
     legacy_tuned_params_exist,
     load_best_ensemble_market_tuning_weights_by_optimized_metric,
     load_best_model_market_tuning_params_by_optimized_metric,
@@ -494,10 +495,24 @@ def resolve_effective_params(
             model=model_name,
             market=market_name,
         )
+        has_nonempty_runs = has_nonempty_model_market_tuning_params(
+            db_path,
+            sport=sport,
+            season=season,
+            model=model_name,
+            market=market_name,
+        )
         warning_key = (sport, season, model_name, market_name)
-        if has_runs and warning_key not in MISSING_ACTIVE_WARNING_EMITTED:
+        if has_nonempty_runs and warning_key not in MISSING_ACTIVE_WARNING_EMITTED:
             logger.warning(
                 "Tuned params exist but are not active — run activation or check DB (model=%s market=%s)",
+                model_name,
+                market_name,
+            )
+            MISSING_ACTIVE_WARNING_EMITTED.add(warning_key)
+        elif has_runs and not has_nonempty_runs and warning_key not in MISSING_ACTIVE_WARNING_EMITTED:
+            logger.info(
+                "Tuning ran but produced no improved params; defaults remain active (model=%s market=%s)",
                 model_name,
                 market_name,
             )

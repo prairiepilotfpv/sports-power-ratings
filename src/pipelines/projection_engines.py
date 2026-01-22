@@ -292,67 +292,66 @@ def _toor_projection_engine(
     context: ProjectionContext,
 ) -> ProjectionOutput:
 
-    projection = _rating_projection_engine(home_team, away_team, model, context)
-    logistic_prob = None
     neutral = bool(context.get("neutral", False))
-
-    if hasattr(model, "predict_probability"):
-        venue = "neutral" if neutral else "home"
+    canonical: dict[str, Any] | None = None
+    if hasattr(model, "project_matchup"):
         try:
-            logistic_prob = float(
-                model.predict_probability(
-                    home_team,
-                    away_team,
-                    venue=venue,
-                )
+            canonical = model.project_matchup(
+                home_team,
+                away_team,
+                neutral=neutral,
+                sport=context.get("sport"),
+                date=context.get("game_date"),
+                game_id=context.get("game_id"),
             )
         except Exception:
-            logistic_prob = None
+            canonical = None
 
-    if logistic_prob is None and hasattr(model, "project_matchup"):
-        direct = None
-        try:
-            direct = model.project_matchup(home_team, away_team, neutral=neutral)
-        except Exception:
-            direct = None
-        if isinstance(direct, dict):
-            direct_p = direct.get("model_p_home_win") or direct.get("p_home_win")
-            if direct_p is not None:
-                try:
-                    logistic_prob = float(direct_p)
-                except Exception:
-                    logistic_prob = None
+    if canonical is not None:
+        return {
+            "projected_home_score": canonical["projected_home_score"],
+            "projected_away_score": canonical["projected_away_score"],
+            "projected_total": canonical["projected_total"],
+            "projected_win_prob": canonical["projected_win_prob"],
+            "model_p_home_win": canonical["model_p_home_win"],
+            "normal_p_home_win": canonical["normal_p_home_win"],
+            "win_prob_source": canonical["win_prob_source"],
+            "margin_dist_assumption": canonical["margin_dist_assumption"],
+            "margin_mean": canonical["margin_mean"],
+            "margin_sd": canonical["margin_sd"],
+            "total_mean": canonical["total_mean"],
+            "total_sd": canonical["total_sd"],
+            "logistic_home_win_prob": canonical["logistic_home_win_prob"],
+        }
 
-    if logistic_prob is None:
-        margin_mean = projection.get("margin_mean")
-        if margin_mean is not None:
-            win_prob_k = float(context.get("win_prob_k", DEFAULT_WIN_PROB_K))
-            if win_prob_k <= 0:
-                win_prob_k = DEFAULT_WIN_PROB_K
-
-            winprob_bias = 0.0
-            params: dict[str, Any] = {}
-            if hasattr(model, "metadata") and callable(getattr(model, "metadata")):
-                meta = model.metadata()
-                params = getattr(meta, "params", {}) or {}
-            else:
-                raw_params = getattr(model, "params", {})
-                if callable(raw_params):
-                    raw_params = raw_params()
-                params = raw_params or {}
-
-            try:
-                winprob_bias = float(params.get("winprob_bias", 0.0))
-            except Exception:
-                winprob_bias = 0.0
-
-            projected_spread = -float(margin_mean)
-            adjusted_spread = projected_spread - winprob_bias
-            logistic_prob = logistic_win_prob(adjusted_spread, win_prob_k)
-
-    if logistic_prob is None:
+    projection = _rating_projection_engine(home_team, away_team, model, context)
+    margin_mean = projection.get("margin_mean")
+    if margin_mean is None:
         return projection
 
+    win_prob_k = float(context.get("win_prob_k", DEFAULT_WIN_PROB_K))
+    if win_prob_k <= 0:
+        win_prob_k = DEFAULT_WIN_PROB_K
+
+    winprob_bias = 0.0
+    params: dict[str, Any] = {}
+    if hasattr(model, "metadata") and callable(getattr(model, "metadata")):
+        meta = model.metadata()
+        params = getattr(meta, "params", {}) or {}
+    else:
+        raw_params = getattr(model, "params", {})
+        if callable(raw_params):
+            raw_params = raw_params()
+        params = raw_params or {}
+
+    try:
+        winprob_bias = float(params.get("winprob_bias", 0.0))
+    except Exception:
+        winprob_bias = 0.0
+
+    projected_spread = -float(margin_mean)
+    adjusted_spread = projected_spread - winprob_bias
+    logistic_prob = logistic_win_prob(adjusted_spread, win_prob_k)
     projection.update(
         {
             "projected_win_prob": logistic_prob,
@@ -370,6 +369,38 @@ def _gssd_projection_engine(
     model: Any,
     context: ProjectionContext,
 ) -> ProjectionOutput:
+    neutral = bool(context.get("neutral", False))
+    canonical: dict[str, Any] | None = None
+    if hasattr(model, "project_matchup"):
+        try:
+            canonical = model.project_matchup(
+                home_team,
+                away_team,
+                neutral=neutral,
+                sport=context.get("sport"),
+                date=context.get("game_date"),
+                game_id=context.get("game_id"),
+            )
+        except Exception:
+            canonical = None
+
+    if canonical is not None:
+        return {
+            "projected_home_score": canonical["projected_home_score"],
+            "projected_away_score": canonical["projected_away_score"],
+            "projected_total": canonical["projected_total"],
+            "projected_win_prob": canonical["projected_win_prob"],
+            "model_p_home_win": canonical["model_p_home_win"],
+            "normal_p_home_win": canonical["normal_p_home_win"],
+            "win_prob_source": canonical["win_prob_source"],
+            "margin_dist_assumption": canonical["margin_dist_assumption"],
+            "margin_mean": canonical["margin_mean"],
+            "margin_sd": canonical["margin_sd"],
+            "total_mean": canonical["total_mean"],
+            "total_sd": canonical["total_sd"],
+            "logistic_home_win_prob": canonical["logistic_home_win_prob"],
+        }
+
     projection = _rating_projection_engine(home_team, away_team, model, context)
     margin_mean = projection.get("margin_mean")
     if margin_mean is None:
@@ -386,16 +417,12 @@ def _gssd_projection_engine(
     projected_spread = -float(margin_mean)
     adjusted_spread = projected_spread - winprob_bias
     logistic_prob = logistic_win_prob(adjusted_spread, win_prob_k)
-
     projection.update(
         {
             "projected_win_prob": logistic_prob,
             "model_p_home_win": logistic_prob,
             "logistic_home_win_prob": logistic_prob,
             "win_prob_source": "logistic",
-            "margin_dist_assumption": projection.get(
-                "margin_dist_assumption", "normal_approx"
-            ),
         }
     )
     return projection

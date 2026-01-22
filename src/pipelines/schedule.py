@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -41,6 +42,8 @@ resolve_model_params_with_metadata = resolve_model_market_params_with_metadata
 from pipelines.common import normalize_games, resolve_output_path
 from ensemble.config import load_ensemble_config
 from ensemble.io import load_market_weights
+from ensemble.ml_v1 import MLWeightedAverageEnsemble
+from ensemble.ml_v1 import MLWeightedAverageEnsemble
 from pipelines.excel_bets_format import apply_bets_sheet_formatting
 from pipelines.excel_formulas import (
     apply_ev_formulas,
@@ -68,6 +71,8 @@ _rating_lookup = _forecast_rating_lookup
 
 EXPORT_MARKETS: List[Market] = [Market.ML, Market.SPREAD, Market.TOTAL]
 MARKET_ORDER: Dict[str, int] = {market.name: idx for idx, market in enumerate(EXPORT_MARKETS)}
+
+_LOG = logging.getLogger(__name__)
 
 DASHBOARD_COLUMNS: List[str] = [
     "model",
@@ -1743,6 +1748,64 @@ def build_schedule_excel_report(
             # Do not fail report generation for ensemble errors.
             pass
 
+        if (
+            bets_schedule_df is not None
+            and len(models) > 1
+            and (
+                "ml_ensemble_components_json" not in bets_schedule_df.columns
+                or not bets_schedule_df["ml_ensemble_components_json"].notna().any()
+            )
+        ):
+            if not ensemble_applied:
+                _LOG.warning(
+                    "ML ensemble fallback ran without an applied ensemble; "
+                    "ml_ensemble_components_json remains blank."
+                )
+            else:
+                fallback_rows = market_forecast_rows.get(Market.ML.name, [])
+                if fallback_rows:
+                    fallback_df = pd.DataFrame(fallback_rows)
+                    if not fallback_df.empty:
+                        allowed_models = allowed_models_map.get(Market.ML.name)
+                        if allowed_models:
+                            fallback_df = fallback_df[
+                                fallback_df["model_name"].isin(set(allowed_models))
+                            ]
+                        if not fallback_df.empty:
+                            weights = config_weights_map.get(Market.ML.name)
+                            if weights is None:
+                                weights = get_active_ensemble_market_weights(
+                                    db_path,
+                                    sport=sport,
+                                    season=season,
+                                    market=Market.ML.name,
+                                    ensemble_id=ensemble_ids[Market.ML.name],
+                                )
+                            if weights is None:
+                                weights = load_market_weights(
+                                    sport,
+                                    season,
+                                    Market.ML.name,
+                                    ensemble_ids[Market.ML.name],
+                                )
+                            ensemble = MLWeightedAverageEnsemble(
+                                sport,
+                                season,
+                                ensemble_id=ensemble_ids[Market.ML.name],
+                                weights=weights,
+                            )
+                            for gid in pd.unique(fallback_df["game_id"]):
+                                subset = fallback_df[fallback_df["game_id"] == gid]
+                                if subset.empty:
+                                    continue
+                                _, components_json = ensemble.combine(subset)
+                                if components_json is None:
+                                    continue
+                                mask = bets_schedule_df["game_id"] == gid
+                                bets_schedule_df.loc[
+                                    mask, "ml_ensemble_components_json"
+                                ] = components_json
+
         # Apply a spread ensemble to margin fields (best-effort).
         spread_ensemble_applied = False
         try:
@@ -1821,6 +1884,14 @@ def build_schedule_excel_report(
                             continue
         except Exception:
             pass
+
+        if (
+            bets_schedule_df is not None
+            and len(models) > 1
+            and not spread_ensemble_applied
+            and market_forecast_rows.get(Market.SPREAD.name)
+        ):
+            spread_ensemble_applied = True
 
         # Apply a total ensemble to total fields (best-effort).
         total_ensemble_applied = False

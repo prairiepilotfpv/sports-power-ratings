@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date
 from pathlib import Path
 import sqlite3
+from typing import Any
 
 import openpyxl
 import pandas as pd
@@ -193,3 +195,79 @@ def test_schedule_ensemble_uses_tuned_weights(tmp_path: Path, monkeypatch) -> No
     meta = dict(zip(meta_df["key"], meta_df["value"]))
     assert "ml_ensemble_ml_v1" in meta["review_run_id"]
     assert "spread_ensemble_spread_v1" in meta["review_run_id"]
+
+
+def test_ml_components_json_not_written_when_ensemble_skipped(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    caplog.set_level(logging.WARNING)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        schedule_pipeline,
+        "list_models",
+        lambda: ["bradley-terry", "elo"],
+    )
+
+    db_path = tmp_path / "games.db"
+    repo.init_db(db_path)
+    br.init_db(db_path)
+    scheduled_date = date(2024, 1, 5)
+    _seed_schedule_db(db_path, scheduled_date)
+
+    weights_payload = {
+        "ensemble_id": "ensemble_ml_v1",
+        "market": "ML",
+        "objective": "log_loss",
+        "train_window": {"start": "2024-01-01", "end": "2024-01-04"},
+        "models": ["bradley-terry", "elo"],
+        "weights": {"bradley-terry": 0.9, "elo": 0.1},
+        "created_at": "2024-01-05T00:00:00Z",
+    }
+    weights_path = (
+        Path("outputs")
+        / "ensembles"
+        / "nba"
+        / "2024-25"
+        / "ML"
+        / "ensemble_ml_v1.json"
+    )
+    weights_path.parent.mkdir(parents=True, exist_ok=True)
+    weights_path.write_text(json.dumps(weights_payload), encoding="utf-8")
+
+    from ensemble.ml_v1 import MLWeightedAverageEnsemble
+
+    monkeypatch.setattr(
+        MLWeightedAverageEnsemble,
+        "combine",
+        lambda self, forecast_df: (_raise_runtime_error()),
+    )
+    original_build_bets = schedule_pipeline._build_bets_dataframe
+
+    def _blank_components(*args: Any, **kwargs: Any) -> pd.DataFrame:
+        df = original_build_bets(*args, **kwargs)
+        df["ml_ensemble_components_json"] = pd.NA
+        return df
+
+    monkeypatch.setattr(
+        schedule_pipeline,
+        "_build_bets_dataframe",
+        _blank_components,
+    )
+
+    workbook_path = schedule_pipeline.build_schedule_excel_report(
+        db_path,
+        sport="nba",
+        season="2024-25",
+        model=None,
+        output_path=tmp_path / "schedule.xlsx",
+        as_of_date=scheduled_date,
+    )
+
+    bets_df = pd.read_excel(workbook_path, sheet_name="BETS")
+    ml_rows = bets_df[bets_df["market_type"] == "ML"]
+    assert ml_rows["ml_ensemble_components_json"].isna().all()
+    assert "ml_ensemble_components_json remains blank" in caplog.text
+
+
+def _raise_runtime_error() -> None:
+    raise RuntimeError("simulated ensemble failure")
