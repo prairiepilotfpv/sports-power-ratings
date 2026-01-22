@@ -354,16 +354,24 @@ def load_sr_csv_lenient(text: str) -> pd.DataFrame:
     Read Sports-Reference CSV exports that may include an unlabeled start-time column.
     If a row has one more column than the header and the second field looks like a tip time (e.g., '7:00p'),
     drop that field so Visitor/Home/PTS stay aligned. Rows with missing columns are padded.
+    
+    Also handles rows where the Time column is missing entirely (one fewer column than header).
+    In that case, if the second field looks like a team name (not a time), insert an empty Time value.
     """
     reader = csv.reader(StringIO(text))
     header: List[str] = []
     rows: List[List[str]] = []
-    time_re = re.compile(r"\d{1,2}:\d{2}[ap]", re.IGNORECASE)
+    time_re = re.compile(r"^\s*\d{1,2}:\d{2}\s*[ap]m?\s*$", re.IGNORECASE)
+    # Pattern to detect if a value looks like a team name (letters but not a time pattern)
+    team_like_re = re.compile(r"^[A-Za-z].*[A-Za-z]$")
 
     try:
         header = next(reader)
     except StopIteration:
         return pd.DataFrame()
+
+    # Check if header has a Time column in position 1
+    has_time_col = len(header) >= 2 and header[1].strip().lower() in ("time", "start", "start (et)", "start time", "tip")
 
     for row in reader:
         # Skip empty rows
@@ -381,7 +389,8 @@ def load_sr_csv_lenient(text: str) -> pd.DataFrame:
             else:
                 row = row[: len(header)]
         elif (
-            len(row) == len(header)
+            not has_time_col  # Only strip time if there's no Time header
+            and len(row) == len(header)
             and len(row) >= 3
             and time_re.fullmatch((row[1] or "").strip())
             # Ensure we are not stripping a real team name; the trailing cell should be a team.
@@ -393,6 +402,16 @@ def load_sr_csv_lenient(text: str) -> pd.DataFrame:
             row = row[:1] + row[2:]
             if len(row) < len(header):
                 row = row + [""] * (len(header) - len(row))
+        elif (
+            has_time_col
+            and len(row) == len(header) - 1
+            and len(row) >= 2
+            and team_like_re.search(row[1] or "")
+            and not time_re.match(row[1] or "")
+        ):
+            # Row is missing Time column - second field looks like a team name, not a time.
+            # Insert empty Time value to realign: [Date, Visitor, ...] -> [Date, "", Visitor, ...]
+            row = row[:1] + [""] + row[1:]
         if len(row) < len(header):
             row = row + [""] * (len(header) - len(row))
 

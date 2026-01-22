@@ -39,6 +39,12 @@ def _guard_sd(value: float, fallback: float) -> float:
 def poisson_canonical_from_samples(
     home_samples: np.ndarray, away_samples: np.ndarray
 ) -> dict[str, float | str]:
+    """Convert simulation samples to canonical prediction format.
+    
+    Note: This function emits margin_sd and total_sd as required by the model
+    contract, using fallback values when the computed standard deviations are
+    invalid (NaN, inf, or <= 0).
+    """
     total_samples = home_samples + away_samples
     margin_samples = home_samples - away_samples
 

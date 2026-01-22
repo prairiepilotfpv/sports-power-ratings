@@ -92,6 +92,9 @@
     ],
     "Charlotte Hornets": [
       "Hornets"
+    ],
+    "Minnesota Timberwolves": [
+      "Timberwolves"
     ]
   },
   "nhl": {
@@ -269,6 +272,183 @@
       "WPG",
       "Jets",
       "Winnipeg"
+    ],
+    "BUF": [
+      "Sabres",
+      "Buffalo Sabres",
+      "Buffalo"
+    ],
+    "MTL": [
+      "Canadiens",
+      "Montreal Canadiens",
+      "Montreal",
+      "Habs"
+    ],
+    "BOS": [
+      "Bruins",
+      "Boston Bruins",
+      "Boston"
+    ],
+    "VGK": [
+      "Golden Knights",
+      "Vegas Golden Knights",
+      "Vegas",
+      "Knights"
+    ],
+    "CAR": [
+      "Hurricanes",
+      "Carolina Hurricanes",
+      "Carolina",
+      "Canes"
+    ],
+    "CHI": [
+      "Blackhawks",
+      "Chicago Blackhawks",
+      "Chicago",
+      "Hawks"
+    ],
+    "CBJ": [
+      "Blue Jackets",
+      "Columbus Blue Jackets",
+      "Columbus",
+      "Jackets"
+    ],
+    "DAL": [
+      "Stars",
+      "Dallas Stars",
+      "Dallas"
+    ],
+    "WPG": [
+      "Jets",
+      "Winnipeg Jets",
+      "Winnipeg"
+    ],
+    "FLA": [
+      "Panthers",
+      "Florida Panthers",
+      "Florida",
+      "Cats"
+    ],
+    "NSH": [
+      "Predators",
+      "Nashville Predators",
+      "Nashville",
+      "Preds"
+    ],
+    "OTT": [
+      "Senators",
+      "Ottawa Senators",
+      "Ottawa",
+      "Sens"
+    ],
+    "EDM": [
+      "Oilers",
+      "Edmonton Oilers",
+      "Edmonton"
+    ],
+    "PIT": [
+      "Penguins",
+      "Pittsburgh Penguins",
+      "Pittsburgh",
+      "Pens"
+    ],
+    "MIN": [
+      "Wild",
+      "Minnesota Wild",
+      "Minnesota"
+    ],
+    "DET": [
+      "Red Wings",
+      "Detroit Red Wings",
+      "Detroit",
+      "Wings"
+    ],
+    "TOR": [
+      "Maple Leafs",
+      "Toronto Maple Leafs",
+      "Toronto",
+      "Leafs"
+    ],
+    "NYR": [
+      "Rangers",
+      "New York Rangers",
+      "NY Rangers"
+    ],
+    "NYI": [
+      "Islanders",
+      "New York Islanders",
+      "NY Islanders"
+    ],
+    "NJD": [
+      "Devils",
+      "New Jersey Devils",
+      "New Jersey"
+    ],
+    "PHI": [
+      "Flyers",
+      "Philadelphia Flyers",
+      "Philadelphia"
+    ],
+    "WSH": [
+      "Capitals",
+      "Washington Capitals",
+      "Washington",
+      "Caps"
+    ],
+    "TBL": [
+      "Lightning",
+      "Tampa Bay Lightning",
+      "Tampa Bay",
+      "Tampa",
+      "Bolts"
+    ],
+    "COL": [
+      "Avalanche",
+      "Colorado Avalanche",
+      "Colorado",
+      "Avs"
+    ],
+    "ANA": [
+      "Ducks",
+      "Anaheim Ducks",
+      "Anaheim"
+    ],
+    "LAK": [
+      "Kings",
+      "Los Angeles Kings",
+      "LA Kings",
+      "Los Angeles"
+    ],
+    "SJS": [
+      "Sharks",
+      "San Jose Sharks",
+      "San Jose"
+    ],
+    "VAN": [
+      "Canucks",
+      "Vancouver Canucks",
+      "Vancouver"
+    ],
+    "CGY": [
+      "Flames",
+      "Calgary Flames",
+      "Calgary"
+    ],
+    "SEA": [
+      "Kraken",
+      "Seattle Kraken",
+      "Seattle"
+    ],
+    "STL": [
+      "Blues",
+      "St. Louis Blues",
+      "St Louis Blues",
+      "St. Louis"
+    ],
+    "UTA": [
+      "Utah Hockey Club",
+      "Utah HC",
+      "Utah"
     ]
   }
 }

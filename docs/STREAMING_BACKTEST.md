@@ -1,6 +1,16 @@
-# Streaming backtests (Elo)
+# Streaming backtests
 
-This repo now supports a streaming backtest fast-path for models that can update incrementally. It is enabled automatically when a model advertises `supports_incremental_update=True` (currently Elo) and the backtest window is expanding.
+This repo now supports a streaming backtest fast-path for models that can update incrementally. It is enabled automatically when a model advertises `supports_streaming_backtest=True` and the backtest window is expanding.
+
+## Supported Models
+
+Currently, only **Elo** supports streaming backtests. Models must implement:
+- `supports_streaming_backtest=True` in their metadata
+- `supports_incremental_update=True` property
+- `predict_one()` method for single-game predictions
+- `update_with_result()` method for incremental updates
+
+Other models (Bradley-Terry, GSSD, Poisson, TOOR) use the traditional expanding-window approach that re-fits the model at each evaluation date.
 
 ## What changes
 - The backtest walks games chronologically once.

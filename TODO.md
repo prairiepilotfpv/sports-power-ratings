@@ -3,7 +3,10 @@
 ## Immediate / Merge blockers
 - [ ] Fix the `BETS` sheet sport-specific matching: ensure the bet-sheet parsing + matching honors NBA/NHL differences and that the signed integers on the sheet match the ingested bets.
 - [ ] Verify game ordering is stable across the pipelines (ingest → staging → models → `schedule`). Several reports still show NBA/NHL order mismatches, so confirm the ingesters generate deterministically sorted games and the downstream exports sort by `(date, game_id, away_team)`.
-- [ ] Clean the `Dashboard` + `BETS` sheets in the schedule workbook so they reflect the ensemble outputs instead of legacy single-model layouts before merging.
+- [ ] Clean the `Dashboard` + `BETS` sheets in the schedule workbook so they reflect the ensemble outputs instead of legacy single-model layouts before merging. Dashboard should be model summaries, BETS is just for determinig bet value for the days, or a specified days, games. 
+
+## Future enhancements
+- [ ] **Start Time column**: Parse and persist game start times from Sports Reference CSVs. The parser currently handles rows with/without Time columns but doesn't store start_time in the database. Would enable time-based filtering for betting workflows.
 
 ## Pipeline & output sanity
 - [ ] Audit the market ingestion/bets workflow to ensure the retired `market-review` path no longer blocks production and that any manual steps are documented or removed.
@@ -55,9 +58,9 @@
 ### Low: Model Output Completeness
 | Priority | Task | File(s) | Status |
 |----------|------|---------|--------|
-| 🟢 | Ensure Poisson emits `margin_sd` or documents exclusion | `src/models/poisson.py` | [ ] |
-| 🔵 | Document streaming-compatible models in STREAMING_BACKTEST.md | `docs/` | [ ] |
-| 🔵 | Cap tuning `n_jobs` to avoid memory exhaustion | `src/pipelines/tuning.py` | [ ] |
+| 🟢 | Ensure Poisson emits `margin_sd` or documents exclusion | `src/models/poisson.py` | ✅ Done |
+| 🔵 | Document streaming-compatible models in STREAMING_BACKTEST.md | `docs/` | ✅ Done |
+| 🔵 | Cap tuning `n_jobs` to avoid memory exhaustion | `src/pipelines/tuning.py` | ✅ Done |
 
 ### Data Contract Summary
 ```

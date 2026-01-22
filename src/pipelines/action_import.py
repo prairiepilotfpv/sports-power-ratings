@@ -82,7 +82,7 @@ def import_from_csv(
     rejected = 0
     alias_map = idu.load_alias_map(sport)
 
-    for _, row in df.iterrows():
+    for idx, row in df.iterrows():
         try:
             line_value = row.get("line") if "line" in row else None
             if line_value is not None and pd.isna(line_value):
@@ -93,6 +93,10 @@ def import_from_csv(
             selection_value = row.get("selection")
             if selection_value is not None and pd.isna(selection_value):
                 selection_value = None
+            # Handle captured_at - convert nan/empty to None
+            captured_at_value = row.get(capture_field) if capture_field in row else None
+            if captured_at_value is not None and (pd.isna(captured_at_value) or str(captured_at_value).strip() == ""):
+                captured_at_value = None
             parsed = ActionMarketRow(
                 team_home_raw=str(row.get("team_home_raw") or ""),
                 team_away_raw=str(row.get("team_away_raw") or ""),
@@ -101,7 +105,7 @@ def import_from_csv(
                 selection=str(selection_value or ""),
                 line=line_value,
                 odds=odds_value,
-                captured_at=row.get(capture_field) if capture_field in row else None,
+                captured_at=captured_at_value,
             )
         except ValidationError:
             rejected += 1

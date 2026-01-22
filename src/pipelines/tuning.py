@@ -610,14 +610,30 @@ def list_metrics() -> list[str]:
 
 
 def _resolve_jobs(jobs: int | None) -> int:
+    """Resolve job count with memory safety limits.
+    
+    Caps jobs to avoid memory exhaustion during tuning runs.
+    """
     if jobs is None:
         return 1
     if jobs < 0:
         raise ValueError("jobs must be >= 0")
     if jobs == 0:
         cpu_count = os.cpu_count() or 1
-        return max(cpu_count - 1, 1)
-    return jobs
+        resolved = max(cpu_count - 1, 1)
+    else:
+        resolved = jobs
+    
+    # Cap to reasonable limit to prevent memory exhaustion
+    MAX_TUNING_JOBS = 8
+    if resolved > MAX_TUNING_JOBS:
+        logger.warning(
+            f"Capping tuning jobs from {resolved} to {MAX_TUNING_JOBS} "
+            "to avoid memory exhaustion"
+        )
+        resolved = MAX_TUNING_JOBS
+    
+    return resolved
 
 
 def _filter_candidate_kwargs(
