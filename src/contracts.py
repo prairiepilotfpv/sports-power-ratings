@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Iterable, Mapping
@@ -168,7 +169,19 @@ class ScheduleExportRow:
 
 
 def build_game_id(date_value: Any, home_team: str, away_team: str) -> str:
-    """Generate a deterministic game_id fallback."""
+    """Generate a deterministic game_id fallback.
+
+    .. deprecated::
+        Use :func:`src.utils.game_id.make_game_id` instead, which produces
+        a canonical hash-based ID format: ``{sport}:{season}:{date}:{hash12}``.
+        This function will be removed in a future release.
+    """
+    warnings.warn(
+        "build_game_id is deprecated; use src.utils.game_id.make_game_id instead. "
+        "The canonical format is '{sport}:{season}:{date}:{hash12}'.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     parsed = pd.to_datetime(date_value, errors="coerce")
     if pd.isna(parsed):
         date_str = str(date_value)
@@ -182,8 +195,17 @@ def validate_game_records(
     *,
     require_scores: bool = True,
     context: str = "dataset",
+    sport: str | None = None,
+    season: str | None = None,
 ) -> pd.DataFrame:
-    """Validate a game dataset and return a cleaned copy."""
+    """Validate a game dataset and return a cleaned copy.
+
+    Parameters
+    ----------
+    sport, season : str, optional
+        When provided, ``ensure_game_id`` will use the canonical hash-based
+        game_id format instead of the legacy ``{date}_{home}_{away}`` format.
+    """""
     if df is None:
         raise ValueError(f"{context} is required.")
 
@@ -237,7 +259,7 @@ def validate_game_records(
             if missing_scores.any():
                 raise ValueError("Final games must include home_score and away_score.")
 
-    validated = ensure_game_id(validated)
+    validated = ensure_game_id(validated, sport=sport, season=season)
     return validated
 
 
@@ -245,8 +267,17 @@ def validate_model_input(
     df: pd.DataFrame,
     *,
     context: str = "model input",
+    sport: str | None = None,
+    season: str | None = None,
 ) -> pd.DataFrame:
-    """Validate model prediction inputs and backfill expected fields."""
+    """Validate model prediction inputs and backfill expected fields.
+
+    Parameters
+    ----------
+    sport, season : str, optional
+        When provided, ``ensure_game_id`` will use the canonical hash-based
+        game_id format instead of the legacy ``{date}_{home}_{away}`` format.
+    """""
     if df is None:
         raise ValueError(f"{context} is required.")
 
@@ -258,7 +289,7 @@ def validate_model_input(
         alias="neutral_site",
         default=False,
     )
-    validated = ensure_game_id(validated)
+    validated = ensure_game_id(validated, sport=sport, season=season)
 
     parsed_dates = pd.to_datetime(validated["date"], errors="coerce", format="mixed")
     if parsed_dates.isna().any():
@@ -326,26 +357,61 @@ def validate_schedule_export_frame(
     return schedule_df[expected]
 
 
-def ensure_game_id(df: pd.DataFrame) -> pd.DataFrame:
-    """Guarantee a stable game_id by building one from date/teams when missing."""
+def ensure_game_id(
+    df: pd.DataFrame,
+    *,
+    sport: str | None = None,
+    season: str | None = None,
+) -> pd.DataFrame:
+    """Guarantee a stable game_id by building one from date/teams when missing.
+
+    When ``sport`` and ``season`` are provided (or exist as columns in ``df``),
+    uses the canonical :func:`src.utils.game_id.make_game_id` format:
+    ``{sport}:{season}:{date}:{hash12}``.
+
+    Falls back to the legacy ``{date}_{home}_{away}`` format when sport/season
+    are unavailable. The legacy format is deprecated and will eventually be
+    removed.
+    """
     if "game_id" not in df.columns:
         df = df.copy()
         df["game_id"] = None
 
     missing_mask = df["game_id"].isna() | (df["game_id"].astype(str).str.strip() == "")
-    if missing_mask.any():
-        missing_rows = df.loc[missing_mask, ["date", "home_team", "away_team"]]
-        parsed_dates = pd.to_datetime(missing_rows["date"], errors="coerce")
-        date_strs = parsed_dates.dt.date.astype("string")
-        date_strs = date_strs.where(parsed_dates.notna(), missing_rows["date"].astype(str))
-        game_ids = (
-            date_strs
-            + "_"
-            + missing_rows["home_team"].astype(str)
-            + "_"
-            + missing_rows["away_team"].astype(str)
-        )
-        df.loc[missing_mask, "game_id"] = game_ids
+    if not missing_mask.any():
+        return df
+
+    # Import canonical game_id generator
+    from src.utils.game_id import make_game_id
+
+    df = df.copy()
+    for idx in df.index[missing_mask]:
+        row = df.loc[idx]
+        # Resolve sport/season: prefer params, then columns, then None
+        row_sport = sport or (row.get("sport") if "sport" in df.columns else None)
+        row_season = season or (row.get("season") if "season" in df.columns else None)
+        date_val = row["date"]
+        home = str(row["home_team"])
+        away = str(row["away_team"])
+
+        if row_sport and row_season:
+            # Use canonical format
+            try:
+                df.at[idx, "game_id"] = make_game_id(
+                    row_sport, row_season, date_val, away, home
+                )
+                continue
+            except Exception:
+                pass  # Fall through to legacy format
+
+        # Legacy fallback (deprecated)
+        parsed = pd.to_datetime(date_val, errors="coerce")
+        if pd.isna(parsed):
+            date_str = str(date_val)
+        else:
+            date_str = parsed.date().isoformat()
+        df.at[idx, "game_id"] = f"{date_str}_{home}_{away}"
+
     return df
 
 

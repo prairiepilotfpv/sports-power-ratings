@@ -23,6 +23,58 @@
 - [ ] Evaluate a daily ingestion orchestration (idempotent folder pickup) for future automation (design only; do not auto-run by default).
 - [ ] Continue checking bet-tracking analytics formatting, guardrails, and logging UX to keep weekly/monthly workbook formatting tests green.
 
+---
+
+## Code Review Findings (2026-01-22)
+
+### Critical: game_id Contract Unification
+| Priority | Task | File(s) | Status |
+|----------|------|---------|--------|
+| 🔴 | Deprecate `build_game_id`, use `make_game_id` everywhere | `src/contracts.py` | ✅ Done |
+| 🔴 | Update `ensure_game_id` to use canonical `make_game_id` when sport/season available | `src/contracts.py` | ✅ Done |
+| 🔴 | Align `_build_game_key` in ensemble_tuning with canonical format | `src/pipelines/ensemble_tuning.py` | [ ] |
+| 🟡 | Add UNIQUE index `games(sport, season, game_id)` via migration | `src/data/migrations.py` | [ ] |
+| 🟢 | Add test `test_game_id_canonical_format_matches_db` | `tests/` | [ ] |
+
+### High: Spread Sign Convention & Odds Parsing
+| Priority | Task | File(s) | Status |
+|----------|------|---------|--------|
+| 🔴 | Document `projected_spread = -margin_mean` inversion explicitly | `src/pipelines/projections.py` | [ ] |
+| 🟡 | Consolidate `_american_odds_to_prob` to import from `src/utils/odds.py` | `src/parsers/paste_parser.py` | [ ] |
+| 🟡 | Add spread sign validation in market ingestion | `src/data/validation.py` | [ ] |
+| 🟢 | Add test `test_spread_sign_convention_consistency` | `tests/` | [ ] |
+
+### Medium: Reporting Layer & Business Logic Separation
+| Priority | Task | File(s) | Status |
+|----------|------|---------|--------|
+| 🟡 | Extract edge bucket classification to `src/eval/edge.py` | `src/data/reporting.py` | [ ] |
+| 🟡 | Replace silent `except Exception: pass` with logging | `src/data/migrations.py` | [ ] |
+| 🟢 | Add `_unknown` sport validation config (permissive guardrails) | `src/eval/validation.py` | [ ] |
+| 🟢 | Add test `test_excel_spread_formula_matches_python` | `tests/` | [ ] |
+
+### Low: Model Output Completeness
+| Priority | Task | File(s) | Status |
+|----------|------|---------|--------|
+| 🟢 | Ensure Poisson emits `margin_sd` or documents exclusion | `src/models/poisson.py` | [ ] |
+| 🔵 | Document streaming-compatible models in STREAMING_BACKTEST.md | `docs/` | [ ] |
+| 🔵 | Cap tuning `n_jobs` to avoid memory exhaustion | `src/pipelines/tuning.py` | [ ] |
+
+### Data Contract Summary
+```
+game_id formats (to unify):
+  ✅ make_game_id: {sport}:{season}:{date}:{hash12}  <- CANONICAL
+  ❌ build_game_id: {date}_{home}_{away}             <- DEPRECATED
+  ❌ ensure_game_id: {date}_{home}_{away}            <- UPDATE NEEDED
+  ❌ _build_game_key: {date}-{home}-{away}           <- UPDATE NEEDED
+
+Spread sign convention:
+  • projected_spread = away_minus_home (negative = home favored)
+  • margin_mean = home_minus_away
+  • Relationship: projected_spread = -margin_mean
+```
+
+---
+
 ## Notes & follow-ups for reviewers
 - `REFACTOR_SUMMARY.md` now exists only under `docs/archived/REFACTOR_SUMMARY.md`; the root copy was removed so reviewers can rely on a single canonical doc.
 - `docs/CLI.md` already contains a notice that `src/cli/ingest.py` is deprecated; no further change was made here.

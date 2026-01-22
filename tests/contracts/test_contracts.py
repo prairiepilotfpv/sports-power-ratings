@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from datetime import date
 
 import pandas as pd
@@ -14,6 +15,12 @@ from contracts import (
     validate_schedule_export_frame,
 )
 from models.base import GamePrediction
+
+
+def test_build_game_id_emits_deprecation_warning() -> None:
+    """Verify build_game_id emits a DeprecationWarning pointing to make_game_id."""
+    with pytest.warns(DeprecationWarning, match="make_game_id"):
+        build_game_id(date(2024, 1, 1), "Home", "Away")
 
 
 def test_contract_end_to_end_sample_game() -> None:
@@ -102,11 +109,60 @@ def test_missing_game_id_uses_deterministic_fallback() -> None:
             }
         ]
     )
-    expected = build_game_id(date(2024, 1, 3), "Home", "Away")
+    # build_game_id is deprecated; suppress warning for this legacy test
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        expected = build_game_id(date(2024, 1, 3), "Home", "Away")
     first = validate_model_input(df)
     second = validate_model_input(df)
     assert first.loc[0, "game_id"] == expected
     assert second.loc[0, "game_id"] == expected
+
+
+def test_ensure_game_id_uses_canonical_format_when_sport_season_provided() -> None:
+    """When sport/season are available, ensure_game_id uses make_game_id format."""
+    from src.utils.game_id import make_game_id
+
+    df = pd.DataFrame(
+        [
+            {
+                "date": date(2024, 1, 3),
+                "home_team": "Boston Celtics",
+                "away_team": "Los Angeles Lakers",
+            }
+        ]
+    )
+    result = validate_model_input(df, sport="nba", season="2024-25")
+    expected = make_game_id("nba", "2024-25", date(2024, 1, 3), "Los Angeles Lakers", "Boston Celtics")
+    assert result.loc[0, "game_id"] == expected
+    # Verify canonical format: {sport}:{season}:{date}:{hash}
+    parts = result.loc[0, "game_id"].split(":")
+    assert len(parts) == 4
+    assert parts[0] == "nba"
+    assert parts[1] == "2024-25"
+    assert parts[2] == "2024-01-03"
+
+
+def test_ensure_game_id_reads_sport_season_from_columns() -> None:
+    """When df contains sport/season columns, ensure_game_id uses them."""
+    from src.utils.game_id import make_game_id
+
+    df = pd.DataFrame(
+        [
+            {
+                "date": date(2024, 1, 3),
+                "home_team": "Boston Celtics",
+                "away_team": "Los Angeles Lakers",
+                "sport": "nba",
+                "season": "2024-25",
+            }
+        ]
+    )
+    # No sport/season params passed, but columns exist
+    result = validate_model_input(df)
+    expected = make_game_id("nba", "2024-25", date(2024, 1, 3), "Los Angeles Lakers", "Boston Celtics")
+    assert result.loc[0, "game_id"] == expected
 
 
 def test_prediction_validation_rejects_invalid_payload() -> None:
