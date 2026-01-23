@@ -1,5 +1,7 @@
 # Python
 .pyenv/
+.venv/
+.env
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
@@ -37,6 +39,7 @@ outputs/**
 tmp-debug/
 tmp-test-*/
 tmp-test-sched/
+tmp/
 ocr-output/
 market-ocr-output/
 
@@ -57,6 +60,7 @@ temp-*/
 outputs/**/*.json
 outputs/**/*.csv
 outputs/**/*.xlsx
+tmp_*
 
 # OS/editor
 .DS_Store
