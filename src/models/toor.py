@@ -10,6 +10,7 @@ from typing import Any, Iterable, Mapping
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import minimize
 
 from config import (
     DEFAULT_MARGIN_SD_FALLBACK,
@@ -211,19 +212,33 @@ class TOORModel(BaseModel):
         max_iter: int = 500,
         tol: float = 1e-8,
         recency_lambda: float | None = None,
-        learn_home_advantage: bool = False,
+        learn_home_advantage: bool = True,
         conditional_sd: bool = False,
         winprob_bias: float = 0.0,
         learn_winprob_bias: bool = False,
+        optimizer: str = "scipy",
+        initial_home_adv: float | None = None,
+        initial_home_coeff: float | None = None,
+        initial_away_coeff: float | None = None,
     ) -> None:
         """Initialize the backtest model.
 
         recency_lambda: None disables recency weighting (default = current behavior).
         conditional_sd: when False, uses the constant error_term for margin SDs.
         learn_winprob_bias: when False, uses the provided winprob_bias as-is.
+        optimizer: "scipy" for iterative optimization (tunable), "ols" for closed-form (legacy).
+        initial_home_adv: Initial guess for home advantage (default: 3.362).
+        initial_home_coeff: Initial guess for home coefficient (default: 17.373).
+        initial_away_coeff: Initial guess for away coefficient (default: -14.855).
         """
         self._max_iter = max_iter
         self._tol = tol
+        self._optimizer = optimizer
+        self._optimizer = optimizer
+        # Store initial guesses for scipy optimization
+        self._initial_home_adv = initial_home_adv if initial_home_adv is not None else DEFAULT_COEFFICIENTS.home_advantage
+        self._initial_home_coeff = initial_home_coeff if initial_home_coeff is not None else DEFAULT_COEFFICIENTS.home_coeff
+        self._initial_away_coeff = initial_away_coeff if initial_away_coeff is not None else DEFAULT_COEFFICIENTS.away_coeff
         # self-contained OLS-based team strengths (no cross-model coupling)
         self._rating_model = TOORPowerRating(
             max_iter=max_iter, recency_lambda=recency_lambda
@@ -250,7 +265,7 @@ class TOORModel(BaseModel):
     def metadata(self) -> ModelMetadata:
         return ModelMetadata(
             model_id="toor",
-            model_version="1.0",
+            model_version="1.1",
             params={
                 "max_iter": self._max_iter,
                 "tol": self._tol,
@@ -259,6 +274,10 @@ class TOORModel(BaseModel):
                 "conditional_sd": self._conditional_sd,
                 "winprob_bias": self._win_prob_bias,
                 "learn_winprob_bias": self._learn_winprob_bias,
+                "optimizer": self._optimizer,
+                "initial_home_adv": self._initial_home_adv,
+                "initial_home_coeff": self._initial_home_coeff,
+                "initial_away_coeff": self._initial_away_coeff,
             },
             supports_margin=True,
             supports_total=True,
@@ -343,67 +362,40 @@ class TOORModel(BaseModel):
             # Unweighted calibration: keep a single recency application (in TOORPowerRating.fit)
             weight_arr = None
 
-            if self._learn_home_advantage:
-                # fit HFA together with strength coefficients
-                coeffs = weighted_least_squares(matrix, target, weights=None)
-                predictions = matrix @ coeffs
-                residuals = predictions - target
-                residuals_arr = np.asarray(residuals, dtype=float)
-                error_term = weighted_rmse(residuals_arr, None)
+            # Store matrix and target for scipy optimization
+            self._fit_matrix = matrix
+            self._fit_target = target
+            self._fit_weights = weight_arr
 
-                self._coefficients = ToorCoefficients(
-                    home_advantage=float(coeffs[0]),
-                    home_coeff=float(coeffs[1]),
-                    away_coeff=float(coeffs[2]),
-                    error_term=error_term,
+            # Choose optimization method
+            if self._optimizer == "scipy":
+                self._coefficients = self._fit_coefficients_scipy(
+                    matrix, target, weight_arr
+                )
+            else:  # "ols" or legacy
+                self._coefficients = self._fit_coefficients_ols(
+                    matrix, target, weight_arr
                 )
 
-                if self._conditional_sd:
-                    self._conditional_sd_model = fit_conditional_sd(
-                        predictions, residuals_arr, weights=weight_arr
-                    )
-                else:
-                    self._conditional_sd_model = None
+            # Compute predictions and residuals
+            predictions = (
+                self._coefficients.home_advantage * matrix[:, 0]
+                + self._coefficients.home_coeff * matrix[:, 1]
+                + self._coefficients.away_coeff * matrix[:, 2]
+            )
+            residuals = target - predictions
+            residuals_arr = np.asarray(residuals, dtype=float)
 
-                predicted_margins_iter = zip(predictions, target)
+            # Fit conditional SD model if enabled
+            if self._conditional_sd:
+                self._conditional_sd_model = fit_conditional_sd(
+                    predictions, residuals_arr, weights=weight_arr
+                )
             else:
-                # use fixed HFA and fit only strength coefficients
-                fixed_hfa = (
-                    DEFAULT_COEFFICIENTS.home_advantage
-                )
-                hfa_col = matrix[:, 0]
-                strength_matrix = matrix[:, 1:]
-                # subtract fixed HFA contribution from the target
-                y_adj = target - (fixed_hfa * hfa_col)
+                self._conditional_sd_model = None
 
-                coeffs_strength = weighted_least_squares(
-                    strength_matrix, y_adj, weights=None
-                )
-                # reconstruct full predictions to compute residuals / error term
-                predictions_full = (strength_matrix @ coeffs_strength) + (fixed_hfa * hfa_col)
-                residuals = predictions_full - target
-                residuals_arr = np.asarray(residuals, dtype=float)
-                error_term = weighted_rmse(residuals_arr, None)
-
-                self._coefficients = ToorCoefficients(
-                    home_advantage=float(fixed_hfa),
-                    home_coeff=float(coeffs_strength[0]),
-                    away_coeff=float(coeffs_strength[1]),
-                    error_term=error_term,
-                )
-
-                if self._conditional_sd:
-                    # fit conditional sd on the reconstructed predictions
-                    self._conditional_sd_model = fit_conditional_sd(
-                        predictions_full, residuals_arr, weights=None
-                    )
-                else:
-                    self._conditional_sd_model = None
-
-                predicted_margins_iter = zip(predictions_full, target)
-
-            # populate win-prob calibration samples from whichever prediction stream was used
-            for predicted_margin, actual_margin in predicted_margins_iter:
+            # populate win-prob calibration samples
+            for predicted_margin, actual_margin in zip(predictions, target):
                 if actual_margin == 0:
                     continue
                 projected_spread = -float(predicted_margin)
@@ -422,6 +414,236 @@ class TOORModel(BaseModel):
                 win_prob_outcomes,
                 win_prob_k=self._win_prob_k if self._win_prob_k > 0 else DEFAULT_WIN_PROB_K,
             )
+
+    def _fit_coefficients_scipy(
+        self,
+        matrix: np.ndarray,
+        target: np.ndarray,
+        weights: np.ndarray | None,
+    ) -> ToorCoefficients:
+        """Fit TOOR coefficients using scipy.optimize.minimize.
+        
+        This provides iterative optimization that responds to hyperparameter tuning,
+        unlike the closed-form OLS solution.
+        """
+        
+        def objective(params: np.ndarray) -> float:
+            """Sum of squared errors for optimization."""
+            predictions = (
+                params[0] * matrix[:, 0]  # home_advantage * neutral_flag
+                + params[1] * matrix[:, 1]  # home_coeff * home_strength
+                + params[2] * matrix[:, 2]  # away_coeff * away_strength
+            )
+            residuals = target - predictions
+            if weights is not None:
+                return float(np.sum((residuals ** 2) * weights))
+            return float(np.sum(residuals ** 2))
+        
+        # Initial guess using configured or default values
+        if self._learn_home_advantage:
+            initial_guess = np.array([
+                self._initial_home_adv,
+                self._initial_home_coeff,
+                self._initial_away_coeff,
+            ])
+        else:
+            # If not learning HFA, fix it and only optimize strength coefficients
+            initial_guess = np.array([
+                DEFAULT_COEFFICIENTS.home_advantage,  # fixed
+                self._initial_home_coeff,
+                self._initial_away_coeff,
+            ])
+        
+        # Try multiple optimization methods with fallback
+        methods = ["L-BFGS-B", "SLSQP"]
+        result = None
+        
+        for method in methods:
+            try:
+                if not self._learn_home_advantage:
+                    # Fix home advantage by using bounds that lock it
+                    bounds = [
+                        (DEFAULT_COEFFICIENTS.home_advantage, DEFAULT_COEFFICIENTS.home_advantage),
+                        (None, None),
+                        (None, None),
+                    ]
+                    result = minimize(
+                        objective,
+                        initial_guess,
+                        method=method,
+                        bounds=bounds,
+                        options={"ftol": self._tol, "maxiter": self._max_iter},
+                    )
+                else:
+                    result = minimize(
+                        objective,
+                        initial_guess,
+                        method=method,
+                        options={"ftol": self._tol, "maxiter": self._max_iter},
+                    )
+                
+                if result.success:
+                    _LOG.debug(
+                        f"TOOR scipy optimization converged with {method}: "
+                        f"nit={result.get('nit', 'N/A')}, fun={result.fun:.4f}"
+                    )
+                    break
+            except Exception as e:
+                _LOG.warning(f"TOOR scipy optimization failed with {method}: {e}")
+                continue
+        
+        # Fall back to OLS if scipy optimization fails
+        if result is None or not result.success:
+            _LOG.warning(
+                f"TOOR scipy optimization failed (tried {methods}), falling back to OLS"
+            )
+            return self._fit_coefficients_ols(matrix, target, weights)
+        
+        # Compute error term from optimized parameters
+        predictions = (
+            result.x[0] * matrix[:, 0]
+            + result.x[1] * matrix[:, 1]
+            + result.x[2] * matrix[:, 2]
+        )
+        residuals = target - predictions
+        error_term = weighted_rmse(residuals, weights)
+        
+        return ToorCoefficients(
+            home_advantage=float(result.x[0]),
+            home_coeff=float(result.x[1]),
+            away_coeff=float(result.x[2]),
+            error_term=error_term,
+        )
+    
+    def _fit_coefficients_ols(
+        self,
+        matrix: np.ndarray,
+        target: np.ndarray,
+        weights: np.ndarray | None,
+    ) -> ToorCoefficients:
+        """Fit TOOR coefficients using closed-form OLS (legacy method)."""
+        
+        if self._learn_home_advantage:
+            # fit HFA together with strength coefficients
+            coeffs = weighted_least_squares(matrix, target, weights=weights)
+            predictions = matrix @ coeffs
+            residuals = target - predictions
+            error_term = weighted_rmse(residuals, weights)
+            
+            return ToorCoefficients(
+                home_advantage=float(coeffs[0]),
+                home_coeff=float(coeffs[1]),
+                away_coeff=float(coeffs[2]),
+                error_term=error_term,
+            )
+        else:
+            # use fixed HFA and fit only strength coefficients
+            fixed_hfa = DEFAULT_COEFFICIENTS.home_advantage
+            hfa_col = matrix[:, 0]
+            strength_matrix = matrix[:, 1:]
+            # subtract fixed HFA contribution from the target
+            y_adj = target - (fixed_hfa * hfa_col)
+            
+            coeffs_strength = weighted_least_squares(
+                strength_matrix, y_adj, weights=weights
+            )
+            # reconstruct full predictions to compute residuals / error term
+            predictions_full = (strength_matrix @ coeffs_strength) + (fixed_hfa * hfa_col)
+            residuals = target - predictions_full
+            error_term = weighted_rmse(residuals, weights)
+            
+            return ToorCoefficients(
+                home_advantage=float(fixed_hfa),
+                home_coeff=float(coeffs_strength[0]),
+                away_coeff=float(coeffs_strength[1]),
+                error_term=error_term,
+            )
+    
+    def _build_team_index(self) -> dict[str, int]:
+        """Build team name → index mapping from current ratings."""
+        strengths = self._rating_model.signed_strengths()
+        return {team: idx for idx, team in enumerate(sorted(strengths.keys()))}
+    
+    def _compute_margin_predictions(
+        self,
+        home_strengths: np.ndarray,
+        away_strengths: np.ndarray,
+        neutral_flags: np.ndarray,
+    ) -> np.ndarray:
+        """Vectorized margin prediction from team strengths.
+        
+        Args:
+            home_strengths: Array of home team strength values
+            away_strengths: Array of away team strength values
+            neutral_flags: Boolean array indicating neutral venue
+            
+        Returns:
+            Array of predicted margins (home - away)
+        """
+        coefficients = self._coefficients
+        home_adv_contrib = coefficients.home_advantage * (~neutral_flags).astype(float)
+        return (
+            home_adv_contrib
+            + coefficients.home_coeff * home_strengths
+            + coefficients.away_coeff * away_strengths
+        )
+    
+    def _compute_margin_sds_vectorized(
+        self, 
+        pred_margins: np.ndarray,
+        sport: str | None = None,
+    ) -> np.ndarray:
+        """Compute margin standard deviations for all predictions.
+        
+        Uses conditional SD model if available, otherwise constant error_term.
+        """
+        cfg = get_validation_config(sport)
+        
+        if self._conditional_sd_model is not None:
+            # Vectorized conditional SD prediction
+            abs_margins = np.abs(pred_margins)
+            raw_sds = self._conditional_sd_model.intercept + self._conditional_sd_model.slope * abs_margins
+            
+            # Vectorized guardrail clamping
+            sds = np.clip(raw_sds, cfg.margin_sd_min, cfg.margin_sd_max)
+            
+            # Replace invalid values with fallback
+            sds = np.where(np.isfinite(sds), sds, LEAGUE_MARGIN_SD_DEFAULT)
+            
+            return sds
+        else:
+            # Constant error term for all predictions
+            raw_sd = self._coefficients.error_term
+            margin_sd, _ = guardrail_margin_sd(
+                raw_sd,
+                fallback_sd=LEAGUE_MARGIN_SD_DEFAULT,
+                guardrail_min=cfg.margin_sd_min,
+                guardrail_max=cfg.margin_sd_max,
+            )
+            return np.full(len(pred_margins), margin_sd)
+    
+    def _compute_win_probs_vectorized(
+        self,
+        pred_margins: np.ndarray,
+        margin_sds: np.ndarray,
+    ) -> tuple[np.ndarray, list[list[dict[str, float]]]]:
+        """Compute win probabilities and distributions for all predictions."""
+        win_prob_k = self._win_prob_k if self._win_prob_k > 0 else DEFAULT_WIN_PROB_K
+        
+        # Vectorized projected spread with bias adjustment
+        projected_spreads = -pred_margins
+        adjusted_spreads = projected_spreads - self._win_prob_bias
+        
+        # Vectorized logistic win probability
+        p_home_wins = logistic_win_prob(adjusted_spreads, win_prob_k)
+        
+        # Win probability distributions (still needs per-sample computation)
+        win_prob_dists = [
+            win_prob_distribution(p_home_win, win_prob_k=win_prob_k, margin_std=margin_sd)
+            for p_home_win, margin_sd in zip(p_home_wins, margin_sds)
+        ]
+        
+        return p_home_wins, win_prob_dists
 
     def _canonical_matchup_prediction(
         self,
@@ -593,8 +815,197 @@ class TOORModel(BaseModel):
             game_id=game_id,
         )
 
-    def predict(self, upcoming_games_df: Any) -> list[GamePrediction]:
+    def predict(
+        self, 
+        upcoming_games_df: Any,
+        format: str = "canonical",
+        use_vectorized: bool = True,
+    ) -> list[GamePrediction] | np.ndarray | pd.DataFrame:
+        """Predict outcomes for upcoming games.
+        
+        Args:
+            upcoming_games_df: DataFrame with columns: date, home_team, away_team
+            format: Output format - "canonical" (GamePrediction objects), 
+                    "array" (numpy arrays), "dataframe" (pandas DataFrame)
+            use_vectorized: Use vectorized prediction (faster for large batches)
+        
+        Returns:
+            List of GamePrediction objects, numpy array, or DataFrame based on format
+        """
         require_columns(upcoming_games_df, ["date", "home_team", "away_team"])
+        
+        if len(upcoming_games_df) == 0:
+            if format == "array":
+                return np.array([]).reshape(0, 5)
+            elif format == "dataframe":
+                return pd.DataFrame()
+            return []
+        
+        # Use vectorized prediction for better performance
+        if use_vectorized and len(upcoming_games_df) > 1:
+            return self._predict_vectorized(upcoming_games_df, format=format)
+        
+        # Fall back to iterative prediction for single games or if vectorization disabled
+        return self._predict_iterative(upcoming_games_df, format=format)
+    
+    def _predict_vectorized(
+        self,
+        upcoming_games_df: Any,
+        format: str = "canonical",
+    ) -> list[GamePrediction] | np.ndarray | pd.DataFrame:
+        """Vectorized prediction implementation for performance."""
+        
+        # Extract vectorized inputs
+        home_teams = upcoming_games_df["home_team"].astype(str).str.strip().values
+        away_teams = upcoming_games_df["away_team"].astype(str).str.strip().values
+        neutral_raw = upcoming_games_df.get("neutral", pd.Series([False] * len(upcoming_games_df)))
+        neutral_flags = neutral_raw.fillna(False).replace({np.nan: False}).astype(bool).values
+        
+        # Get sport for validation config (use first non-null or None)
+        sport = None
+        if "sport" in upcoming_games_df.columns:
+            sport_series = upcoming_games_df["sport"].dropna()
+            if len(sport_series) > 0:
+                sport = str(sport_series.iloc[0])
+        
+        # Build team index and lookup strengths
+        strengths = self._rating_model.signed_strengths()
+        
+        # Vectorized strength lookup with fallback to 0.0 for unknown teams
+        home_strengths = np.array([strengths.get(h, 0.0) for h in home_teams])
+        away_strengths = np.array([strengths.get(a, 0.0) for a in away_teams])
+        
+        # Vectorized margin predictions
+        pred_margins = self._compute_margin_predictions(home_strengths, away_strengths, neutral_flags)
+        
+        # Vectorized total predictions (league average)
+        pred_totals = np.full(
+            len(upcoming_games_df), 
+            self._total_mean if self._total_mean is not None else DEFAULT_TOTAL_MEAN_FALLBACK
+        )
+        
+        # Vectorized margin SD computation
+        margin_sds = self._compute_margin_sds_vectorized(pred_margins, sport=sport)
+        
+        # Total SD (constant league-wide)
+        cfg = get_validation_config(sport)
+        total_sd = self._total_sd if self._total_sd is not None else None
+        if total_sd is None or not (cfg.total_sd_min <= total_sd <= cfg.total_sd_max):
+            total_sd = DEFAULT_TOTAL_SD_FALLBACK if DEFAULT_TOTAL_SD_FALLBACK is not None else 20.0
+        total_sds = np.full(len(upcoming_games_df), total_sd)
+        
+        # Vectorized win probabilities
+        p_home_wins, win_prob_dists = self._compute_win_probs_vectorized(pred_margins, margin_sds)
+        
+        # Return based on format
+        if format == "array":
+            return np.column_stack([
+                pred_margins,
+                pred_totals,
+                p_home_wins,
+                margin_sds,
+                total_sds,
+            ])
+        elif format == "dataframe":
+            result_df = upcoming_games_df.copy()
+            result_df["pred_margin"] = pred_margins
+            result_df["pred_total"] = pred_totals
+            result_df["p_home_win"] = p_home_wins
+            result_df["margin_sd"] = margin_sds
+            result_df["total_sd"] = total_sds
+            return result_df
+        else:  # format == "canonical"
+            return self._format_game_predictions_vectorized(
+                upcoming_games_df,
+                home_teams,
+                away_teams,
+                neutral_flags,
+                pred_margins,
+                pred_totals,
+                margin_sds,
+                total_sds,
+                p_home_wins,
+                win_prob_dists,
+            )
+    
+    def _format_game_predictions_vectorized(
+        self,
+        games_df: pd.DataFrame,
+        home_teams: np.ndarray,
+        away_teams: np.ndarray,
+        neutral_flags: np.ndarray,
+        pred_margins: np.ndarray,
+        pred_totals: np.ndarray,
+        margin_sds: np.ndarray,
+        total_sds: np.ndarray,
+        p_home_wins: np.ndarray,
+        win_prob_dists: list[list[dict[str, float]]],
+    ) -> list[GamePrediction]:
+        """Convert vectorized predictions to canonical GamePrediction objects."""
+        predictions = []
+        coefficients = self._coefficients
+        model_identity = self.metadata().identity_dict()
+        win_prob_k = self._win_prob_k if self._win_prob_k > 0 else DEFAULT_WIN_PROB_K
+        
+        for i in range(len(games_df)):
+            row = games_df.iloc[i]
+            game_id = row.get("game_id")
+            if game_id is None or pd.isna(game_id):
+                game_id = f"{row['date']}_{home_teams[i]}_{away_teams[i]}"
+            
+            predictions.append(
+                GamePrediction(
+                    game_id=str(game_id),
+                    date=str(row.get("date", "")),
+                    home_team=str(home_teams[i]),
+                    away_team=str(away_teams[i]),
+                    p_home_win=float(p_home_wins[i]),
+                    win_prob_dist=win_prob_dists[i] if win_prob_dists else None,
+                    pred_margin=float(pred_margins[i]),
+                    pred_total=float(pred_totals[i]),
+                    margin_sd=float(margin_sds[i]),
+                    total_sd=float(total_sds[i]),
+                    total_mean=float(pred_totals[i]),
+                    win_prob_source="logistic",
+                    margin_dist_assumption="normal_approx",
+                    metadata=dict(model_identity),
+                    extra={
+                        "home_advantage": coefficients.home_advantage,
+                        "home_coeff": coefficients.home_coeff,
+                        "away_coeff": coefficients.away_coeff,
+                        "error_term": coefficients.error_term,
+                        "win_prob_k": win_prob_k,
+                        "winprob_bias": self._win_prob_bias,
+                        "conditional_sd": self._conditional_sd,
+                        "conditional_sd_intercept": (
+                            self._conditional_sd_model.intercept
+                            if self._conditional_sd_model is not None
+                            else None
+                        ),
+                        "conditional_sd_slope": (
+                            self._conditional_sd_model.slope
+                            if self._conditional_sd_model is not None
+                            else None
+                        ),
+                        "projected_home_score": 0.5 * (pred_totals[i] + pred_margins[i]),
+                        "projected_away_score": 0.5 * (pred_totals[i] - pred_margins[i]),
+                        "projected_total": pred_totals[i],
+                        "total_mean": pred_totals[i],
+                        "total_sd": total_sds[i],
+                        "model_p_home_win": p_home_wins[i],
+                        "normal_p_home_win": None,
+                        "win_prob_source": "logistic",
+                    },
+                )
+            )
+        return predictions
+    
+    def _predict_iterative(
+        self,
+        upcoming_games_df: Any,
+        format: str = "canonical",
+    ) -> list[GamePrediction] | np.ndarray | pd.DataFrame:
+        """Iterative prediction implementation (legacy, fallback for single games)."""
         predictions: list[GamePrediction] = []
         coefficients = self._coefficients
         model_identity = self.metadata().identity_dict()
@@ -657,4 +1068,27 @@ class TOORModel(BaseModel):
                     },
                 )
             )
+        
+        # Convert to requested format
+        if format == "array":
+            return np.array([
+                [p.pred_margin, p.pred_total, p.p_home_win, p.margin_sd, p.total_sd]
+                for p in predictions
+            ])
+        elif format == "dataframe":
+            return pd.DataFrame([
+                {
+                    "game_id": p.game_id,
+                    "date": p.date,
+                    "home_team": p.home_team,
+                    "away_team": p.away_team,
+                    "pred_margin": p.pred_margin,
+                    "pred_total": p.pred_total,
+                    "p_home_win": p.p_home_win,
+                    "margin_sd": p.margin_sd,
+                    "total_sd": p.total_sd,
+                }
+                for p in predictions
+            ])
+        
         return predictions

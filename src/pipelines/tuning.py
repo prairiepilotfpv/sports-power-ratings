@@ -466,8 +466,14 @@ def _default_param_grid(model: str) -> dict[str, Iterable[Any]]:
     # HFA backtest variants removed; no separate grid needed.
     if model == "toor":
         return {
-            "max_iter": [200, 500, 800],
-            "tol": [1e-6, 1e-8],
+            "max_iter": [500],
+            "tol": [1e-6],
+            "optimizer": ["scipy"],
+            "initial_home_adv": [2.5, 3.362, 4.5],
+            "initial_home_coeff": [17.373, 20.0],
+            "initial_away_coeff": [-14.855, -12.0],
+            "recency_lambda": [None, 0.01],
+            "conditional_sd": [False, True],
         }
     if model == "gssd":
         return {

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import math
 from typing import Iterable, Sequence
 
+import numpy as np
+
 try:
     from scipy.stats import norm
 except Exception:  # pragma: no cover - scipy optional
@@ -97,9 +99,21 @@ def over_prob(
     return 1.0 - _normal_cdf(float(total_line), mean=mean, sd=sd)
 
 
-def logistic_win_prob(away_minus_home: float, k: float) -> float:
-    """Convert a spread into a win probability using a logistic curve."""
-    return 1.0 / (1.0 + math.exp(away_minus_home / k))
+def logistic_win_prob(away_minus_home: float | np.ndarray, k: float) -> float | np.ndarray:
+    """Convert a spread into a win probability using a logistic curve.
+    
+    Args:
+        away_minus_home: Spread value(s) (negative of home advantage)
+        k: Logistic curve steepness parameter
+        
+    Returns:
+        Win probability or array of win probabilities
+    """
+    # Handle both scalar and array inputs
+    if isinstance(away_minus_home, np.ndarray):
+        return 1.0 / (1.0 + np.exp(away_minus_home / k))
+    else:
+        return 1.0 / (1.0 + math.exp(away_minus_home / k))
 
 
 def win_prob_distribution(
