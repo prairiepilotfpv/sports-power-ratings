@@ -81,8 +81,11 @@ def test_schedule_workbook_includes_bets_and_meta(tmp_path: Path) -> None:
     meta_df = pd.read_excel(workbook_path, sheet_name="META")
     meta = dict(zip(meta_df["key"], meta_df["value"]))
     assert "ml_bradley-terry" in meta["review_run_id"]
-    assert "spread_direct" in meta["review_run_id"]
-    assert "total_direct" in meta["review_run_id"]
+    # SPREAD/TOTAL sources can be either the model name (single-model pass-through)
+    # or ensemble ID (when ensemble is applied)
+    review_id = meta["review_run_id"]
+    assert ("spread_bradley-terry" in review_id or "spread_ensemble_spread_v1" in review_id), f"Expected spread source in {review_id}"
+    assert ("total_bradley-terry" in review_id or "total_ensemble_total_v1" in review_id), f"Expected total source in {review_id}"
 
 
 def test_schedule_bets_rows_and_log_bets(tmp_path: Path) -> None:

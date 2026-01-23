@@ -43,7 +43,8 @@ from pipelines.common import normalize_games, resolve_output_path
 from ensemble.config import load_ensemble_config
 from ensemble.io import load_market_weights
 from ensemble.ml_v1 import MLWeightedAverageEnsemble
-from ensemble.ml_v1 import MLWeightedAverageEnsemble
+from ensemble.spread_v1 import SpreadWeightedAverageEnsemble
+from ensemble.total_v1 import TotalWeightedAverageEnsemble
 from pipelines.excel_bets_format import apply_bets_sheet_formatting
 from pipelines.excel_formulas import (
     apply_ev_formulas,
@@ -1515,6 +1516,24 @@ def build_schedule_excel_report(
                 allowed_models_by_market=allowed_models_map,
                 market_metrics=market_metrics,
             )
+
+            # Ensure all required ensemble columns exist in bets_schedule_df before ensemble writes.
+            # This fixes the issue where ensemble code tries to write to columns that don't exist
+            # because bets_schedule_df was built from ML-market schedule only.
+            if bets_schedule_df is not None:
+                ensemble_columns = [
+                    "spread_source",
+                    "spread_ensemble_components_json",
+                    "total_source",
+                    "total_ensemble_components_json",
+                    "total",
+                    "total_sd",
+                    "ml_ensemble_components_json",
+                ]
+                for col in ensemble_columns:
+                    if col not in bets_schedule_df.columns:
+                        bets_schedule_df[col] = pd.NA
+
         try:
             ml_rows = market_forecast_rows.get(Market.ML.name, [])
             if bets_schedule_df is not None and len(models) > 1 and ml_rows:
@@ -1599,25 +1618,8 @@ def build_schedule_excel_report(
                             bets_schedule_df.loc[mask, "home_win_prob"] = final_p
                             bets_schedule_df.loc[mask, "away_win_prob"] = 1.0 - final_p
 
-                            def _append_ens(val: Any) -> str:
-                                try:
-                                    if val is None or (isinstance(val, float) and pd.isna(val)):
-                                        return ensemble.ensemble_id
-                                    text = str(val).strip()
-                                    if not text:
-                                        return ensemble.ensemble_id
-                                    if ensemble.ensemble_id in text.lower():
-                                        return text
-                                    return f"{text}+{ensemble.ensemble_id}"
-                                except Exception:
-                                    return ensemble.ensemble_id
-
-                            if "win_prob_source" in bets_schedule_df.columns:
-                                bets_schedule_df.loc[mask, "win_prob_source"] = (
-                                    bets_schedule_df.loc[mask, "win_prob_source"].apply(_append_ens)
-                                )
-                            else:
-                                bets_schedule_df.loc[mask, "win_prob_source"] = ensemble.ensemble_id
+                            # Set win_prob_source to the ensemble ID (replacing any default "direct" value)
+                            bets_schedule_df.loc[mask, "win_prob_source"] = ensemble.ensemble_id
                             bets_schedule_df.loc[mask, "ml_ensemble_components_json"] = components_json
                             ensemble_applied = True
                         except Exception:
@@ -1747,7 +1749,9 @@ def build_schedule_excel_report(
                             "config_source": cfg_meta.get("source"),
                             "config_path": cfg_meta.get("path"),
                         }
-                        for gid in pd.unique(bets_schedule_df["game_id"]):
+                        spread_games_updated = 0
+                        bets_game_ids = pd.unique(bets_schedule_df["game_id"])
+                        for gid in bets_game_ids:
                             try:
                                 subset = forecast_df[forecast_df["game_id"] == gid]
                                 if subset.empty:
@@ -1768,6 +1772,7 @@ def build_schedule_excel_report(
                                     mask, "spread_ensemble_components_json"
                                 ] = components_json
                                 spread_ensemble_applied = True
+                                spread_games_updated += 1
                             except Exception:
                                 continue
                     else:
