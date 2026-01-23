@@ -269,5 +269,57 @@ def test_ml_components_json_not_written_when_ensemble_skipped(
     assert "ml_ensemble_components_json remains blank" in caplog.text
 
 
+def test_build_bets_dataframe_preserves_ensemble_sources_and_totals() -> None:
+    """Ensure BETS rows use whatever ensemble sources and totals the schedule already contains."""
+    pool = pd.DataFrame(
+        [
+            {
+                "date": date(2024, 1, 5),
+                "game_id": "2024-01-05-team-b-team-c",
+                "status": "scheduled",
+                "away_team": "Team C",
+                "home_team": "Team B",
+                "home_win_prob": 0.55,
+                "away_win_prob": 0.45,
+                "win_prob_source": "ensemble_ml_v1",
+                "margin_mean": -5.0,
+                "margin_sd": 9.5,
+                "total": 226.5,
+                "total_sd": 12.3,
+                "total_source": "ensemble_total_v1",
+                "spread_source": "ensemble_spread_v1",
+                "total_ensemble_components_json": json.dumps(
+                    [
+                        {"model": "poisson", "total_mean": 226.0, "total_sd": 10.0},
+                        {"model": "gssd", "total_mean": 227.0, "total_sd": 14.0},
+                    ]
+                ),
+            }
+        ]
+    )
+
+    bets_df = schedule_pipeline._build_bets_dataframe(
+        pool,
+        model_name="gssd",
+        as_of_date=date(2024, 1, 5),
+        review_run_id="review-ensemble",
+        db_path=None,
+        sport=None,
+        season=None,
+    )
+
+    total_rows = bets_df[bets_df["market_type"] == "total"]
+    assert not total_rows.empty
+    assert set(total_rows["total_source"]) == {"ensemble_total_v1"}
+    assert total_rows["total"].unique().tolist() == [226.5]
+    assert total_rows["total_sd"].unique().tolist() == [12.3]
+
+    spread_rows = bets_df[bets_df["market_type"] == "spread"]
+    assert set(spread_rows["spread_source"]) == {"ensemble_spread_v1"}
+
+    ml_rows = bets_df[bets_df["market_type"] == "ML"]
+    assert set(ml_rows["win_prob_source"]) == {"ensemble_ml_v1"}
+
+
 def _raise_runtime_error() -> None:
     raise RuntimeError("simulated ensemble failure")

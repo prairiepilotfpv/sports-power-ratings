@@ -1486,23 +1486,25 @@ def build_schedule_excel_report(
         dashboard_df = dashboard_df.reindex(columns=DASHBOARD_COLUMNS)
         dashboard_df.to_excel(writer, sheet_name="dashboard", index=False)
 
-        # If multiple models were produced, try to build an ML ensemble and apply
-        # the combined probabilities to the bets_schedule_df (best-effort).
+        # Build market forecast rows for any BETS sheet generation so that ML/SPREAD/TOTAL
+        # data is always available, even with a single model. Ensemble logic still only
+        # applies when len(models) > 1, but single-model TOTAL data can be passed through.
         ensemble_applied = False
         market_forecast_rows: dict[str, list[dict[str, Any]]] = {
             Market.ML.name: [],
             Market.SPREAD.name: [],
             Market.TOTAL.name: [],
         }
-        if bets_schedule_df is not None and len(models) > 1:
-            _validate_market_tuning_inputs(
-                db_path=db_path,
-                sport=sport,
-                season=season,
-                models=models,
-                ensemble_ids=ensemble_ids,
-                strict=strict,
-            )
+        if bets_schedule_df is not None:
+            if len(models) > 1:
+                _validate_market_tuning_inputs(
+                    db_path=db_path,
+                    sport=sport,
+                    season=season,
+                    models=models,
+                    ensemble_ids=ensemble_ids,
+                    strict=strict,
+                )
             market_forecast_rows = _build_market_forecasts_for_ensembles(
                 df,
                 db_path=db_path,
@@ -1683,11 +1685,13 @@ def build_schedule_excel_report(
                                     mask, "ml_ensemble_components_json"
                                 ] = components_json
 
-        # Apply a spread ensemble to margin fields (best-effort).
+        # Apply SPREAD data to bets_schedule_df. For multi-model, use ensemble; for
+        # single model, pass through the model's SPREAD forecast directly. This ensures
+        # SPREAD-market tuned params are used even when only one model runs.
         spread_ensemble_applied = False
         try:
             spread_rows = market_forecast_rows.get(Market.SPREAD.name, [])
-            if bets_schedule_df is not None and len(models) > 1 and spread_rows:
+            if bets_schedule_df is not None and spread_rows:
                 forecast_df = pd.DataFrame(spread_rows)
                 if not forecast_df.empty:
                     allowed_models = allowed_models_map.get(Market.SPREAD.name)
@@ -1698,83 +1702,111 @@ def build_schedule_excel_report(
                                 f"No SPREAD forecasts matched configured models {allowed_models}; ensemble skipped"
                             )
                             raise Exception("No SPREAD forecasts after model filter")
-                    weights = config_weights_map.get(Market.SPREAD.name)
-                    weight_source = "config" if weights else None
-                    if weights is None:
-                        weights = get_active_ensemble_market_weights(
-                            db_path,
-                            sport=sport,
-                            season=season,
-                            market=Market.SPREAD.name,
-                            ensemble_id=ensemble_ids[Market.SPREAD.name],
-                        )
-                        weight_source = "db" if weights else weight_source
-                    if weights is None:
-                        weights = load_market_weights(
+
+                    # Check if we have multiple models contributing SPREAD forecasts
+                    unique_spread_models = set(forecast_df["model_name"].dropna().unique())
+                    use_ensemble = len(unique_spread_models) > 1
+
+                    if use_ensemble:
+                        # Multi-model: use weighted ensemble
+                        weights = config_weights_map.get(Market.SPREAD.name)
+                        weight_source = "config" if weights else None
+                        if weights is None:
+                            weights = get_active_ensemble_market_weights(
+                                db_path,
+                                sport=sport,
+                                season=season,
+                                market=Market.SPREAD.name,
+                                ensemble_id=ensemble_ids[Market.SPREAD.name],
+                            )
+                            weight_source = "db" if weights else weight_source
+                        if weights is None:
+                            weights = load_market_weights(
+                                sport,
+                                season,
+                                Market.SPREAD.name,
+                                ensemble_ids[Market.SPREAD.name],
+                            )
+                            weight_source = "file" if weights else weight_source
+                        spread_ensemble = SpreadWeightedAverageEnsemble(
                             sport,
                             season,
-                            Market.SPREAD.name,
-                            ensemble_ids[Market.SPREAD.name],
+                            ensemble_id=ensemble_ids[Market.SPREAD.name],
+                            weights=weights,
                         )
-                        weight_source = "file" if weights else weight_source
-                    spread_ensemble = SpreadWeightedAverageEnsemble(
-                        sport,
-                        season,
-                        ensemble_id=ensemble_ids[Market.SPREAD.name],
-                        weights=weights,
-                    )
-                    used_models = sorted(set(forecast_df.get("model_name", [])))
-                    cfg_meta = market_config_meta.get(Market.SPREAD.name, {}) if isinstance(market_config_meta, dict) else {}
-                    resolved_ensemble_meta[Market.SPREAD.name] = {
-                        "ensemble_id": spread_ensemble.ensemble_id,
-                        "metric_slot": market_metrics.get(Market.SPREAD.name),
-                        "configured_models": allowed_models,
-                        "configured_weights": config_weights_map.get(Market.SPREAD.name),
-                        "weights_source": weight_source or "equal",
-                        "weights": weights,
-                        "used_models": used_models,
-                        "config_source": cfg_meta.get("source"),
-                        "config_path": cfg_meta.get("path"),
-                    }
-                    for gid in pd.unique(bets_schedule_df["game_id"]):
-                        try:
-                            subset = forecast_df[forecast_df["game_id"] == gid]
-                            if subset.empty:
+                        used_models = sorted(unique_spread_models)
+                        cfg_meta = market_config_meta.get(Market.SPREAD.name, {}) if isinstance(market_config_meta, dict) else {}
+                        resolved_ensemble_meta[Market.SPREAD.name] = {
+                            "ensemble_id": spread_ensemble.ensemble_id,
+                            "metric_slot": market_metrics.get(Market.SPREAD.name),
+                            "configured_models": allowed_models,
+                            "configured_weights": config_weights_map.get(Market.SPREAD.name),
+                            "weights_source": weight_source or "equal",
+                            "weights": weights,
+                            "used_models": used_models,
+                            "config_source": cfg_meta.get("source"),
+                            "config_path": cfg_meta.get("path"),
+                        }
+                        for gid in pd.unique(bets_schedule_df["game_id"]):
+                            try:
+                                subset = forecast_df[forecast_df["game_id"] == gid]
+                                if subset.empty:
+                                    continue
+                                margin_mean_raw, margin_sd_raw, components_json = (
+                                    spread_ensemble.combine(subset)
+                                )
+                                if margin_mean_raw is None:
+                                    continue
+                                mask = bets_schedule_df["game_id"] == gid
+                                bets_schedule_df.loc[mask, "margin_mean"] = margin_mean_raw
+                                if margin_sd_raw is not None:
+                                    bets_schedule_df.loc[mask, "margin_sd"] = margin_sd_raw
+                                bets_schedule_df.loc[
+                                    mask, "spread_source"
+                                ] = spread_ensemble.ensemble_id
+                                bets_schedule_df.loc[
+                                    mask, "spread_ensemble_components_json"
+                                ] = components_json
+                                spread_ensemble_applied = True
+                            except Exception:
                                 continue
-                            margin_mean_raw, margin_sd_raw, components_json = (
-                                spread_ensemble.combine(subset)
-                            )
-                            if margin_mean_raw is None:
+                    else:
+                        # Single-model: pass through SPREAD data directly (no ensemble)
+                        single_model_name = list(unique_spread_models)[0] if unique_spread_models else bets_model_name
+                        for gid in pd.unique(bets_schedule_df["game_id"]):
+                            try:
+                                subset = forecast_df[forecast_df["game_id"] == gid]
+                                if subset.empty:
+                                    continue
+                                # Take the first (and only) row for this game
+                                row = subset.iloc[0]
+                                margin_mean = row.get("margin_mean")
+                                margin_sd = row.get("margin_sd")
+                                if margin_mean is None or (isinstance(margin_mean, float) and pd.isna(margin_mean)):
+                                    continue
+                                mask = bets_schedule_df["game_id"] == gid
+                                bets_schedule_df.loc[mask, "margin_mean"] = margin_mean
+                                if margin_sd is not None and not (isinstance(margin_sd, float) and pd.isna(margin_sd)):
+                                    bets_schedule_df.loc[mask, "margin_sd"] = margin_sd
+                                bets_schedule_df.loc[mask, "spread_source"] = single_model_name
+                                # Single model: store components as JSON with single entry
+                                components = {"models": [single_model_name], "margin_mean": float(margin_mean)}
+                                if margin_sd is not None and not (isinstance(margin_sd, float) and pd.isna(margin_sd)):
+                                    components["margin_sd"] = float(margin_sd)
+                                bets_schedule_df.loc[mask, "spread_ensemble_components_json"] = json.dumps(components)
+                                spread_ensemble_applied = True
+                            except Exception:
                                 continue
-                            mask = bets_schedule_df["game_id"] == gid
-                            bets_schedule_df.loc[mask, "margin_mean"] = margin_mean_raw
-                            if margin_sd_raw is not None:
-                                bets_schedule_df.loc[mask, "margin_sd"] = margin_sd_raw
-                            bets_schedule_df.loc[
-                                mask, "spread_source"
-                            ] = spread_ensemble.ensemble_id
-                            bets_schedule_df.loc[
-                                mask, "spread_ensemble_components_json"
-                            ] = components_json
-                            spread_ensemble_applied = True
-                        except Exception:
-                            continue
         except Exception:
             pass
 
-        if (
-            bets_schedule_df is not None
-            and len(models) > 1
-            and not spread_ensemble_applied
-            and market_forecast_rows.get(Market.SPREAD.name)
-        ):
-            spread_ensemble_applied = True
-
-        # Apply a total ensemble to total fields (best-effort).
+        # Apply TOTAL data to bets_schedule_df. For multi-model, use ensemble; for
+        # single model, pass through the model's TOTAL forecast directly. This ensures
+        # leftover ML totals don't seep into BETS when only one model runs.
         total_ensemble_applied = False
         try:
             total_rows = market_forecast_rows.get(Market.TOTAL.name, [])
-            if bets_schedule_df is not None and len(models) > 1 and total_rows:
+            if bets_schedule_df is not None and total_rows:
                 forecast_df = pd.DataFrame(total_rows)
                 if not forecast_df.empty:
                     allowed_models = allowed_models_map.get(Market.TOTAL.name)
@@ -1785,67 +1817,101 @@ def build_schedule_excel_report(
                                 f"No TOTAL forecasts matched configured models {allowed_models}; ensemble skipped"
                             )
                             raise Exception("No TOTAL forecasts after model filter")
-                    weights = config_weights_map.get(Market.TOTAL.name)
-                    weight_source = "config" if weights else None
-                    if weights is None:
-                        weights = get_active_ensemble_market_weights(
-                            db_path,
-                            sport=sport,
-                            season=season,
-                            market=Market.TOTAL.name,
-                            ensemble_id=ensemble_ids[Market.TOTAL.name],
-                        )
-                        weight_source = "db" if weights else weight_source
-                    if weights is None:
-                        weights = load_market_weights(
+
+                    # Check if we have multiple models contributing TOTAL forecasts
+                    unique_total_models = set(forecast_df["model_name"].dropna().unique())
+                    use_ensemble = len(unique_total_models) > 1
+
+                    if use_ensemble:
+                        # Multi-model: use weighted ensemble
+                        weights = config_weights_map.get(Market.TOTAL.name)
+                        weight_source = "config" if weights else None
+                        if weights is None:
+                            weights = get_active_ensemble_market_weights(
+                                db_path,
+                                sport=sport,
+                                season=season,
+                                market=Market.TOTAL.name,
+                                ensemble_id=ensemble_ids[Market.TOTAL.name],
+                            )
+                            weight_source = "db" if weights else weight_source
+                        if weights is None:
+                            weights = load_market_weights(
+                                sport,
+                                season,
+                                Market.TOTAL.name,
+                                ensemble_ids[Market.TOTAL.name],
+                            )
+                            weight_source = "file" if weights else weight_source
+                        total_ensemble = TotalWeightedAverageEnsemble(
                             sport,
                             season,
-                            Market.TOTAL.name,
-                            ensemble_ids[Market.TOTAL.name],
+                            ensemble_id=ensemble_ids[Market.TOTAL.name],
+                            weights=weights,
                         )
-                        weight_source = "file" if weights else weight_source
-                    total_ensemble = TotalWeightedAverageEnsemble(
-                        sport,
-                        season,
-                        ensemble_id=ensemble_ids[Market.TOTAL.name],
-                        weights=weights,
-                    )
-                    used_models = sorted(set(forecast_df.get("model_name", [])))
-                    cfg_meta = market_config_meta.get(Market.TOTAL.name, {}) if isinstance(market_config_meta, dict) else {}
-                    resolved_ensemble_meta[Market.TOTAL.name] = {
-                        "ensemble_id": total_ensemble.ensemble_id,
-                        "metric_slot": market_metrics.get(Market.TOTAL.name),
-                        "configured_models": allowed_models,
-                        "configured_weights": config_weights_map.get(Market.TOTAL.name),
-                        "weights_source": weight_source or "equal",
-                        "weights": weights,
-                        "used_models": used_models,
-                        "config_source": cfg_meta.get("source"),
-                        "config_path": cfg_meta.get("path"),
-                    }
-                    for gid in pd.unique(bets_schedule_df["game_id"]):
-                        try:
-                            subset = forecast_df[forecast_df["game_id"] == gid]
-                            if subset.empty:
+                        used_models = sorted(unique_total_models)
+                        cfg_meta = market_config_meta.get(Market.TOTAL.name, {}) if isinstance(market_config_meta, dict) else {}
+                        resolved_ensemble_meta[Market.TOTAL.name] = {
+                            "ensemble_id": total_ensemble.ensemble_id,
+                            "metric_slot": market_metrics.get(Market.TOTAL.name),
+                            "configured_models": allowed_models,
+                            "configured_weights": config_weights_map.get(Market.TOTAL.name),
+                            "weights_source": weight_source or "equal",
+                            "weights": weights,
+                            "used_models": used_models,
+                            "config_source": cfg_meta.get("source"),
+                            "config_path": cfg_meta.get("path"),
+                        }
+                        for gid in pd.unique(bets_schedule_df["game_id"]):
+                            try:
+                                subset = forecast_df[forecast_df["game_id"] == gid]
+                                if subset.empty:
+                                    continue
+                                total_mean_raw, total_sd_raw, components_json = (
+                                    total_ensemble.combine(subset)
+                                )
+                                if total_mean_raw is None:
+                                    continue
+                                mask = bets_schedule_df["game_id"] == gid
+                                bets_schedule_df.loc[mask, "total"] = total_mean_raw
+                                if total_sd_raw is not None:
+                                    bets_schedule_df.loc[mask, "total_sd"] = total_sd_raw
+                                bets_schedule_df.loc[
+                                    mask, "total_source"
+                                ] = total_ensemble.ensemble_id
+                                bets_schedule_df.loc[
+                                    mask, "total_ensemble_components_json"
+                                ] = components_json
+                                total_ensemble_applied = True
+                            except Exception:
                                 continue
-                            total_mean_raw, total_sd_raw, components_json = (
-                                total_ensemble.combine(subset)
-                            )
-                            if total_mean_raw is None:
+                    else:
+                        # Single-model: pass through TOTAL data directly (no ensemble)
+                        single_model_name = list(unique_total_models)[0] if unique_total_models else bets_model_name
+                        for gid in pd.unique(bets_schedule_df["game_id"]):
+                            try:
+                                subset = forecast_df[forecast_df["game_id"] == gid]
+                                if subset.empty:
+                                    continue
+                                # Take the first (and only) row for this game
+                                row = subset.iloc[0]
+                                total_mean = row.get("total_mean")
+                                total_sd = row.get("total_sd")
+                                if total_mean is None or (isinstance(total_mean, float) and pd.isna(total_mean)):
+                                    continue
+                                mask = bets_schedule_df["game_id"] == gid
+                                bets_schedule_df.loc[mask, "total"] = total_mean
+                                if total_sd is not None and not (isinstance(total_sd, float) and pd.isna(total_sd)):
+                                    bets_schedule_df.loc[mask, "total_sd"] = total_sd
+                                bets_schedule_df.loc[mask, "total_source"] = single_model_name
+                                # Single model: store components as JSON with single entry
+                                components = {"models": [single_model_name], "total_mean": float(total_mean)}
+                                if total_sd is not None and not (isinstance(total_sd, float) and pd.isna(total_sd)):
+                                    components["total_sd"] = float(total_sd)
+                                bets_schedule_df.loc[mask, "total_ensemble_components_json"] = json.dumps(components)
+                                total_ensemble_applied = True
+                            except Exception:
                                 continue
-                            mask = bets_schedule_df["game_id"] == gid
-                            bets_schedule_df.loc[mask, "total"] = total_mean_raw
-                            if total_sd_raw is not None:
-                                bets_schedule_df.loc[mask, "total_sd"] = total_sd_raw
-                            bets_schedule_df.loc[
-                                mask, "total_source"
-                            ] = total_ensemble.ensemble_id
-                            bets_schedule_df.loc[
-                                mask, "total_ensemble_components_json"
-                            ] = components_json
-                            total_ensemble_applied = True
-                        except Exception:
-                            continue
         except Exception:
             pass
 
