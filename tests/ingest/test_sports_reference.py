@@ -133,5 +133,6 @@ def test_parse_sr_csv_nhl_normalizes_teams_and_ids() -> None:
     assert games[3].home_score == 3
     assert games[3].overtime is True
     assert games[3].decision_type == "SO"
-    assert games[0].game_id == "nhl|2025-10-07|CHI|FLA"
-    assert games[1].game_id == "nhl|2025-10-07|UTA|STL"
+    # Game IDs use canonical hash-based format: {sport}:{season}:{date}:{hash12}
+    assert games[0].game_id.startswith("nhl:2025-26:2025-10-07:")
+    assert games[1].game_id.startswith("nhl:2025-26:2025-10-07:")

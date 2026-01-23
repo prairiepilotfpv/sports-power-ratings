@@ -12,6 +12,7 @@ from typing import Iterable, List
 import pandas as pd
 
 from ingest.schema import GameResult
+from src.utils.game_id import make_game_id
 
 _NHL_TEAM_ALIASES = {
     "anaheim ducks": "ANA",
@@ -295,11 +296,13 @@ def _parse_sr_dataframe(
             if not looks_like_tip_time(raw_game_id):
                 game_id = raw_game_id
         if not game_id:
-            if sport_key == "nhl":
-                base_id = f"nhl|{parsed_date.date()}|{away_team}|{home_team}"
-                game_id_counts[base_id] += 1
-                suffix = game_id_counts[base_id]
-                game_id = base_id if suffix == 1 else f"{base_id}|{suffix}"
+            # Use canonical make_game_id for consistent IDs across all import paths
+            if sport_key and season:
+                try:
+                    game_id = make_game_id(sport_key, season, parsed_date.date(), away_team, home_team)
+                except Exception:
+                    # Fall back to legacy format if make_game_id fails
+                    game_id = f"{parsed_date.date()}|{away_team}|{home_team}"
             else:
                 game_id = f"{parsed_date.date()}|{away_team}|{home_team}"
 
