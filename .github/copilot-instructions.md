@@ -85,3 +85,8 @@ If anything here looks incomplete or unclear (model naming, a missing example, o
 “Prefer dedicated projection engine registration over branching in default engine”
 
 “Add regression tests for semantic drift + metric dropout”
+"System invariants are protected by tests/test_pipeline_canonization.py - run after any architectural change"
+
+"Game IDs must use make_game_id() - never create custom formats"
+
+"Ensembles: ML/SPREAD/TOTAL classes must all be imported in schedule.py"
