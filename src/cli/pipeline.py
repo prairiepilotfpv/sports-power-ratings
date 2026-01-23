@@ -247,6 +247,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Fail if active tuned params/weights are missing for market ensembles.",
     )
     schedule_parser.add_argument(
+        "--market-csv",
+        dest="market_csv",
+        help="CSV file with market lines to import before building BETS sheet (columns: team_home_raw, team_away_raw, game_date, market_type, selection, line, odds).",
+    )
+    schedule_parser.add_argument(
+        "--default-book",
+        dest="default_book",
+        help="Default book name for imported market lines (used with --market-csv).",
+    )
+    schedule_parser.add_argument(
         "--db",
         help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db)",
     )
@@ -1084,6 +1094,34 @@ def _run_schedule(args: argparse.Namespace) -> None:
 
     model_params = _parse_json_arg(args.model_params)
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
+
+    # Import market CSV into market_lines if provided
+    market_csv = getattr(args, "market_csv", None)
+    if market_csv:
+        from src.data.market_lines import import_market_csv
+
+        csv_path = Path(market_csv)
+        if not csv_path.exists():
+            raise FileNotFoundError(f"Market CSV not found: {csv_path}")
+        default_book = getattr(args, "default_book", None)
+        as_of_date = getattr(args, "as_of_date", None)
+        result = import_market_csv(
+            db_path,
+            csv_path=csv_path,
+            sport=args.sport,
+            season=args.season,
+            default_book=default_book,
+            date_filter=as_of_date,
+        )
+        print(
+            f"market-csv import: rows={result.get('rows_loaded')} "
+            f"inserted={result.get('inserted')} "
+            f"unmatched={result.get('unmatched')} "
+            f"filtered={result.get('date_filtered')}"
+        )
+        if result.get("unmatched", 0) > 0:
+            reasons = result.get("unmatched_reasons", {})
+            print(f"  unmatched reasons: {reasons}")
     _echo_db_path(db_path)
     output_path = Path(args.output) if args.output else None
     if getattr(args, "as_of_date", None):

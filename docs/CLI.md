@@ -98,11 +98,17 @@ python -m src.cli.pipeline schedule --sport nba --season 2025-26
 
 # CSV (one file per model)
 python -m src.cli.pipeline schedule --sport nba --season 2025-26 --output data/processed/nba/2025-26/schedule_with_projections.csv
+
+# With market lines imported into BETS sheet
+python -m src.cli.pipeline schedule --sport nba --season 2025-26 \
+  --market-csv outputs/paste_parsed/jan23nba.csv --default-book dn --as-of-date 2025-01-23
 ```
 
 - Default output: `data/processed/<sport>/<season>/schedule_with_projections.xlsx` with one sheet per model plus a `dashboard` sheet.
 - If `--output` ends with `.csv`, writes CSV per model (prefixed when multiple models run).
 - `--upcoming-only` limits export to games without scores.
+- `--market-csv` imports a CSV of market lines into `market_lines` before building the workbook. The BETS sheet will populate `line`, `odds`, and `source_market_snapshot_id` from these rows. Use with `--default-book` to tag the source book.
+- `--as-of-date` filters both the BETS sheet games and the market CSV import to a specific date.
 - Rows include schedule fields, projections (ratings, spreads, totals, win probabilities), calibration info, and results when scores exist.
 - Each schedule row now also includes tuning metadata (`params_market` and `tuning_run_id`) so you can trace which per-market run provided the parameters used for those projections.
 - When multiple models run, the workbook includes a `BETS` sheet with ensemble-aware columns:

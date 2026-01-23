@@ -42,35 +42,42 @@ def _normalize(text: str) -> str:
     return text.replace("−", "-").replace("–", "-").strip()
 
 
-def _tokenize_block(lines: List[str]) -> List[tuple]:
-    """Return a list of (type, value) tokens in order.
+def _split_team_block(block: List[str]) -> tuple[list[str], list[str]]:
+    """Return the away and home-specific lines for a market block."""
+    cleaned = [ln.strip() for ln in block if ln.strip()]
+    start_idx = None
+    for idx, ln in enumerate(cleaned):
+        if ln.lower().endswith("logo"):
+            start_idx = idx
+            break
+    if start_idx is None:
+        raise ValueError("Could not find team markup (logo lines) in market block")
 
-    Types: 'spread', 'total', 'odds'
-    """
-    tokens = []
+    cleaned = cleaned[start_idx:]
+    logo_positions = [i for i, ln in enumerate(cleaned) if ln.lower().endswith("logo")]
+    if len(logo_positions) < 2:
+        raise ValueError("Expected two team logo lines but found fewer in market block")
+
+    first_home_logo = logo_positions[1]
+    away_lines = cleaned[:first_home_logo]
+    home_lines = cleaned[first_home_logo:]
+    return away_lines, home_lines
+
+
+def _extract_numeric_values(lines: List[str]) -> List[str]:
+    values = []
     for ln in lines:
         s = ln.strip()
         if not s:
             continue
         low = s.lower()
-        # skip records and headers and logo/location markers
         if _RECORD_RE.match(s):
             continue
         if any(k in low for k in ("matchup", "open", "spread", "total", "moneyline", "logo", "location", "odds")):
             continue
-        # odds should be detected before spread to avoid treating 3-digit odds as spreads
-        if _ODDS_RE.match(s):
-            tokens.append(("odds", s))
-            continue
-        if _SPREAD_RE.match(s):
-            tokens.append(("spread", s))
-            continue
-        if _TOTAL_TOKEN_RE.match(s):
-            tokens.append(("total", s))
-            continue
-        
-        # other lines ignored
-    return tokens
+        if _SPREAD_RE.match(s) or _TOTAL_TOKEN_RE.match(s) or _ODDS_RE.match(s):
+            values.append(s)
+    return values
 
 
 def parse_action_paste(text: str) -> List[GameMarkets]:
@@ -103,57 +110,57 @@ def parse_action_paste(text: str) -> List[GameMarkets]:
                     game_date = None
                 break
 
-        # tokenize market-relevant values
-        tokens = _tokenize_block(block)
+        away_lines, home_lines = _split_team_block(block)
+        away_values = _extract_numeric_values(away_lines)
+        home_values = _extract_numeric_values(home_lines)
 
-        # positional parsing per spec
-        i_tok = 0
-        def _pop(expected_type: str):
-            nonlocal i_tok
-            if i_tok >= len(tokens):
-                raise ValueError(f"Missing token of type {expected_type} for matchup '{away} at {home}'")
-            tp, val = tokens[i_tok]
-            if tp != expected_type:
-                raise ValueError(f"Expected token type {expected_type} but got {tp} (value={val}) for matchup '{away} at {home}'")
-            i_tok += 1
-            return val
+        def _require_values(count: int, section: str) -> None:
+            if count < 5:
+                raise ValueError(f"Missing market values for {section} in matchup '{away} at {home}'")
 
-        # Away side
         open_spread_line = None
-        if i_tok < len(tokens) and tokens[i_tok][0] == "spread":
-            open_spread_line = float(tokens[i_tok][1])
-            i_tok += 1
+        away_idx = 0
+        if (
+            len(away_values) >= 6
+            and _SPREAD_RE.match(away_values[0])
+            and _SPREAD_RE.match(away_values[1])
+        ):
+            open_spread_line = float(away_values[0])
+            away_idx = 1
 
-        spread_away_line = float(_pop("spread"))
-        spread_away_odds = int(_pop("odds"))
-
-        over_token = _pop("total")
+        _require_values(len(away_values) - away_idx, "away spread/total/moneyline")
+        spread_away_line = float(away_values[away_idx])
+        spread_away_odds = int(away_values[away_idx + 1])
+        over_token = away_values[away_idx + 2]
         if not over_token.lower().startswith("o"):
             raise ValueError(f"Expected over total token for away side but got '{over_token}' in matchup '{away} at {home}'")
         over_line = float(over_token[1:])
-        over_odds = int(_pop("odds"))
+        over_odds = int(away_values[away_idx + 3])
+        ml_away_odds = int(away_values[away_idx + 4])
 
-        ml_away_odds = int(_pop("odds"))
-
-        # Home side
         open_total_line = None
-        if i_tok < len(tokens) and tokens[i_tok][0] == "total" and tokens[i_tok][1].lower().startswith("u"):
-            open_total_line = float(tokens[i_tok][1][1:])
-            i_tok += 1
+        home_idx = 0
+        if (
+            len(home_values) >= 6
+            and _TOTAL_TOKEN_RE.match(home_values[home_idx])
+            and home_values[home_idx][0].lower() in ("u", "o")
+            and _SPREAD_RE.match(home_values[home_idx + 1])
+        ):
+            open_total_line = float(home_values[home_idx][1:])
+            home_idx = 1
 
-        spread_home_line = float(_pop("spread"))
-        spread_home_odds = int(_pop("odds"))
-
-        under_token = _pop("total")
+        _require_values(len(home_values) - home_idx, "home spread/total/moneyline")
+        spread_home_line = float(home_values[home_idx])
+        spread_home_odds = int(home_values[home_idx + 1])
+        under_token = home_values[home_idx + 2]
         if not under_token.lower().startswith("u"):
             raise ValueError(f"Expected under total token for home side but got '{under_token}' in matchup '{away} at {home}'")
         under_line = float(under_token[1:])
-        under_odds = int(_pop("odds"))
+        under_odds = int(home_values[home_idx + 3])
 
-        # Home moneyline may be missing in some paste formats; default to 0
         try:
-            ml_home_odds = int(_pop("odds"))
-        except ValueError:
+            ml_home_odds = int(home_values[home_idx + 4])
+        except (IndexError, ValueError):
             ml_home_odds = 0
 
         # validate totals equal - prefer the over value when there's a small mismatch
