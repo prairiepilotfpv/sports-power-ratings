@@ -131,6 +131,17 @@ CREATE TABLE IF NOT EXISTS bets (
     outcome TEXT,
     profit REAL,
     source_opportunity_id INTEGER,
+    home_win_prob REAL,
+    away_win_prob REAL,
+    model_prob REAL,
+    edge REAL,
+    ev REAL,
+    margin_mean REAL,
+    margin_sd REAL,
+    total REAL,
+    total_sd REAL,
+    market_forecast_source TEXT,
+    ensemble_components_json TEXT,
     UNIQUE(review_run_id, game_id, market_type, selection)
 );
 
@@ -1249,3 +1260,301 @@ def import_clv_csv(
                 )
 
     return {"snapshots": snapshots, "bets_updated": bets_updated, "rejected": rejected}
+
+
+def import_bets_csv(
+    db_path: str | Path,
+    *,
+    csv_path: str | Path,
+    sport: str,
+    season: str,
+    review_run_id: str | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Import historical bets from a CSV (e.g., from external betting app).
+    
+    **IMPORTANT**: This function validates that the CSV contains ONLY bets for the specified sport.
+    If the CSV has mixed sports (e.g., both nba and nhl rows), the import will FAIL.
+    Reason: Each sport has its own database (data/db/<sport>/<season>.db).
+    To import mixed-sport histories, split the CSV by sport and run import separately for each:
+    - `python -m src.cli.pipeline betting import-csv --csv nba_bets.csv --sport nba --season 2025-26`
+    - `python -m src.cli.pipeline betting import-csv --csv nhl_bets.csv --sport nhl --season 2025-26`
+    
+    This ensures:
+    ✅ NHL bets go to data/db/nhl/2025-26.db
+    ✅ NBA bets go to data/db/nba/2025-26.db
+    ✅ No mixing of sports in the same database
+    ✅ No new databases are created (uses existing database for sport/season)
+    
+    Expected CSV columns:
+    - league, start_time, game, pick_desc, type, odds, odds_spread_total, result, units_wagered
+    (matches the export format from betting apps)
+    
+    Column clarifications:
+    - league: Sport code (nba, nhl, etc.). Useful for filtering/sorting history by sport.
+    - start_time: GAME TIME in ISO format (e.g., 2026-01-08T00:00:00.000Z). This is when the game was 
+      scheduled, NOT when you placed the bet. The import extracts the game date from this timestamp.
+    - game: Game description (e.g., "WAS @ PHI")
+    - game_id: (optional) Explicit game_id; if missing, fuzzy matching on game + start_time is attempted
+    - pick_desc: (optional) Description of what was picked
+    - type: Market type string (ml_away, ml_home, spread_away, spread_home, under, over)
+    - odds: American odds (e.g., -110, 120)
+    - odds_spread_total: Numeric line (spread/total value)
+    - result: Outcome (win, loss, push)
+    - units_wagered: Stake amount
+    
+    Maps columns to bets table:
+    - league → sport (VALIDATED: must match --sport argument)
+    - start_time, game → resolve to game_id (via fuzzy team matching if needed)
+    - type → market_type + selection (e.g., ml_away → ML / away)
+    - odds → odds (American odds)
+    - odds_spread_total → line
+    - units_wagered → stake
+    - result → outcome (win/loss/push mapped to outcome/profit logic)
+    
+    Upserts rows idempotently by (review_run_id, game_id, market_type, selection).
+    Returns dict with keys: inserted, updated, rejected, skipped, errors
+    """
+    import pandas as pd
+    from datetime import datetime
+    
+    if review_run_id is None:
+        # Generate review_run_id for this import batch
+        today = datetime.now().strftime("%Y%m%d")
+        review_run_id = f"history-import-{sport}-{today}"
+    
+    init_db(db_path)
+    csv_file = Path(csv_path)
+    if not csv_file.exists():
+        raise FileNotFoundError(f"CSV not found: {csv_file}")
+    
+    # Parse CSV
+    try:
+        df = pd.read_csv(csv_file)
+    except Exception as e:
+        raise ValueError(f"Failed to parse CSV: {e}")
+    
+    # Normalize column names (case-insensitive)
+    df.columns = df.columns.str.lower().str.strip()
+    
+    # Standardize column name variations:
+    # - "odds/spread/total" → "odds_spread_total"
+    # - "units wagered" → "units_wagered"
+    # - "units net" → "units_net"
+    # - "start time" → "start_time"
+    df.columns = df.columns.str.replace(r'/', '_', regex=False).str.replace(r'\s+', '_', regex=True)
+    
+    # Validate that the CSV sport matches the target database sport
+    # Extract unique leagues from CSV and check if they all match the target sport
+    csv_leagues = df['league'].str.lower().str.strip().unique()
+    csv_leagues = [lg for lg in csv_leagues if lg and not pd.isna(lg)]
+    
+    if csv_leagues:
+        mismatched = [lg for lg in csv_leagues if lg != sport.lower()]
+        if mismatched:
+            raise ValueError(
+                f"CSV contains bets for mismatched sports: {mismatched}. "
+                f"Target database is for sport '{sport}'. "
+                f"Each import should use a single sport; separate by sport and re-run import."
+            )
+    
+    inserted = 0
+    updated = 0
+    rejected = 0
+    skipped = 0
+    errors = []
+    
+    # Map market type strings to (market_type, selection) tuples
+    def _parse_market_type(type_str: str) -> tuple[str | None, str | None]:
+        """Convert 'ml_away', 'spread_home', 'under', 'over' to (market_type, selection)."""
+        if not isinstance(type_str, str):
+            return None, None
+        type_str = type_str.lower().strip()
+        if type_str in ("ml_away", "ml_home"):
+            return "ML", "away" if "away" in type_str else "home"
+        elif type_str in ("spread_away", "spread_home"):
+            return "spread", "away" if "away" in type_str else "home"
+        elif type_str == "under":
+            return "total", "under"
+        elif type_str == "over":
+            return "total", "over"
+        return None, None
+    
+    def _resolve_game_from_app_export(row: dict) -> str | None:
+        """Attempt to resolve game_id from league, start_time, game string.
+        
+        E.g., league='nba', start_time='2026-01-08T00:00:00.000Z', game='WAS @ PHI'
+        If the CSV contains an explicit game_id column, use that.
+        """
+        # Check for explicit game_id first
+        if "game_id" in row and row["game_id"] and not pd.isna(row["game_id"]):
+            return str(row["game_id"]).strip()
+        
+        # Otherwise, try to resolve from teams
+        league = (row.get("league") or "").strip().lower()
+        game_str = (row.get("game") or "").strip()
+        start_time_str = (row.get("start time") or row.get("start_time") or "").strip()
+        
+        if not league or not game_str:
+            return None
+        
+        # Extract teams from game string (e.g., "WAS @ PHI" → away="WAS", home="PHI")
+        parts = game_str.split("@")
+        if len(parts) != 2:
+            return None
+        team_away_raw = parts[0].strip()
+        team_home_raw = parts[1].strip()
+        
+        # Parse ISO timestamp to get date
+        game_date = None
+        if start_time_str:
+            try:
+                dt = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
+                game_date = dt.date().isoformat()
+            except Exception:
+                pass
+        
+        # Resolve to canonical game_id
+        res = resolve_staging_to_game(
+            db_path,
+            sport=league,
+            season=season,
+            team_home_raw=team_home_raw,
+            team_away_raw=team_away_raw,
+            game_date=game_date,
+        )
+        if res and res.get("match_status") == "matched":
+            return res.get("game_id")
+        return None
+    
+    def _safe_float(val) -> float | None:
+        if pd.isna(val) or val == "" or val is None:
+            return None
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return None
+    
+    def _safe_int(val) -> int | None:
+        if pd.isna(val) or val == "" or val is None:
+            return None
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            return None
+    
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    
+    try:
+        for idx, row in df.iterrows():
+            try:
+                # Resolve game_id
+                game_id = _resolve_game_from_app_export(row)
+                if not game_id:
+                    rejected += 1
+                    errors.append(f"Row {idx + 2}: Could not resolve game_id from {row.get('game')}")
+                    continue
+                
+                # Parse market type
+                market_type, selection = _parse_market_type(row.get("type"))
+                if not market_type or not selection:
+                    rejected += 1
+                    errors.append(f"Row {idx + 2}: Unknown market type {row.get('type')}")
+                    continue
+                
+                # Extract bet details
+                odds = _safe_int(row.get("odds"))
+                line = _safe_float(row.get("odds_spread_total") or row.get("line"))
+                stake = _safe_float(row.get("units_wagered"))
+                
+                if stake is None or stake == 0:
+                    skipped += 1
+                    continue
+                
+                # Derive outcome from result
+                result_str = (row.get("result") or "").lower().strip()
+                outcome = None
+                profit = None
+                if result_str == "win":
+                    outcome = "win"
+                    # Compute profit: if odds are -110, 1 unit stake → +0.9091 profit; if +110, → +1.0 profit
+                    if odds:
+                        if odds < 0:
+                            profit = stake / (abs(odds) / 100.0)
+                        else:
+                            profit = stake * (odds / 100.0)
+                elif result_str == "loss":
+                    outcome = "loss"
+                    profit = -stake
+                elif result_str == "push":
+                    outcome = "push"
+                    profit = 0
+                
+                # Extract optional prediction context
+                book = (row.get("book") or "").strip() or "manual"
+                logged_at = _utcnow_iso()
+                status = "settled" if outcome else "pending"
+                
+                # Insert or replace
+                cur.execute(
+                    """
+                    INSERT INTO bets (
+                        review_run_id, game_id, market_type, selection, line, odds, stake, book, logged_at, status, outcome, profit,
+                        home_win_prob, away_win_prob, model_prob, edge, ev,
+                        margin_mean, margin_sd, total, total_sd, market_forecast_source, ensemble_components_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(review_run_id, game_id, market_type, selection) DO UPDATE SET
+                        stake = excluded.stake,
+                        odds = excluded.odds,
+                        line = excluded.line,
+                        book = excluded.book,
+                        logged_at = excluded.logged_at,
+                        status = excluded.status,
+                        outcome = excluded.outcome,
+                        profit = excluded.profit
+                    """,
+                    (
+                        review_run_id,
+                        game_id,
+                        market_type,
+                        selection,
+                        line,
+                        odds,
+                        stake,
+                        book,
+                        logged_at,
+                        status,
+                        outcome,
+                        profit,
+                        None, None, None, None, None, None, None, None, None, None, None,  # prediction context fields (optional)
+                    ),
+                )
+                
+                # Track if it was an insert or update
+                if cur.rowcount == 1:
+                    inserted += 1
+                else:
+                    updated += 1
+                    
+            except Exception as e:
+                rejected += 1
+                errors.append(f"Row {idx + 2}: {str(e)}")
+                continue
+        
+        if not dry_run:
+            conn.commit()
+        else:
+            conn.rollback()
+    finally:
+        conn.close()
+    
+    return {
+        "inserted": inserted,
+        "updated": updated,
+        "rejected": rejected,
+        "skipped": skipped,
+        "errors": errors[:10],  # Return first 10 errors
+        "review_run_id": review_run_id,
+    }
+

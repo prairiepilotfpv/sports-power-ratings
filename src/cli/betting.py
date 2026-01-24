@@ -59,6 +59,26 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     clv_csv.add_argument("--captured-at", dest="captured_at", help="Override captured_at timestamp for all rows")
     clv_csv.add_argument("--no-update-bets", action="store_true", help="Skip updating existing bets with CLV values")
 
+    parse_export = sub.add_parser("parse-export", help="Parse betting app export CSV and assign game_ids from database")
+    parse_export.add_argument("--csv", dest="csv_path", required=True, help="CSV export from betting app (league, start_time, game, type, odds, stake, result)")
+    parse_export.add_argument("--sport", help="Optional sport filter (nba, ncaaf, nhl, etc.); if omitted, auto-detects all sports in CSV")
+    parse_export.add_argument("--season", default="2025-26", help="Season code (default: 2025-26)")
+    parse_export.add_argument("--db", help="Optional DB path override (use <sport> placeholder for multi-sport CSVs)")
+    parse_export.add_argument("--output", help="Optional output CSV path; defaults to input filename with '-with-ids' suffix")
+
+
+    import_csv = sub.add_parser("import-csv", help="Import historical bets from a CSV (e.g., from betting app export)")
+    import_csv.add_argument("--csv", dest="csv_path", required=True, help="CSV of bets (league, start_time, game, type, odds, stake, result)")
+    import_csv.add_argument(
+        "--sport", 
+        required=False, 
+        help="Sport code (nba, nhl, etc.). If omitted, will infer from game_id column. CSV must contain only bets for this sport; mixed-sport CSVs will be rejected."
+    )
+    import_csv.add_argument("--season", required=False, help="Season code (e.g., 2025-26). If omitted, will infer from game_id column.")
+    import_csv.add_argument("--db", help="Optional DB path override")
+    import_csv.add_argument("--review-run-id", help="Optional review_run_id for the import batch (auto-generated if omitted)")
+    import_csv.add_argument("--dry-run", action="store_true", help="Parse and validate without writing to DB")
+
     review_gen = sub.add_parser("review-generate", help="Generate a review workbook for a given sport/season")
     review_gen.add_argument("--sport", required=True)
     review_gen.add_argument("--season", required=True)
