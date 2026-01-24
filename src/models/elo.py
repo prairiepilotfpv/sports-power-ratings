@@ -471,7 +471,19 @@ class EloModel(BaseModel):
         )
         total_sd = max(self._total_sd_floor, total_sd_raw)
 
-        game_id = row.get("game_id") or f"{row['date']}_{home}_{away}"
+        # Use canonical game_id or generate one
+        game_id = row.get("game_id")
+        if not game_id:
+            from src.utils.game_id import make_game_id
+            sport = row.get("sport") or getattr(self, "_sport", None)
+            season = row.get("season") or getattr(self, "_season", None)
+            if sport and season:
+                try:
+                    game_id = make_game_id(sport, season, row["date"], away, home)
+                except Exception:
+                    game_id = f"{row['date']}|{away}|{home}"  # Fallback format
+            else:
+                game_id = f"{row['date']}|{away}|{home}"
         return GamePrediction(
             game_id=str(game_id),
             date=str(row["date"]),

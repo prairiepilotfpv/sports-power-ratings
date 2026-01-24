@@ -657,13 +657,24 @@ class TOORModel(BaseModel):
     ) -> dict[str, Any]:
         coefficients = self._coefficients
         win_prob_k = self._win_prob_k if self._win_prob_k > 0 else DEFAULT_WIN_PROB_K
-        safe_game_id = (
-            str(game_id)
-            if game_id is not None
-            else f"{date}_{home}_{away}"
-            if date is not None
-            else f"{home}_{away}"
-        )
+        # Use canonical game_id or generate fallback
+        if game_id is not None:
+            safe_game_id = str(game_id)
+        elif date is not None:
+            from src.utils.game_id import make_game_id
+            if sport:
+                season = getattr(self, "_season", None)
+                if season:
+                    try:
+                        safe_game_id = make_game_id(sport, season, date, away, home)
+                    except Exception:
+                        safe_game_id = f"{date}|{away}|{home}"
+                else:
+                    safe_game_id = f"{date}|{away}|{home}"
+            else:
+                safe_game_id = f"{date}|{away}|{home}"
+        else:
+            safe_game_id = f"{home}|{away}"
         safe_date = str(date) if date is not None else ""
         cfg = get_validation_config(sport)
         strengths = self._rating_model.signed_strengths()

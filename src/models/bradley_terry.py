@@ -399,7 +399,19 @@ class BradleyTerryBacktest(BaseModel):
             source_label = "direct" if direct_model_p is not None else "bt_margin_normal"
             p_home_win = model_p_home_win
             pred_margin = projection.get("margin_mean")
-            game_id = row.get("game_id") or f"{row['date']}_{home}_{away}"
+            # Use canonical game_id or generate fallback
+            game_id = row.get("game_id")
+            if not game_id:
+                from src.utils.game_id import make_game_id
+                sport = row.get("sport")
+                season = row.get("season")
+                if sport and season:
+                    try:
+                        game_id = make_game_id(sport, season, row["date"], away, home)
+                    except Exception:
+                        game_id = f"{row['date']}|{away}|{home}"
+                else:
+                    game_id = f"{row['date']}|{away}|{home}"
             extra = {
                 "projected_home_score": projection.get("projected_home_score"),
                 "projected_away_score": projection.get("projected_away_score"),

@@ -669,6 +669,7 @@ def _normalize_source_label(value: Any, *, default: str = "direct") -> str:
 
 
 def _is_missing(value: Any) -> bool:
+    """Check if a value is None, NaN, or empty string."""
     if value is None:
         return True
     try:
@@ -1444,11 +1445,16 @@ def build_schedule_excel_report(
                 if model_name == bets_model_name and market == Market.ML:
                     bets_schedule_df = schedule_df
 
-            model_df_all_markets = (
-                pd.concat(market_frames, ignore_index=True)
-                if market_frames
-                else pd.DataFrame(columns=SCHEDULE_EXPORT_COLUMNS)
-            )
+            # Filter empty DataFrames before concat to avoid FutureWarning
+            non_empty_frames = [df for df in market_frames if not df.empty]
+            if non_empty_frames:
+                # Suppress FutureWarning for DataFrame concat with all-NA columns
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=FutureWarning, message=".*DataFrame concatenation.*")
+                    model_df_all_markets = pd.concat(non_empty_frames, ignore_index=True)
+            else:
+                model_df_all_markets = pd.DataFrame(columns=SCHEDULE_EXPORT_COLUMNS)
             if not model_df_all_markets.empty:
                 model_df_all_markets = (
                     model_df_all_markets.assign(

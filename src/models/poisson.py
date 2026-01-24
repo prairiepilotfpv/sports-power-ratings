@@ -393,7 +393,19 @@ class PoissonModel(BaseModel):
             total_mean = canonical["total_mean"]
             p_home_win = canonical["p_home_win"]
 
-            game_id = row.get("game_id") or f"{row['date']}_{home}_{away}"
+            # Use canonical game_id or generate fallback
+            game_id = row.get("game_id")
+            if not game_id:
+                from src.utils.game_id import make_game_id
+                sport = row.get("sport")
+                season = row.get("season")
+                if sport and season:
+                    try:
+                        game_id = make_game_id(sport, season, row["date"], away, home)
+                    except Exception:
+                        game_id = f"{row['date']}|{away}|{home}"
+                else:
+                    game_id = f"{row['date']}|{away}|{home}"
             predictions.append(
                 GamePrediction(
                     game_id=str(game_id),
