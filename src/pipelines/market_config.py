@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_MARKET_MODELS: dict[str, list[str]] = {
     "ML": ["elo", "bradley-terry"],
     "SPREAD": ["elo", "gssd", "toor"],
-    "TOTAL": ["poisson", "gssd"],
+    "TOTAL": ["poisson", "gssd", "toor"],
 }
 
 DEFAULT_MARKET_METRICS: dict[str, str] = {

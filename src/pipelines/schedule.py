@@ -793,11 +793,42 @@ def _build_bets_dataframe(
     if schedule_df.empty:
         return pd.DataFrame(columns=bets_columns)
 
+    # DEBUG: Log input before any processing
+    if not schedule_df.empty and "game_id" in schedule_df.columns:
+        input_game_count = schedule_df["game_id"].nunique()
+        input_total_rows = len(schedule_df)
+        if input_total_rows > input_game_count:
+            _LOG.warning(
+                f"BETS input has {input_total_rows} rows but only {input_game_count} unique game_ids. "
+                f"Ratio: {input_total_rows / input_game_count:.1f}x"
+            )
+
     df = schedule_df.assign(
         _date=pd.to_datetime(schedule_df["date"], errors="coerce").dt.date
     )
     df = df[df["status"] == "scheduled"]
     df = df[df["_date"] == as_of_date]
+    
+    # CRITICAL DEDUPLICATION: Ensure each game_id appears exactly once in input.
+    # If the input schedule contains duplicate game_ids (e.g., from multiple market runs),
+    # keep only the first occurrence to prevent creating multiple 6-row blocks per game.
+    if "game_id" in df.columns:
+        initial_count = len(df)
+        # Log details about duplicates BEFORE deduplicating
+        if df.duplicated(subset=["game_id"], keep=False).any():
+            dup_games = df[df.duplicated(subset=["game_id"], keep=False)]["game_id"].unique()
+            _LOG.warning(
+                f"Found {len(dup_games)} game_id(s) with duplicates in BETS input. "
+                f"Sample: {list(dup_games[:3])}. Total input rows: {initial_count}."
+            )
+        
+        df = df.drop_duplicates(subset=["game_id"], keep="first")
+        if len(df) < initial_count:
+            _LOG.warning(
+                f"Deduplicated {initial_count - len(df)} duplicate game_id(s) in BETS input. "
+                f"Final unique games: {len(df)}."
+            )
+    
     # Ensure deterministic ordering so selection rows list the away team above
     # the home team (matches schedule sheet presentation). Sort by date,
     # game_id, and away_team to guarantee away-first ordering per game.
@@ -840,13 +871,34 @@ def _build_bets_dataframe(
         team_id_cache[key] = team_id
         return team_id
 
+    # Import betting_repository once for all market line lookups
+    br = None
+    if db_path is not None:
+        try:
+            from src.data import betting_repository as br
+        except Exception:
+            br = None
+
+    # CANONICAL ROW ASSEMBLY: For each game, create exactly 6 rows (2×ML, 2×spread, 2×total),
+    # enrich them in-place, then move to the next game. No additional rows appended after
+    # a game's canonical 6 rows are complete.
     rows: list[dict[str, Any]] = []
-    for _, row in df.iterrows():
-        projected_home_score = row.get("projected_home_score")
-        projected_away_score = row.get("projected_away_score")
-        projected_total = row.get("projected_total")
-        total = row.get("total")
-        total_mean = row.get("total_mean")
+    
+    for _, game_row in df.iterrows():
+        game_id = game_row.get("game_id")
+        home_team = game_row.get("home_team")
+        away_team = game_row.get("away_team")
+        
+        # Resolve team IDs for market line lookups
+        home_team_id = _resolve_team_id_for(home_team)
+        away_team_id = _resolve_team_id_for(away_team)
+        
+        # Resolve total/projected_total before row creation
+        projected_home_score = game_row.get("projected_home_score")
+        projected_away_score = game_row.get("projected_away_score")
+        projected_total = game_row.get("projected_total")
+        total = game_row.get("total")
+        total_mean = game_row.get("total_mean")
         if _is_missing(total):
             if not _is_missing(total_mean):
                 total = total_mean
@@ -855,12 +907,33 @@ def _build_bets_dataframe(
             else:
                 total = projected_total
 
-        base = {
+        # Normalize source labels for market-specific metadata
+        ml_source_label = _normalize_source_label(
+            game_row.get("win_prob_source") or game_row.get("ml_source")
+        )
+        spread_source_label = _normalize_source_label(game_row.get("spread_source"))
+        total_source_label = _normalize_source_label(game_row.get("total_source"))
+        
+        win_prob_source = game_row.get("win_prob_source")
+        if _is_missing(win_prob_source):
+            win_prob_source = ml_source_label
+        
+        spread_source = game_row.get("spread_source")
+        if _is_missing(spread_source):
+            spread_source = spread_source_label
+        
+        total_source = game_row.get("total_source")
+        if _is_missing(total_source):
+            total_source = total_source_label
+
+        # Build shared base row template for all 6 selections of this game.
+        # Include all forecast fields (initialized to blanks; overridden per market type).
+        base_row = {
             "review_run_id": review_run_id,
-            "game_id": row.get("game_id"),
-            "date": _safe_date(row.get("date")),
-            "away_team": row.get("away_team"),
-            "home_team": row.get("home_team"),
+            "game_id": game_id,
+            "date": _safe_date(game_row.get("date")),
+            "away_team": away_team,
+            "home_team": home_team,
             "line": "",
             "odds": "",
             "price": "",
@@ -878,8 +951,7 @@ def _build_bets_dataframe(
             "opportunity_id": "",
             "model": model_name,
             "market_forecast_source": "",
-        }
-        forecast_blanks = {
+            # Initialize all forecast fields to blank; overridden per market type below
             "home_win_prob": "",
             "away_win_prob": "",
             "win_prob_source": "",
@@ -893,141 +965,123 @@ def _build_bets_dataframe(
             "total_source": "",
             "total_ensemble_components_json": "",
         }
-        ml_source_label = _normalize_source_label(
-            row.get("win_prob_source") or row.get("ml_source")
-        )
-        spread_source_label = _normalize_source_label(row.get("spread_source"))
-        total_source_label = _normalize_source_label(row.get("total_source"))
+        
+        # Add calibrated fields if present
+        if include_calibrated:
+            base_row.update({
+                "home_win_prob_raw": "",
+                "away_win_prob_raw": "",
+                "home_win_prob_calibrated": "",
+                "away_win_prob_calibrated": "",
+            })
 
-        win_prob_source = row.get("win_prob_source")
-        if _is_missing(win_prob_source):
-            win_prob_source = ml_source_label
 
-        spread_source = row.get("spread_source")
-        if _is_missing(spread_source):
-            spread_source = spread_source_label
-
-        total_source = row.get("total_source")
-        if _is_missing(total_source):
-            total_source = total_source_label
-
-        ml_fields = {
-            "home_win_prob": row.get("home_win_prob"),
-            "away_win_prob": row.get("away_win_prob"),
-            "win_prob_source": win_prob_source,
-            "ml_ensemble_components_json": row.get("ml_ensemble_components_json"),
-        }
-        spread_fields = {
-            "margin_mean": row.get("margin_mean"),
-            "margin_sd": row.get("margin_sd"),
-            "spread_source": spread_source,
-            "spread_ensemble_components_json": row.get("spread_ensemble_components_json"),
-        }
-        total_fields = {
-            "total": total,
-            "total_sd": row.get("total_sd"),
-            "total_source": total_source,
-            "total_ensemble_components_json": row.get("total_ensemble_components_json"),
-        }
-        if not include_calibrated:
-            for key in (
-                "home_win_prob_raw",
-                "away_win_prob_raw",
-                "home_win_prob_calibrated",
-                "away_win_prob_calibrated",
-            ):
-                base.pop(key, None)
-        else:
-            forecast_blanks.update(
-                {
-                    "home_win_prob_raw": "",
-                    "away_win_prob_raw": "",
-                    "home_win_prob_calibrated": "",
-                    "away_win_prob_calibrated": "",
-                }
-            )
-            ml_fields.update(
-                {
-                    "home_win_prob_raw": row.get("home_win_prob_raw"),
-                    "away_win_prob_raw": row.get("away_win_prob_raw"),
-                    "home_win_prob_calibrated": row.get("home_win_prob_calibrated"),
-                    "away_win_prob_calibrated": row.get("away_win_prob_calibrated"),
-                }
-            )
-
-        home_team = row.get("home_team")
-        away_team = row.get("away_team")
-        home_team_id = _resolve_team_id_for(home_team)
-        away_team_id = _resolve_team_id_for(away_team)
-
-        # Lookup latest market line for each market/selection as-of the workbook date
-        # only when a db_path is provided; otherwise leave line/odds blank.
-        # Market lines are populated via `betting market-csv` or `schedule --market-csv`.
-        br = None
-        if db_path is not None:
-            try:
-                from src.data import betting_repository as br
-            except Exception:
-                br = None
-
-        for mtype, sel, mlabel in [
-            ("ML", away_team, ml_source_label),
-            ("ML", home_team, ml_source_label),
-            ("spread", away_team, spread_source_label),
-            ("spread", home_team, spread_source_label),
-            ("total", "Over", total_source_label),
-            ("total", "Under", total_source_label),
-        ]:
+        # CANONICAL 6 ROWS: Construct exactly once per game, then enrich in-place
+        canonical_specs = [
+            # 2 × ML
+            ("ML", away_team, ml_source_label, "home_win_prob", "away_win_prob", "win_prob_source", "ml_ensemble_components_json"),
+            ("ML", home_team, ml_source_label, "home_win_prob", "away_win_prob", "win_prob_source", "ml_ensemble_components_json"),
+            # 2 × spread
+            ("spread", away_team, spread_source_label, "margin_mean", "margin_sd", "spread_source", "spread_ensemble_components_json"),
+            ("spread", home_team, spread_source_label, "margin_mean", "margin_sd", "spread_source", "spread_ensemble_components_json"),
+            # 2 × total
+            ("total", "Over", total_source_label, "total", "total_sd", "total_source", "total_ensemble_components_json"),
+            ("total", "Under", total_source_label, "total", "total_sd", "total_source", "total_ensemble_components_json"),
+        ]
+        
+        for market_type, selection, source_label, prob_col1, prob_col2, source_col, ensemble_col in canonical_specs:
+            # Create canonical row for this market/selection
+            canonical_row = dict(base_row)
+            canonical_row["market_type"] = market_type
+            canonical_row["selection"] = selection
+            canonical_row["market_forecast_source"] = source_label
+            canonical_row["model"] = source_label
+            
+            # Enrich with market-specific forecast data (in-place, no additional rows)
+            if market_type == "ML":
+                canonical_row.update({
+                    "home_win_prob": game_row.get("home_win_prob"),
+                    "away_win_prob": game_row.get("away_win_prob"),
+                    "win_prob_source": win_prob_source,
+                    "ml_ensemble_components_json": game_row.get("ml_ensemble_components_json"),
+                })
+                if include_calibrated:
+                    canonical_row.update({
+                        "home_win_prob_raw": game_row.get("home_win_prob_raw"),
+                        "away_win_prob_raw": game_row.get("away_win_prob_raw"),
+                        "home_win_prob_calibrated": game_row.get("home_win_prob_calibrated"),
+                        "away_win_prob_calibrated": game_row.get("away_win_prob_calibrated"),
+                    })
+            elif market_type == "spread":
+                canonical_row.update({
+                    "margin_mean": game_row.get("margin_mean"),
+                    "margin_sd": game_row.get("margin_sd"),
+                    "spread_source": spread_source,
+                    "spread_ensemble_components_json": game_row.get("spread_ensemble_components_json"),
+                })
+            else:  # total
+                canonical_row.update({
+                    "total": total,
+                    "total_sd": game_row.get("total_sd"),
+                    "total_source": total_source,
+                    "total_ensemble_components_json": game_row.get("total_ensemble_components_json"),
+                })
+            
+            # LEFT-JOIN market lines: lookup only if market_type and selection match;
+            # if missing, cells remain blank (no separate rows created for missing lines)
             snap = None
             if br is not None:
                 try:
-                    selection_team_id = None
-                    selection_value = None
-                    if mtype in ("ML", "spread"):
-                        if sel == home_team:
-                            selection_team_id = home_team_id
-                        elif sel == away_team:
-                            selection_team_id = away_team_id
-                    else:
-                        selection_value = sel
-                    if sport and season and row.get("game_id"):
-                        if selection_team_id is not None:
+                    if market_type in ("ML", "spread"):
+                        if selection == home_team:
                             snap = br.get_latest_market_line(
                                 db_path,
                                 sport=sport,
                                 season=season,
-                                game_id=str(row.get("game_id")),
-                                market_type=mtype,
-                                selection_team_id=selection_team_id,
+                                game_id=str(game_id),
+                                market_type=market_type,
+                                selection_team_id=home_team_id,
                             )
-                        elif selection_value is not None:
+                        elif selection == away_team:
                             snap = br.get_latest_market_line(
                                 db_path,
                                 sport=sport,
                                 season=season,
-                                game_id=str(row.get("game_id")),
-                                market_type=mtype,
-                                selection=selection_value,
+                                game_id=str(game_id),
+                                market_type=market_type,
+                                selection_team_id=away_team_id,
                             )
+                    elif market_type == "total":
+                        snap = br.get_latest_market_line(
+                            db_path,
+                            sport=sport,
+                            season=season,
+                            game_id=str(game_id),
+                            market_type=market_type,
+                            selection=selection,
+                        )
                 except Exception:
                     snap = None
+            
+            # Enrich canonical row with market line data (left-join: blanks if missing)
+            canonical_row["line"] = snap.get("line") if snap and snap.get("line") is not None else ""
+            canonical_row["odds"] = int(snap.get("odds")) if snap and snap.get("odds") is not None else ""
+            canonical_row["source_market_snapshot_id"] = snap.get("id") if snap and snap.get("id") is not None else ""
+            
+            # Append canonical row (exactly once per game/market/selection combination)
+            rows.append(canonical_row)
 
-            rows.append(
-                {
-                    **base,
-                    **forecast_blanks,
-                    **(ml_fields if mtype == "ML" else (spread_fields if mtype == "spread" else total_fields)),
-                    "market_type": mtype,
-                    "selection": sel,
-                    "model": mlabel,
-                    "market_forecast_source": mlabel,
-                    "line": snap.get("line") if snap and snap.get("line") is not None else "",
-                    "odds": int(snap.get("odds")) if snap and snap.get("odds") is not None else "",
-                    "source_market_snapshot_id": snap.get("id") if snap and snap.get("id") is not None else "",
-                }
+    # INVARIANT ENFORCEMENT: Assert each game_id appears exactly 6 times
+    bets_df = pd.DataFrame(rows, columns=bets_columns)
+    if not bets_df.empty and "game_id" in bets_df.columns:
+        game_counts = bets_df["game_id"].value_counts()
+        invalid_counts = game_counts[game_counts != 6]
+        if not invalid_counts.empty:
+            _LOG.warning(
+                f"BETS invariant violation: {len(invalid_counts)} game(s) do not have exactly 6 rows: {invalid_counts.to_dict()}"
             )
-
-    return pd.DataFrame(rows, columns=bets_columns)
+    
+    return bets_df
 
 
 def _training_date_range(df: pd.DataFrame) -> str:

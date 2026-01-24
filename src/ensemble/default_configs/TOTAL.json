@@ -2,7 +2,7 @@
   "market": "TOTAL",
   "ensemble_id": "ensemble_total_v1",
   "metric_slot": "mae_total",
-  "models": ["poisson", "gssd"],
+  "models": ["poisson", "gssd", "toor"],
   "weights": {
     "poisson": 0.5,
     "gssd": 0.5

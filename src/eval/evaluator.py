@@ -41,7 +41,7 @@ class EvaluationConfig:
                 "elo": 1.0,
                 "gssd": 1.0,
                 "poisson": 0.25,
-                "toor": 0.0,
+                "toor": 0.25,
             },
         }
     )

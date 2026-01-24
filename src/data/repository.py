@@ -202,6 +202,24 @@ CREATE TABLE IF NOT EXISTS market_line_import_errors (
     failure_details TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS bets_predictions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id TEXT NOT NULL,
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    prediction_date TEXT NOT NULL,
+    home_win_prob REAL NOT NULL,
+    model_prob REAL,
+    edge REAL,
+    ev REAL,
+    market_type TEXT,
+    selection TEXT,
+    line REAL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(game_id, sport, season, prediction_date),
+    FOREIGN KEY(game_id) REFERENCES games(game_id)
+);
 """
 
 

@@ -8,6 +8,8 @@ from pathlib import Path
 import re
 import sys
 
+import pandas as pd
+
 
 def _ensure_src_on_path() -> None:
     src_dir = Path(__file__).resolve().parents[2] / "src"
@@ -255,6 +257,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--default-book",
         dest="default_book",
         help="Default book name for imported market lines (used with --market-csv).",
+    )
+    schedule_parser.add_argument(
+        "--validate-ensemble-weights",
+        action="store_true",
+        help="Compare tuned ML ensemble weights vs equal weights on completed games; saves report to outputs/ensemble_validation/.",
     )
     schedule_parser.add_argument(
         "--db",
@@ -1164,6 +1171,45 @@ def _run_schedule(args: argparse.Namespace) -> None:
         strict=bool(getattr(args, "strict", False)),
     )
     print(f"Saved schedule workbook -> {result_path}")
+    
+    # Optional: save BETS predictions to DB and run validation
+    if getattr(args, "validate_ensemble_weights", False):
+        try:
+            from data.bets_repository import save_bets_predictions
+            from pipelines.ensemble_weight_validation import (
+                validate_ensemble_ml_weights,
+                save_validation_report,
+            )
+            
+            # Load BETS sheet and save predictions to database
+            bets_df = pd.read_excel(result_path, sheet_name="BETS")
+            n_saved = save_bets_predictions(
+                db_path,
+                bets_df=bets_df,
+                sport=args.sport,
+                season=args.season,
+            )
+            print(f"  Saved {n_saved} BETS predictions to database")
+            
+            # Run validation using DB data (7-day rolling window by default)
+            validation_result = validate_ensemble_ml_weights(
+                db_path=db_path,
+                sport=args.sport,
+                season=args.season,
+                market="ML",
+                days_back=7,
+            )
+            
+            if validation_result:
+                report_path = save_validation_report(
+                    validation_result=validation_result,
+                    sport=args.sport,
+                    season=args.season,
+                )
+                if report_path:
+                    print(f"  Ensemble weight validation report -> {report_path}")
+        except Exception as e:
+            print(f"Warning: Ensemble weight validation failed (non-fatal): {e}")
 
 
 def _run_market_review(args: argparse.Namespace) -> None:

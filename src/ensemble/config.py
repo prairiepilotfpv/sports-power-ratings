@@ -40,7 +40,7 @@ _METRIC_SLOTS = {"log_loss", "mae_margin", "mae_total"}
 DEFAULT_MARKET_MODELS: dict[str, list[str]] = {
     "ML": ["elo", "bradley-terry"],
     "SPREAD": ["elo", "gssd", "toor"],
-    "TOTAL": ["poisson", "gssd"],
+    "TOTAL": ["poisson", "gssd", "toor"],
 }
 
 DEFAULT_MARKET_METRICS: dict[str, str] = {
