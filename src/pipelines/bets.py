@@ -124,6 +124,31 @@ def log_bets(
             book = row.get("book") if not pd.isna(row.get("book")) else None
             source_opportunity_id = row.get("opportunity_id") if not pd.isna(row.get("opportunity_id")) else None
 
+            # Extract prediction context from BETS sheet
+            def _safe_float(val):
+                if pd.isna(val) or val == "" or val is None:
+                    return None
+                try:
+                    return float(val)
+                except (ValueError, TypeError):
+                    return None
+
+            home_win_prob = _safe_float(row.get("home_win_prob"))
+            away_win_prob = _safe_float(row.get("away_win_prob"))
+            model_prob = _safe_float(row.get("model_prob"))
+            edge = _safe_float(row.get("edge"))
+            ev = _safe_float(row.get("ev"))
+            margin_mean = _safe_float(row.get("margin_mean"))
+            margin_sd = _safe_float(row.get("margin_sd"))
+            total = _safe_float(row.get("total"))
+            total_sd = _safe_float(row.get("total_sd"))
+            market_forecast_source = row.get("market_forecast_source") if not pd.isna(row.get("market_forecast_source")) else None
+            ensemble_components_json = row.get("ml_ensemble_components_json") or row.get("ensemble_components_json")
+            if ensemble_components_json and not pd.isna(ensemble_components_json):
+                ensemble_components_json = str(ensemble_components_json)
+            else:
+                ensemble_components_json = None
+
             logged_at = _utcnow_iso()
             status = "pending"
 
@@ -182,8 +207,11 @@ def log_bets(
             cur.execute(
                 """
                 INSERT INTO bets (
-                    review_run_id, game_id, market_type, selection, line, odds, stake, book, logged_at, status, source_opportunity_id, clv_close_odds, clv_close_line
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    review_run_id, game_id, market_type, selection, line, odds, stake, book, logged_at, status, 
+                    source_opportunity_id, clv_close_odds, clv_close_line,
+                    home_win_prob, away_win_prob, model_prob, edge, ev,
+                    margin_mean, margin_sd, total, total_sd, market_forecast_source, ensemble_components_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(review_run_id, game_id, market_type, selection) DO UPDATE SET
                     stake = excluded.stake,
                     odds = excluded.odds,
@@ -193,7 +221,18 @@ def log_bets(
                     status = excluded.status,
                     source_opportunity_id = excluded.source_opportunity_id,
                     clv_close_odds = excluded.clv_close_odds,
-                    clv_close_line = excluded.clv_close_line
+                    clv_close_line = excluded.clv_close_line,
+                    home_win_prob = excluded.home_win_prob,
+                    away_win_prob = excluded.away_win_prob,
+                    model_prob = excluded.model_prob,
+                    edge = excluded.edge,
+                    ev = excluded.ev,
+                    margin_mean = excluded.margin_mean,
+                    margin_sd = excluded.margin_sd,
+                    total = excluded.total,
+                    total_sd = excluded.total_sd,
+                    market_forecast_source = excluded.market_forecast_source,
+                    ensemble_components_json = excluded.ensemble_components_json
                 """,
                 (
                     review_run_id,
@@ -209,6 +248,17 @@ def log_bets(
                     source_opportunity_id,
                     clv_odds,
                     clv_line,
+                    home_win_prob,
+                    away_win_prob,
+                    model_prob,
+                    edge,
+                    ev,
+                    margin_mean,
+                    margin_sd,
+                    total,
+                    total_sd,
+                    market_forecast_source,
+                    ensemble_components_json,
                 ),
             )
             conn.commit()

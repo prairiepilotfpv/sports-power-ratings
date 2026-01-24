@@ -1861,10 +1861,70 @@ def _run_betting(args: argparse.Namespace) -> None:
     from src.pipelines import opportunities as opportunities_pipeline
     import sqlite3
 
-    # Resolve DB
-    db_path = _resolve_db_path(args)
-
     cmd = getattr(args, "betting_cmd", None)
+    
+    # Some commands (like parse-export) don't need to resolve db_path upfront
+    if cmd == "parse-export":
+        # Handle parse-export without early db_path resolution
+        from src.parsers import betting_app
+        
+        csv_path = getattr(args, "csv_path", None)
+        if not csv_path:
+            raise ValueError("--csv is required for parse-export")
+        
+        sport = getattr(args, "sport", None)
+        season = getattr(args, "season", "2025-26")
+        output = getattr(args, "output", None)
+        
+        # Handle DB path
+        db_override = getattr(args, "db", None)
+        if db_override:
+            db_base = db_override
+        else:
+            db_base = f"data/db/<sport>/{season}.db"
+        
+        print(f"Parsing betting app export: {csv_path}")
+        
+        if sport:
+            # Single sport mode
+            db_path = db_base.replace("<sport>", sport)
+            matched, total, unmatched = betting_app.parse_betting_app_export(
+                csv_path=csv_path,
+                db_path=db_path,
+                output_path=output,
+                sport=sport,
+                season=season,
+            )
+            print(f"[OK] Matched {matched}/{total} bets")
+            if unmatched:
+                print(f"[WARNING] {len(unmatched)} unmatched games:")
+                for game in unmatched[:10]:
+                    print(f"    {game}")
+                if len(unmatched) > 10:
+                    print(f"    ... and {len(unmatched) - 10} more")
+        else:
+            # Auto-detect sports
+            results = betting_app.parse_betting_app_exports_by_sport(
+                csv_path=csv_path,
+                db_path=db_base,
+                output_dir=output,
+            )
+            print("\nResults by sport:")
+            for sport_code, stats in results.items():
+                matched = stats['matched']
+                total = stats['total']
+                unmatched_count = len(stats['unmatched'])
+                print(f"  {sport_code.upper()}: {matched}/{total} matched")
+                if stats['unmatched']:
+                    print(f"    [WARNING] {unmatched_count} unmatched")
+        return
+
+    # Resolve DB for other commands (skip for import-csv which infers from game_id)
+    if cmd != "import-csv":
+        db_path = _resolve_db_path(args)
+    else:
+        db_path = None
+
     if cmd == "market-ocr":
         images = args.images
         book = getattr(args, "book", None)
@@ -1960,6 +2020,73 @@ def _run_betting(args: argparse.Namespace) -> None:
             f"bets_updated={result.get('bets_updated')} "
             f"rejected={result.get('rejected')}"
         )
+
+    elif cmd == "import-csv":
+        csv_path = getattr(args, "csv_path", None)
+        if not csv_path:
+            raise ValueError("--csv is required for import-csv")
+        
+        # Try to infer sport and season from game_id column if not provided
+        sport = getattr(args, "sport", None)
+        season = getattr(args, "season", None)
+        
+        if not sport or not season:
+            # Read CSV to infer sport/season from game_id
+            import pandas as pd
+            from pathlib import Path
+            csv_file = Path(csv_path)
+            if csv_file.exists():
+                df = pd.read_csv(csv_file)
+                if 'game_id' in df.columns and len(df) > 0:
+                    first_game_id = df['game_id'].dropna().iloc[0] if not df['game_id'].dropna().empty else None
+                    if first_game_id:
+                        # game_id format: sport:season:date:hash
+                        parts = str(first_game_id).split(':')
+                        if len(parts) >= 2:
+                            if not sport:
+                                sport = parts[0]
+                            if not season:
+                                season = parts[1]
+        
+        if not sport:
+            raise ValueError("--sport is required (or CSV must have game_id column to infer sport)")
+        if not season:
+            raise ValueError("--season is required (or CSV must have game_id column to infer season)")
+        
+        # Now resolve db_path with known sport/season
+        db_override = getattr(args, "db", None)
+        if db_override:
+            db_path = db_override
+        else:
+            db_path = f"data/db/{sport}/{season}.db"
+        
+        if db_path is None:
+            raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
+        _echo_db_path(Path(db_path))
+        dry_run = bool(getattr(args, "dry_run", False))
+        review_run_id = getattr(args, "review_run_id", None)
+        
+        result = br.import_bets_csv(
+            db_path,
+            csv_path=csv_path,
+            sport=sport,
+            season=season,
+            review_run_id=review_run_id,
+            dry_run=dry_run,
+        )
+        mode = "dry-run" if dry_run else "import"
+        print(
+            f"import-csv ({mode}): "
+            f"inserted={result.get('inserted')} "
+            f"updated={result.get('updated')} "
+            f"rejected={result.get('rejected')} "
+            f"skipped={result.get('skipped')} "
+            f"review_run_id={result.get('review_run_id')}"
+        )
+        if result.get("errors"):
+            print("\nFirst few errors:")
+            for err in result.get("errors", []):
+                print(f"  {err}")
 
     elif cmd == "action-import":
         csv_path = getattr(args, "csv", None)
