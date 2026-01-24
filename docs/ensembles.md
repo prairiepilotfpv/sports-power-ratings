@@ -21,15 +21,15 @@ Schema for any file:
   "market": "ML",
   "ensemble_id": "ensemble_ml_v1",
   "metric_slot": "log_loss",   // ML|SPREAD|TOTAL defaults below
-  "models": ["elo", "bradley-terry"],
-  "weights": {"elo": 0.5, "bradley-terry": 0.5}
+  "models": ["elo", "bradley-terry", "zsd"],
+  "weights": {"elo": 0.34, "bradley-terry": 0.33, "zsd": 0.33}
 }
 ```
 
 Defaults per market (also baked into repo JSON under `src/ensemble/default_configs/`):
-- ML: `ensemble_ml_v1`, models `["elo", "bradley-terry"]`, metric `log_loss`
-- SPREAD: `ensemble_spread_v1`, models `["elo", "gssd", "toor"]`, metric `mae_margin`
-- TOTAL: `ensemble_total_v1`, models `["poisson", "gssd"]`, metric `mae_total`
+- ML: `ensemble_ml_v1`, models `["elo", "bradley-terry", "zsd"]`, metric `log_loss`
+- SPREAD: `ensemble_spread_v1`, models `["elo", "gssd", "toor", "zsd"]`, metric `mae_margin`
+- TOTAL: `ensemble_total_v1`, models `["poisson", "gssd", "toor", "zsd"]`, metric `mae_total`
 Weights: equal if omitted or invalid. Missing models fall back to the default allowlist; unavailable models are dropped and weights renormalized.
 
 ## CLI helper: create season defaults

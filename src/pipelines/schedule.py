@@ -138,9 +138,12 @@ def _order_schedule_export(schedule_df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _resolve_models(model: str | None) -> list[str]:
+def _resolve_models(model: str | list[str] | tuple[str, ...] | None) -> list[str]:
     if model is None:
         return list_models()
+    if isinstance(model, (list, tuple)):
+        normalized = [normalize_model_name(m) for m in model]
+        return [m for m in normalized if m]
     normalized = normalize_model_name(model)
     if normalized in {"all", "*"}:
         return list_models()

@@ -13,6 +13,7 @@ from models.elo import EloModel
 from models.gssd import GSSDModel
 from models.poisson import PoissonModel
 from models.toor import TOORModel
+from models.zsd import ZSDModel, ZSDPowerRating
 
 
 def normalize_model_name(name: str) -> str:
@@ -57,6 +58,11 @@ _MODEL_SPECS: dict[str, ModelSpec] = {
         path="models.toor.TOORPowerRating",
         abbreviation="toor",
     ),
+    "zsd": ModelSpec(
+        name="zsd",
+        path="models.zsd.ZSDPowerRating",
+        abbreviation="zsd",
+    ),
 }
 
 _DYNAMIC_MODELS: dict[str, Type[PowerRatingModel]] = {}
@@ -68,6 +74,7 @@ _BACKTEST_REGISTRY: dict[str, Type[BaseModel]] = {
     "gssd": GSSDModel,
     "poisson": PoissonModel,
     "toor": TOORModel,
+    "zsd": ZSDModel,
 }
 
 

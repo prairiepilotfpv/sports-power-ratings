@@ -5,9 +5,11 @@ import pytest
 from models.elo import EloModel
 from models.bradley_terry import BradleyTerry
 from models.toor import TOORPowerRating
+from models.zsd import ZSDPowerRating
 from pipelines.projection_engines import (
     _bt_projection_engine,
     _toor_projection_engine,
+    _zsd_projection_engine,
     get_projection_engine,
 )
 
@@ -76,3 +78,41 @@ def test_toor_projection_engine_returns_canonical_logistic() -> None:
     assert projection["model_p_home_win"] == pytest.approx(logistic_p)
     assert projection["margin_mean"] is not None
     assert projection["normal_p_home_win"] is not None
+
+
+def test_zsd_projection_engine_returns_canonical_output() -> None:
+    model = ZSDPowerRating(random_seed=5)
+    games = [
+        {
+            "date": "2025-10-25",
+            "home_team": "Home",
+            "away_team": "Away",
+            "home_score": 112,
+            "away_score": 105,
+        },
+        {
+            "date": "2025-10-26",
+            "home_team": "Away",
+            "away_team": "Home",
+            "home_score": 99,
+            "away_score": 101,
+        },
+    ]
+    model.fit(games)
+    projection_engine = get_projection_engine(model)
+    assert projection_engine is _zsd_projection_engine
+
+    projection = projection_engine(
+        "Home",
+        "Away",
+        model,
+        {
+            "neutral": False,
+            "sport": "nba",
+            "game_date": "2026-01-05",
+        },
+    )
+    assert projection["model_p_home_win"] is not None
+    assert projection["margin_mean"] is not None
+    assert projection["total_mean"] is not None
+    assert projection["win_prob_source"] == "margin_normal"

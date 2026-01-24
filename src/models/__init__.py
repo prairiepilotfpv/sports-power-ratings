@@ -17,6 +17,7 @@ from .elo import EloModel, EloPowerRating
 from .gssd import GSSDModel, GSSDPowerRating
 from .poisson import PoissonModel, PoissonPowerRating
 from .toor import TOORModel, TOORPowerRating
+from .zsd import ZSDModel, ZSDPowerRating
 
 __all__ = [
     "BaseModel",
@@ -32,6 +33,8 @@ __all__ = [
     "PoissonPowerRating",
     "TOORModel",
     "TOORPowerRating",
+    "ZSDModel",
+    "ZSDPowerRating",
     "normalize_optional_float",
     "require_columns",
     "validate_probability",

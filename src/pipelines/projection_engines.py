@@ -428,6 +428,47 @@ def _gssd_projection_engine(
     return projection
 
 
+def _zsd_projection_engine(
+    home_team: str,
+    away_team: str,
+    model: Any,
+    context: ProjectionContext,
+) -> ProjectionOutput:
+    neutral = bool(context.get("neutral", False))
+    canonical: dict[str, Any] | None = None
+    if hasattr(model, "project_matchup"):
+        try:
+            canonical = model.project_matchup(
+                home_team,
+                away_team,
+                neutral=neutral,
+                sport=context.get("sport"),
+                date=context.get("game_date"),
+                game_id=context.get("game_id"),
+            )
+        except Exception:
+            canonical = None
+
+    if canonical is not None:
+        return {
+            "projected_home_score": canonical["projected_home_score"],
+            "projected_away_score": canonical["projected_away_score"],
+            "projected_total": canonical["projected_total"],
+            "projected_win_prob": canonical["projected_win_prob"],
+            "model_p_home_win": canonical["model_p_home_win"],
+            "normal_p_home_win": canonical["normal_p_home_win"],
+            "win_prob_source": canonical["win_prob_source"],
+            "margin_dist_assumption": canonical["margin_dist_assumption"],
+            "margin_mean": canonical["margin_mean"],
+            "margin_sd": canonical["margin_sd"],
+            "total_mean": canonical["total_mean"],
+            "total_sd": canonical["total_sd"],
+            "logistic_home_win_prob": canonical["model_p_home_win"],
+        }
+
+    return _rating_projection_engine(home_team, away_team, model, context)
+
+
 def _bt_native_matchup(
     model: Any, home_team: str, away_team: str, neutral: bool
 ) -> dict[str, float] | None:
@@ -528,5 +569,6 @@ register_projection_engine(_DEFAULT_ENGINE_KEY, _rating_projection_engine)
 register_projection_engine("elo", _elo_projection_engine)
 register_projection_engine("toor", _toor_projection_engine)
 register_projection_engine("gssd", _gssd_projection_engine)
+register_projection_engine("zsd", _zsd_projection_engine)
 register_projection_engine("bradley-terry", _bt_projection_engine)
 register_projection_engine("poisson", _poisson_projection_engine)

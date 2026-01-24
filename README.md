@@ -32,7 +32,7 @@ What it does:
 
 1) Ingest Sports-Reference HTML/CSV (or pasted CSV text) and normalize it.
 2) Persist games into per-sport/per-season SQLite DBs.
-3) Fit power ratings (Bradley-Terry, Elo, GSSD, TOOR, Poisson) and store calibration metrics.
+3) Fit power ratings (Bradley-Terry, Elo, GSSD, TOOR, ZSD, Poisson) and store calibration metrics.
 4) Generate matchup projections and daily schedules with spreads/totals/win probabilities.
 5) Export rankings and schedule/report workbooks.
 6) Backtest and tune models on historical CSVs.
@@ -280,7 +280,7 @@ To generate a review workbook from committed market snapshots, run `python -m sr
 ### Common flags
 
 - `--model-params` accepts a JSON object string; `--model-params-file` points to a JSON file. Provide only one. When multiple models run, the file may contain per-model keys.
-- If multiple models are run at once, outputs are prefixed with their abbreviations (bt, elo, gssd, toor).
+- If multiple models are run at once, outputs are prefixed with their abbreviations (bt, elo, gssd, toor, pois, zsd).
 
 ### `import` â€” ingest into SQLite
 
@@ -383,7 +383,7 @@ python -m src.cli.pipeline backtest --model bradley-terry --csv nba_results.csv 
 
 **Options:**
 
--- `--model`: Model to evaluate (default: `bradley-terry`). Supported: `bradley-terry`, `elo`, `gssd`, `toor`.
+-- `--model`: Model to evaluate (default: `bradley-terry`). Supported: `bradley-terry`, `elo`, `gssd`, `toor`, `poisson`, `zsd`.
 - `--csv`: Path to CSV containing historical games (required). Relative paths are resolved from the repo root.
 - `--start` / `--end`: Evaluation window dates (YYYY-MM-DD) (required).
 - `--window`: Training window type: `expanding` (default, all games before eval date) or `rolling` (fixed-size lookback).
@@ -431,7 +431,7 @@ What it does:
 
 1) Ingest Sports-Reference HTML/CSV (or pasted CSV text) and normalize it.
 2) Persist games into per-sport/per-season SQLite DBs.
-3) Fit power ratings (Bradley-Terry, Elo, GSSD, TOOR, Poisson) and store calibration metrics.
+3) Fit power ratings (Bradley-Terry, Elo, GSSD, TOOR, ZSD, Poisson) and store calibration metrics.
 4) Generate matchup projections and daily schedules with spreads/totals/win probabilities.
 5) Export rankings and schedule/report workbooks.
 6) Backtest and tune models on historical CSVs.

@@ -8,6 +8,7 @@ from pipelines.projection_engines import _poisson_projection_engine
 from models.gssd import GSSDModel
 from models.poisson import PoissonModel
 from models.toor import TOORModel
+from models.zsd import ZSDModel
 
 
 def _training_games() -> pd.DataFrame:
@@ -77,6 +78,21 @@ def test_toor_projection_helper_matches_backtest_output() -> None:
 
 def test_gssd_projection_helper_matches_backtest_output() -> None:
     model = GSSDModel()
+    model.fit(_training_games())
+    prediction = model.predict(_upcoming_game())[0]
+    canonical = model.project_matchup(
+        prediction.home_team,
+        prediction.away_team,
+        neutral=False,
+        sport="nba",
+        date=prediction.date,
+        game_id=prediction.game_id,
+    )
+    _assert_projection_matches_prediction(canonical, prediction)
+
+
+def test_zsd_projection_helper_matches_backtest_output() -> None:
+    model = ZSDModel(random_seed=11)
     model.fit(_training_games())
     prediction = model.predict(_upcoming_game())[0]
     canonical = model.project_matchup(

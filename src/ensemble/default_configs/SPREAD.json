@@ -2,10 +2,11 @@
   "market": "SPREAD",
   "ensemble_id": "ensemble_spread_v1",
   "metric_slot": "mae_margin",
-  "models": ["elo", "gssd", "toor"],
+  "models": ["elo", "gssd", "toor", "zsd"],
   "weights": {
-    "elo": 0.3333333333,
-    "gssd": 0.3333333333,
-    "toor": 0.3333333333
+    "elo": 0.25,
+    "gssd": 0.25,
+    "toor": 0.25,
+    "zsd": 0.25
   }
 }

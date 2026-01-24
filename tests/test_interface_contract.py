@@ -98,7 +98,7 @@ def test_poisson_predictions_skip_normal_consistency_check(
 
 @pytest.mark.parametrize(
     "model_name",
-    ["elo", "gssd", "toor"],
+    ["elo", "gssd", "toor", "zsd"],
 )
 def test_non_poisson_models_still_use_normal_consistency_check(
     monkeypatch: pytest.MonkeyPatch,

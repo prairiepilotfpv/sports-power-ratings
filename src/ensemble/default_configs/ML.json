@@ -2,9 +2,10 @@
   "market": "ML",
   "ensemble_id": "ensemble_ml_v1",
   "metric_slot": "log_loss",
-  "models": ["elo", "bradley-terry"],
+  "models": ["elo", "bradley-terry", "zsd"],
   "weights": {
-    "elo": 0.5,
-    "bradley-terry": 0.5
+    "elo": 0.3333333333,
+    "bradley-terry": 0.3333333333,
+    "zsd": 0.3333333333
   }
 }

@@ -48,9 +48,9 @@ logger = logging.getLogger(__name__)
 
 # Default model allowlists per market (can be overridden by ensemble config)
 DEFAULT_MARKET_MODELS: dict[str, list[str]] = {
-    "ML": ["elo", "bradley-terry"],
-    "SPREAD": ["elo", "gssd", "toor"],
-    "TOTAL": ["poisson", "gssd", "toor"],
+    "ML": ["elo", "bradley-terry", "zsd"],
+    "SPREAD": ["elo", "gssd", "toor", "zsd"],
+    "TOTAL": ["poisson", "gssd", "toor", "zsd"],
 }
 
 DEFAULT_MARKET_METRICS: dict[str, str] = {

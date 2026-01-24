@@ -489,6 +489,14 @@ def _default_param_grid(model: str) -> dict[str, Iterable[Any]]:
             "reg_strength": [0.05, 0.2],
             "max_iter": [1500],
         }
+    if model == "zsd":
+        return {
+            "max_iter": [10000],
+            "tol": [1e-8],
+            "optimizer": ["slsqp"],
+            "recency_lambda": [None, 0.01],
+            "score_sd_floor": [1.0],
+        }
     return {}
 
 
@@ -684,6 +692,7 @@ def _eval_candidate(index: int, params: dict[str, Any], context: dict[str, Any],
     Returns a dict containing the candidate index and metrics. This function
     is top-level so it can be pickled by joblib on Windows.
     """
+    import gc
     try:
         from pathlib import Path
         # Resolve model class in child process to avoid pickling issues.
@@ -714,7 +723,7 @@ def _eval_candidate(index: int, params: dict[str, Any], context: dict[str, Any],
             else {}
         )
         metric_value = metrics.get(context.get("metric"))
-        return {
+        result = {
             "index": int(index),
             "params": params,
             "metric_value": metric_value,
@@ -729,5 +738,9 @@ def _eval_candidate(index: int, params: dict[str, Any], context: dict[str, Any],
             "validation_drop_counts": metrics.get("validation_drop_counts"),
             "output_dir": str(candidate_dir),
         }
+        # Explicitly clean up large dataframes and outputs
+        del outputs, metrics
+        gc.collect()
+        return result
     except Exception as exc:  # pragma: no cover - bubble up with candidate index
         raise RuntimeError(f"Candidate {index} failed: {exc}") from exc

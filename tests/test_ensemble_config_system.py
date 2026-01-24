@@ -17,7 +17,7 @@ def test_load_ensemble_config_uses_global_defaults(monkeypatch, tmp_path):
     meta = (config.get("_meta", {}) or {}).get("markets", {})
     assert markets["ML"]["models"] == ["elo", "bradley-terry"]
     assert markets["SPREAD"]["models"] == ["elo", "gssd", "toor"]
-    assert markets["TOTAL"]["models"] == ["poisson", "gssd"]
+    assert markets["TOTAL"]["models"] == ["poisson", "gssd", "toor"]
     assert meta.get("ML", {}).get("source") == "global_default"
     assert Path(meta.get("ML", {}).get("path")).name == "ML.json"
 

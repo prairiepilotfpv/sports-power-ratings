@@ -50,7 +50,7 @@
   - `clv_snapshots` — Closing line value tracking
 
 ### 1.3 Forecasting Models ✅
-- **Status:** 5 models fully implemented and producing output
+- **Status:** 6 models fully implemented and producing output
 - **Available models:**
   | Model | Abbrev | Description |
   |-------|--------|-------------|
@@ -59,6 +59,7 @@
   | `gssd` | gssd | Generalized Spread-Score Distribution |
   | `poisson` | pois | Poisson goal/point model |
   | `toor` | toor | Team Opponent-Adjusted Rating |
+  | `zsd` | zsd | Z-score deviation model |
 
 - **Command:**
   ```bash
@@ -95,7 +96,7 @@
   # ML probability calibration
   python -m src.cli.pipeline calibrate --sport nba --season 2025-26 --source elo
   ```
-- **Current state:** All 5 models have tuning runs for NBA 2025-26
+- **Current state:** All 6 models have tuning runs for NBA 2025-26
 
 ### 1.6 Excel Workbook Export ✅
 - **Status:** Working, produces multi-sheet workbook
@@ -105,7 +106,7 @@
   ```
 - **Output:** `data/processed/nba/2025-26/schedule_with_projections.xlsx`
 - **Sheets included:**
-  - Per-model projection sheets (bt, elo, gssd, pois, toor)
+  - Per-model projection sheets (bt, elo, gssd, pois, toor, zsd)
   - `dashboard` — Summary view
   - `BETS` — For logging bets (formula-enabled)
 
@@ -297,7 +298,7 @@ python -m src.cli.pipeline betting review-generate --sport nba --season 2025-26 
 
 **You're very close.** The core pipeline is complete:
 - ✅ CSV → Database ingestion works
-- ✅ 5 forecasting models produce probabilities
+- ✅ 6 forecasting models produce probabilities
 - ✅ Tuning and calibration are available
 - ✅ Excel workbook export exists with BETS sheet
 

@@ -27,7 +27,7 @@ python -m src.cli.pipeline tuning-status --sport <sport> --season <season>
 ```
 
 This prints, per market, each model's status as `ACTIVE` (explicitly promoted), `AUTO-SELECT` (best tuning run auto-selected), or `DEFAULT` (no tuned params found).
-When multiple models run, outputs are prefixed with abbreviations (`bt`, `elo`, `gssd`, `toor`).
+When multiple models run, outputs are prefixed with abbreviations (`bt`, `elo`, `gssd`, `toor`, `pois`, `zsd`).
 
 - To see the exact active params/fingerprint per model+market, use the provenance helper:
 
@@ -343,7 +343,7 @@ python -m src.cli.pipeline backtest --model bradley-terry --csv nba_results.csv 
 
 Options:
 
--- `--model`: Model to evaluate (default: `bradley-terry`). Supported: `bradley-terry`, `elo`, `gssd`, `toor`.
+-- `--model`: Model to evaluate (default: `bradley-terry`). Supported: `bradley-terry`, `elo`, `gssd`, `toor`, `poisson`, `zsd`.
 - `--csv`: Path to CSV containing historical games (required). Relative paths resolved from repo root.
 - `--start` / `--end`: Evaluation window dates (YYYY-MM-DD) (required).
 - `--window`: `expanding` (default) or `rolling`.
