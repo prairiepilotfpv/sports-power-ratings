@@ -18,6 +18,7 @@ from contracts import SCHEDULE_EXPORT_COLUMNS, validate_schedule_export_frame
 from data.paths import processed_path_for
 from data.repository import (
     get_active_ensemble_market_weights,
+    get_active_ensemble_market_weights_and_models,
     get_active_ensemble_market_weights_source,
     get_active_model_market_params,
     get_active_model_market_params_source,
@@ -1422,7 +1423,11 @@ def build_schedule_excel_report(
     bets_model_name = _resolve_bets_model(models, bets_model)
     resolved_as_of_date = _resolve_as_of_date(as_of_date)
     
-    # Filter to specific date if provided
+    # Keep full schedule for model training - filtering happens later for display
+    # _build_market_forecasts_for_ensembles needs all games to build ratings
+    all_games_df = df.copy(deep=True)
+    
+    # Filter to specific date if provided for per-model schedule sheets
     if as_of_date is not None:
         df = _filter_games_as_of(df, resolved_as_of_date)
     fit_end_date = resolved_as_of_date if as_of_date is not None else None
@@ -1567,7 +1572,9 @@ def build_schedule_excel_report(
                         model_metadata=metadata,
                     )
                 )
-                if model_name == bets_model_name and market == Market.ML:
+                # Set bets_schedule_df from the first model's ML market schedule
+                # This ensures it has all required columns and isn't None for ensemble logic
+                if bets_schedule_df is None and market == Market.ML:
                     bets_schedule_df = schedule_df
 
             # Filter empty DataFrames before concat to avoid FutureWarning
@@ -1695,7 +1702,7 @@ def build_schedule_excel_report(
                     strict=strict,
                 )
             market_forecast_rows = _build_market_forecasts_for_ensembles(
-                df,
+                all_games_df,  # Pass full schedule for rating computation
                 db_path=db_path,
                 sport=sport,
                 season=season,
@@ -1725,21 +1732,14 @@ def build_schedule_excel_report(
 
         try:
             ml_rows = market_forecast_rows.get(Market.ML.name, [])
-            if bets_schedule_df is not None and len(models) > 1 and ml_rows:
+            if bets_schedule_df is not None and ml_rows:
                 forecast_df = pd.DataFrame(ml_rows)
                 if not forecast_df.empty:
-                    allowed_models = allowed_models_map.get(Market.ML.name)
-                    if allowed_models:
-                        forecast_df = forecast_df[forecast_df["model_name"].isin(set(allowed_models))]
-                        if forecast_df.empty:
-                            config_warnings.append(
-                                f"No ML forecasts matched configured models {allowed_models}; ensemble skipped"
-                            )
-                            raise Exception("No ML forecasts after model filter")
                     weights = config_weights_map.get(Market.ML.name)
+                    ensemble_models = None
                     weight_source = "config" if weights else None
                     if weights is None:
-                        weights = get_active_ensemble_market_weights(
+                        weights, ensemble_models = get_active_ensemble_market_weights_and_models(
                             db_path,
                             sport=sport,
                             season=season,
@@ -1755,6 +1755,15 @@ def build_schedule_excel_report(
                             ensemble_ids[Market.ML.name],
                         )
                         weight_source = "file" if weights else weight_source
+                    
+                    # Filter forecast data to only include models the ensemble was trained on
+                    if ensemble_models:
+                        forecast_df = forecast_df[forecast_df["model_name"].isin(set(ensemble_models))]
+                        if forecast_df.empty:
+                            config_warnings.append(
+                                f"No ML forecasts matched ensemble models {ensemble_models}; ensemble skipped"
+                            )
+                            raise Exception("No ML forecasts after ensemble model filter")
                     ensemble = MLWeightedAverageEnsemble(
                         sport,
                         season,
@@ -1766,7 +1775,7 @@ def build_schedule_excel_report(
                     resolved_ensemble_meta[Market.ML.name] = {
                         "ensemble_id": ensemble.ensemble_id,
                         "metric_slot": market_metrics.get(Market.ML.name),
-                        "configured_models": allowed_models,
+                        "configured_models": ensemble_models or used_models,
                         "configured_weights": config_weights_map.get(Market.ML.name),
                         "weights_source": weight_source or "equal",
                         "weights": weights,
@@ -1814,13 +1823,13 @@ def build_schedule_excel_report(
                         except Exception:
                             # Best-effort per-game; continue on errors.
                             continue
-        except Exception:
+        except Exception as e:
             # Do not fail report generation for ensemble errors.
+            _LOG.warning(f"ML ensemble application failed: {e}", exc_info=True)
             pass
 
         if (
             bets_schedule_df is not None
-            and len(models) > 1
             and (
                 "ml_ensemble_components_json" not in bets_schedule_df.columns
                 or not bets_schedule_df["ml_ensemble_components_json"].notna().any()
@@ -1885,14 +1894,27 @@ def build_schedule_excel_report(
             if bets_schedule_df is not None and spread_rows:
                 forecast_df = pd.DataFrame(spread_rows)
                 if not forecast_df.empty:
-                    allowed_models = allowed_models_map.get(Market.SPREAD.name)
-                    if allowed_models:
-                        forecast_df = forecast_df[forecast_df["model_name"].isin(set(allowed_models))]
+                    weights = config_weights_map.get(Market.SPREAD.name)
+                    ensemble_models = None
+                    weight_source = "config" if weights else None
+                    if weights is None:
+                        weights, ensemble_models = get_active_ensemble_market_weights_and_models(
+                            db_path,
+                            sport=sport,
+                            season=season,
+                            market=Market.SPREAD.name,
+                            ensemble_id=ensemble_ids[Market.SPREAD.name],
+                        )
+                        weight_source = "db" if weights else weight_source
+                    
+                    # Filter forecast data to only include models the ensemble was trained on
+                    if ensemble_models:
+                        forecast_df = forecast_df[forecast_df["model_name"].isin(set(ensemble_models))]
                         if forecast_df.empty:
                             config_warnings.append(
-                                f"No SPREAD forecasts matched configured models {allowed_models}; ensemble skipped"
+                                f"No SPREAD forecasts matched ensemble models {ensemble_models}; ensemble skipped"
                             )
-                            raise Exception("No SPREAD forecasts after model filter")
+                            raise Exception("No SPREAD forecasts after ensemble model filter")
 
                     # Check if we have multiple models contributing SPREAD forecasts
                     unique_spread_models = set(forecast_df["model_name"].dropna().unique())
@@ -1900,17 +1922,6 @@ def build_schedule_excel_report(
 
                     if use_ensemble:
                         # Multi-model: use weighted ensemble
-                        weights = config_weights_map.get(Market.SPREAD.name)
-                        weight_source = "config" if weights else None
-                        if weights is None:
-                            weights = get_active_ensemble_market_weights(
-                                db_path,
-                                sport=sport,
-                                season=season,
-                                market=Market.SPREAD.name,
-                                ensemble_id=ensemble_ids[Market.SPREAD.name],
-                            )
-                            weight_source = "db" if weights else weight_source
                         if weights is None:
                             weights = load_market_weights(
                                 sport,
@@ -1930,7 +1941,7 @@ def build_schedule_excel_report(
                         resolved_ensemble_meta[Market.SPREAD.name] = {
                             "ensemble_id": spread_ensemble.ensemble_id,
                             "metric_slot": market_metrics.get(Market.SPREAD.name),
-                            "configured_models": allowed_models,
+                            "configured_models": ensemble_models or used_models,
                             "configured_weights": config_weights_map.get(Market.SPREAD.name),
                             "weights_source": weight_source or "equal",
                             "weights": weights,
@@ -1991,7 +2002,8 @@ def build_schedule_excel_report(
                                 spread_ensemble_applied = True
                             except Exception:
                                 continue
-        except Exception:
+        except Exception as e:
+            _LOG.warning(f"SPREAD ensemble application failed: {e}", exc_info=True)
             pass
 
         # Apply TOTAL data to bets_schedule_df. For multi-model, use ensemble; for
@@ -2003,14 +2015,27 @@ def build_schedule_excel_report(
             if bets_schedule_df is not None and total_rows:
                 forecast_df = pd.DataFrame(total_rows)
                 if not forecast_df.empty:
-                    allowed_models = allowed_models_map.get(Market.TOTAL.name)
-                    if allowed_models:
-                        forecast_df = forecast_df[forecast_df["model_name"].isin(set(allowed_models))]
+                    weights = config_weights_map.get(Market.TOTAL.name)
+                    ensemble_models = None
+                    weight_source = "config" if weights else None
+                    if weights is None:
+                        weights, ensemble_models = get_active_ensemble_market_weights_and_models(
+                            db_path,
+                            sport=sport,
+                            season=season,
+                            market=Market.TOTAL.name,
+                            ensemble_id=ensemble_ids[Market.TOTAL.name],
+                        )
+                        weight_source = "db" if weights else weight_source
+                    
+                    # Filter forecast data to only include models the ensemble was trained on
+                    if ensemble_models:
+                        forecast_df = forecast_df[forecast_df["model_name"].isin(set(ensemble_models))]
                         if forecast_df.empty:
                             config_warnings.append(
-                                f"No TOTAL forecasts matched configured models {allowed_models}; ensemble skipped"
+                                f"No TOTAL forecasts matched ensemble models {ensemble_models}; ensemble skipped"
                             )
-                            raise Exception("No TOTAL forecasts after model filter")
+                            raise Exception("No TOTAL forecasts after ensemble model filter")
 
                     # Check if we have multiple models contributing TOTAL forecasts
                     unique_total_models = set(forecast_df["model_name"].dropna().unique())
@@ -2018,17 +2043,6 @@ def build_schedule_excel_report(
 
                     if use_ensemble:
                         # Multi-model: use weighted ensemble
-                        weights = config_weights_map.get(Market.TOTAL.name)
-                        weight_source = "config" if weights else None
-                        if weights is None:
-                            weights = get_active_ensemble_market_weights(
-                                db_path,
-                                sport=sport,
-                                season=season,
-                                market=Market.TOTAL.name,
-                                ensemble_id=ensemble_ids[Market.TOTAL.name],
-                            )
-                            weight_source = "db" if weights else weight_source
                         if weights is None:
                             weights = load_market_weights(
                                 sport,
@@ -2048,7 +2062,7 @@ def build_schedule_excel_report(
                         resolved_ensemble_meta[Market.TOTAL.name] = {
                             "ensemble_id": total_ensemble.ensemble_id,
                             "metric_slot": market_metrics.get(Market.TOTAL.name),
-                            "configured_models": allowed_models,
+                            "configured_models": ensemble_models or used_models,
                             "configured_weights": config_weights_map.get(Market.TOTAL.name),
                             "weights_source": weight_source or "equal",
                             "weights": weights,
@@ -2136,7 +2150,8 @@ def build_schedule_excel_report(
                                 total_ensemble_applied = True
                             except Exception:
                                 continue
-        except Exception:
+        except Exception as e:
+            _LOG.warning(f"TOTAL ensemble application failed: {e}", exc_info=True)
             pass
 
         # If the ensemble was applied successfully to any games, set the BETS model label

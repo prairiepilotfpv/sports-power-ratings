@@ -1206,6 +1206,34 @@ def get_active_ensemble_market_weights(
     return data
 
 
+def get_active_ensemble_market_weights_and_models(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    market: str,
+    ensemble_id: str,
+) -> tuple[dict | None, list[str] | None]:
+    """Return (weights, models_list) for an active ensemble, or (None, None)."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT weights_json, models_json
+            FROM ensemble_market_active_weights
+            WHERE sport = ? AND season = ? AND market = ? AND ensemble_id = ?
+            """,
+            (sport, season, market, ensemble_id),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None, None
+    weights = json.loads(row[0])
+    models = json.loads(row[1]) if row[1] else None
+    if not isinstance(weights, dict):
+        raise ValueError("Stored ensemble weights must be a JSON object.")
+    return weights, models
+
+
 def get_active_ensemble_market_weights_source(
     db_path: str | Path,
     *,
