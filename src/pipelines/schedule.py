@@ -111,7 +111,7 @@ DASHBOARD_COLUMNS: List[str] = [
     "total_sd",
 ]
 
-MODEL_METADATA_DATA_START_ROW = 50  # Allow multi-market metadata; bump if new metadata keys appear
+MODEL_METADATA_DATA_START_ROW = 60  # Allow multi-market metadata; bump if new metadata keys appear
 
 
 def _finalize_schedule_export(schedule_df: pd.DataFrame) -> pd.DataFrame:
@@ -275,23 +275,29 @@ def _compute_total_recency_adjustment(
             FROM games
             WHERE home_score IS NOT NULL AND away_score IS NOT NULL
         """
+        params: list[object] = []
+        as_of = None
         if as_of_date:
             as_of = pd.to_datetime(as_of_date)
-            query += f" AND date <= '{as_of.strftime('%Y-%m-%d')}'"
+            query += " AND date <= ?"
+            params.append(as_of.strftime("%Y-%m-%d"))
         query += " ORDER BY date DESC LIMIT ?"
-        
-        recent_games = pd.read_sql(query, conn, params=(lookback_games,))
+        params.append(lookback_games)
+
+        recent_games = pd.read_sql(query, conn, params=params)
         conn.close()
         
         if recent_games.empty or len(recent_games) < 20:
             return None
         
-        # Also get overall average for context
+        # Also get season-to-date average for context
         conn = sqlite3.connect(db_path)
-        all_games = pd.read_sql(
-            "SELECT home_score + away_score as total FROM games WHERE home_score IS NOT NULL",
-            conn
-        )
+        all_query = "SELECT home_score + away_score as total FROM games WHERE home_score IS NOT NULL"
+        all_params: list[object] = []
+        if as_of is not None:
+            all_query += " AND date <= ?"
+            all_params.append(as_of.strftime("%Y-%m-%d"))
+        all_games = pd.read_sql(all_query, conn, params=all_params or None)
         conn.close()
         
         if all_games.empty:
@@ -451,13 +457,6 @@ def _build_market_forecasts_for_ensembles(
                 params_market=market.name,
                 fit_end_date=fit_end_date,
             )
-            if market == Market.ML:
-                market_schedule = _apply_calibration_to_schedule_df(
-                    market_schedule,
-                    sport=sport,
-                    season=season,
-                    model=model_name,
-                )
             if market_schedule.empty:
                 continue
             if "date" in market_schedule.columns and "status" in market_schedule.columns:
@@ -736,6 +735,20 @@ def _filter_games_as_of(
     cutoff = parsed.date()
     dates = pd.to_datetime(df["date"], errors="coerce").dt.date
     return df[dates == cutoff]
+
+
+def _filter_games_through(
+    df: pd.DataFrame, as_of_date: date | None
+) -> pd.DataFrame:
+    """Filter games up to and including a cutoff date."""
+    if as_of_date is None or df.empty or "date" not in df.columns:
+        return df
+    parsed = pd.to_datetime(as_of_date, errors="coerce")
+    if pd.isna(parsed):
+        return df
+    cutoff = parsed.date()
+    dates = pd.to_datetime(df["date"], errors="coerce").dt.date
+    return df[dates <= cutoff]
 
 
 def _resolve_as_of_date(value: str | date | None) -> date:
@@ -1422,14 +1435,12 @@ def build_schedule_excel_report(
     models = _resolve_models(model)
     bets_model_name = _resolve_bets_model(models, bets_model)
     resolved_as_of_date = _resolve_as_of_date(as_of_date)
+    display_date = resolved_as_of_date if as_of_date is not None else None
     
     # Keep full schedule for model training - filtering happens later for display
     # _build_market_forecasts_for_ensembles needs all games to build ratings
     all_games_df = df.copy(deep=True)
-    
-    # Filter to specific date if provided for per-model schedule sheets
-    if as_of_date is not None:
-        df = _filter_games_as_of(df, resolved_as_of_date)
+
     fit_end_date = resolved_as_of_date if as_of_date is not None else None
     report_path = _resolve_workbook_path(
         output_path,
@@ -1482,7 +1493,7 @@ def build_schedule_excel_report(
 
     with pd.ExcelWriter(report_path) as writer:
         for model_name in models:
-            model_df = df.copy(deep=True)
+            model_df = all_games_df.copy(deep=True)
             market_frames: list[pd.DataFrame] = []
             market_metadatas: list[tuple[Market, dict[str, Any]]] = []
             params_sources: set[str] = set()
@@ -1536,9 +1547,11 @@ def build_schedule_excel_report(
                     model=model_name,
                 )
                 schedule_df = _order_schedule_export(schedule_df)
+                if display_date is not None:
+                    schedule_df = _filter_games_as_of(schedule_df, display_date)
                 market_frames.append(schedule_df)
 
-                played_for_metadata = _filter_games_as_of(
+                played_for_metadata = _filter_games_through(
                     _completed_games(model_df), fit_end_date
                 )
                 metadata = _build_model_metadata(
@@ -1605,7 +1618,7 @@ def build_schedule_excel_report(
             params_fingerprints = {md.get("params_fingerprint") for _, md in market_metadatas if md.get("params_fingerprint")}
             params_nonempty_flags = {str(md.get("params_nonempty")) for _, md in market_metadatas if md.get("params_nonempty") is not None}
 
-            combined_played = _filter_games_as_of(
+            combined_played = _filter_games_through(
                 _completed_games(model_df), fit_end_date
             )
             combined_metadata = _build_model_metadata(
@@ -1708,7 +1721,7 @@ def build_schedule_excel_report(
                 season=season,
                 models=models,
                 as_of_date=resolved_as_of_date,
-                allowed_models_by_market=allowed_models_map,
+                allowed_models_by_market=allowed_models_map if len(models) > 1 else None,
                 market_metrics=market_metrics,
                 fit_end_date=fit_end_date,
             )
@@ -1764,65 +1777,90 @@ def build_schedule_excel_report(
                                 f"No ML forecasts matched ensemble models {ensemble_models}; ensemble skipped"
                             )
                             raise Exception("No ML forecasts after ensemble model filter")
-                    ensemble = MLWeightedAverageEnsemble(
-                        sport,
-                        season,
-                        ensemble_id=ensemble_ids[Market.ML.name],
-                        weights=weights,
-                    )
-                    used_models = sorted(set(forecast_df.get("model_name", [])))
-                    cfg_meta = market_config_meta.get(Market.ML.name, {}) if isinstance(market_config_meta, dict) else {}
-                    resolved_ensemble_meta[Market.ML.name] = {
-                        "ensemble_id": ensemble.ensemble_id,
-                        "metric_slot": market_metrics.get(Market.ML.name),
-                        "configured_models": ensemble_models or used_models,
-                        "configured_weights": config_weights_map.get(Market.ML.name),
-                        "weights_source": weight_source or "equal",
-                        "weights": weights,
-                        "used_models": used_models,
-                        "config_source": cfg_meta.get("source"),
-                        "config_path": cfg_meta.get("path"),
-                    }
-                    # Load calibrator for the ensemble source, if present
-                    try:
-                        ensemble_cal = load_latest_calibrator(
-                            sport=sport,
-                            season=season,
-                            model=ensemble.ensemble_id,
-                            market=Market.ML,
+                    unique_ml_models = set(forecast_df["model_name"].dropna().unique())
+                    use_ensemble = len(unique_ml_models) > 1
+
+                    if use_ensemble:
+                        ensemble = MLWeightedAverageEnsemble(
+                            sport,
+                            season,
+                            ensemble_id=ensemble_ids[Market.ML.name],
+                            weights=weights,
                         )
-                    except Exception:
-                        ensemble_cal = None
-
-                    # Apply per-game ensemble
-                    for gid in pd.unique(bets_schedule_df["game_id"]):
+                        used_models = sorted(set(forecast_df.get("model_name", [])))
+                        cfg_meta = market_config_meta.get(Market.ML.name, {}) if isinstance(market_config_meta, dict) else {}
+                        resolved_ensemble_meta[Market.ML.name] = {
+                            "ensemble_id": ensemble.ensemble_id,
+                            "metric_slot": market_metrics.get(Market.ML.name),
+                            "configured_models": ensemble_models or used_models,
+                            "configured_weights": config_weights_map.get(Market.ML.name),
+                            "weights_source": weight_source or "equal",
+                            "weights": weights,
+                            "used_models": used_models,
+                            "config_source": cfg_meta.get("source"),
+                            "config_path": cfg_meta.get("path"),
+                        }
+                        # Load calibrator for the ensemble source, if present
                         try:
-                            subset = forecast_df[forecast_df["game_id"] == gid]
-                            if subset.empty:
-                                continue
-                            raw_p, components_json = ensemble.combine(subset)
-                            if raw_p is None:
-                                continue
-                            final_p = raw_p
-                            if ensemble_cal is not None:
-                                try:
-                                    transformed = ensemble_cal.transform([raw_p])
-                                    if transformed is not None and len(transformed) > 0:
-                                        final_p = float(transformed[0])
-                                except Exception:
-                                    pass
-
-                            mask = bets_schedule_df["game_id"] == gid
-                            bets_schedule_df.loc[mask, "home_win_prob"] = final_p
-                            bets_schedule_df.loc[mask, "away_win_prob"] = 1.0 - final_p
-
-                            # Set win_prob_source to the ensemble ID (replacing any default "direct" value)
-                            bets_schedule_df.loc[mask, "win_prob_source"] = ensemble.ensemble_id
-                            bets_schedule_df.loc[mask, "ml_ensemble_components_json"] = components_json
-                            ensemble_applied = True
+                            ensemble_cal = load_latest_calibrator(
+                                sport=sport,
+                                season=season,
+                                model=ensemble.ensemble_id,
+                                market=Market.ML,
+                            )
                         except Exception:
-                            # Best-effort per-game; continue on errors.
-                            continue
+                            ensemble_cal = None
+
+                        # Apply per-game ensemble
+                        for gid in pd.unique(bets_schedule_df["game_id"]):
+                            try:
+                                subset = forecast_df[forecast_df["game_id"] == gid]
+                                if subset.empty:
+                                    continue
+                                raw_p, components_json = ensemble.combine(subset)
+                                if raw_p is None:
+                                    continue
+                                final_p = raw_p
+                                if ensemble_cal is not None:
+                                    try:
+                                        transformed = ensemble_cal.transform([raw_p])
+                                        if transformed is not None and len(transformed) > 0:
+                                            final_p = float(transformed[0])
+                                    except Exception:
+                                        pass
+
+                                mask = bets_schedule_df["game_id"] == gid
+                                bets_schedule_df.loc[mask, "home_win_prob"] = final_p
+                                bets_schedule_df.loc[mask, "away_win_prob"] = 1.0 - final_p
+
+                                # Set win_prob_source to the ensemble ID (replacing any default "direct" value)
+                                bets_schedule_df.loc[mask, "win_prob_source"] = ensemble.ensemble_id
+                                bets_schedule_df.loc[mask, "ml_ensemble_components_json"] = components_json
+                                ensemble_applied = True
+                            except Exception:
+                                # Best-effort per-game; continue on errors.
+                                continue
+                    else:
+                        single_model_name = (
+                            list(unique_ml_models)[0] if unique_ml_models else bets_model_name
+                        )
+                        for gid in pd.unique(bets_schedule_df["game_id"]):
+                            try:
+                                mask = bets_schedule_df["game_id"] == gid
+                                if not mask.any():
+                                    continue
+                                p_home = bets_schedule_df.loc[mask, "home_win_prob"].iloc[0]
+                                if _is_missing(p_home):
+                                    continue
+                                components = {
+                                    "models": [single_model_name],
+                                    "p_home_win": float(p_home),
+                                }
+                                bets_schedule_df.loc[mask, "ml_ensemble_components_json"] = json.dumps(
+                                    components
+                                )
+                            except Exception:
+                                continue
         except Exception as e:
             # Do not fail report generation for ensemble errors.
             _LOG.warning(f"ML ensemble application failed: {e}", exc_info=True)
