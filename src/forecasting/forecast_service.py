@@ -34,6 +34,19 @@ def _upcoming_games(df: pd.DataFrame) -> pd.DataFrame:
     return df[mask]
 
 
+def _filter_games_as_of(
+    df: pd.DataFrame, as_of_date: str | date | None
+) -> pd.DataFrame:
+    if as_of_date is None or df.empty or "date" not in df.columns:
+        return df
+    parsed = pd.to_datetime(as_of_date, errors="coerce")
+    if pd.isna(parsed):
+        return df
+    cutoff = parsed.date()
+    dates = pd.to_datetime(df["date"], errors="coerce").dt.date
+    return df[dates <= cutoff]
+
+
 def _margin_sd_fit_stats(
     played: pd.DataFrame,
     ratings: Dict[str, float],
@@ -404,8 +417,9 @@ def _build_forecasts_df_legacy(
     params_nonempty: bool | None = None,
     params_run_id: str | None = None,
     params_market: str | None = None,
+    fit_end_date: str | date | None = None,
 ) -> pd.DataFrame:
-    played = _completed_games(df)
+    played = _filter_games_as_of(_completed_games(df), fit_end_date)
     upcoming = _upcoming_games(df)
 
     rankings, model_instance = build_rankings(
@@ -571,6 +585,7 @@ def build_forecasts_df(
     params_nonempty: bool | None = None,
     params_run_id: str | None = None,
     params_market: str | None = None,
+    fit_end_date: str | date | None = None,
 ) -> pd.DataFrame:
     if games_df is None:
         rows = load_games(db_path, sport=sport, season=season)
@@ -599,6 +614,7 @@ def build_forecasts_df(
         params_nonempty=params_nonempty,
         params_run_id=params_run_id,
         params_market=params_market,
+        fit_end_date=fit_end_date,
     )
 
     filtered = legacy_df

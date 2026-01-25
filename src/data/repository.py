@@ -322,7 +322,7 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
         team_repo.ensure_teams_for_games(conn, games)
         conn.executemany(
             """
-            INSERT OR REPLACE INTO games (
+            INSERT INTO games (
                 date,
                 start_time,
                 home_team,
@@ -339,6 +339,19 @@ def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
                 conference,
                 notes
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(game_id, sport, season) DO UPDATE SET
+                date = excluded.date,
+                start_time = COALESCE(excluded.start_time, games.start_time),
+                home_team = excluded.home_team,
+                away_team = excluded.away_team,
+                home_score = COALESCE(excluded.home_score, games.home_score),
+                away_score = COALESCE(excluded.away_score, games.away_score),
+                neutral = excluded.neutral,
+                overtime = excluded.overtime,
+                decision_type = COALESCE(excluded.decision_type, games.decision_type),
+                division = COALESCE(excluded.division, games.division),
+                conference = COALESCE(excluded.conference, games.conference),
+                notes = COALESCE(excluded.notes, games.notes)
             """,
             rows,
         )

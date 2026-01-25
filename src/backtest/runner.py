@@ -429,7 +429,7 @@ def run_backtest(
         predict_input = day_games.drop(
             columns=["home_score", "away_score"], errors="ignore"
         )
-        predict_input = validate_model_input(predict_input, context="Backtest model input")
+        predict_input = validate_model_input(predict_input, context="Backtest model input", sport=sport, season=season)
         t0 = time.perf_counter()
         predictions = model.predict(predict_input)
         t1 = time.perf_counter()
@@ -1020,7 +1020,7 @@ def run_backtest_streaming(
         predict_input = day_games.drop(
             columns=["home_score", "away_score"], errors="ignore"
         )
-        predict_input = validate_model_input(predict_input, context="Backtest model input")
+        predict_input = validate_model_input(predict_input, context="Backtest model input", sport=sport, season=season)
         t0 = time.perf_counter()
         predictions = model_instance.predict(predict_input)
         t1 = time.perf_counter()

@@ -10,7 +10,7 @@ MIN_CALIBRATION_SAMPLES = 25
 
 # Safe global fallbacks when residual samples are insufficient to estimate spread/total variance.
 DEFAULT_MARGIN_SD_FALLBACK = 12.0
-DEFAULT_TOTAL_SD_FALLBACK = 20.0
+DEFAULT_TOTAL_SD_FALLBACK = 22.0  # Increased from 20.0 to reduce over-confidence in BETS by flattening normal dist
 
 # League-level default total mean used when insufficient data exists
 # Conservative NBA baseline; used only as a structural fallback

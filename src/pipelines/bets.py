@@ -280,14 +280,33 @@ def log_bets(
             conn.close()
 
     if writeback and not dry_run:
-        # write modified dataframe back to the workbook (replace BETS sheet)
-        import pandas as _pd
-        with _pd.ExcelWriter(wb_path, engine="openpyxl", mode="a") as writer:
-            try:
-                writer.book.remove(writer.book["BETS"])
-            except Exception:
-                pass
-            df.to_excel(writer, sheet_name="BETS", index=False)
+        # write modified dataframe back to the workbook (preserve formatting by updating only changed columns)
+        from openpyxl import load_workbook
+        wb = load_workbook(wb_path)
+        if "BETS" not in wb.sheetnames:
+            raise ValueError("BETS sheet not found in workbook")
+        ws = wb["BETS"]
+        
+        # Find column indices for bet_id and logged_at (1-indexed in openpyxl)
+        header_row = ws[1]
+        bet_id_col = None
+        logged_at_col = None
+        for cell in header_row:
+            if cell.value == "bet_id":
+                bet_id_col = cell.column
+            elif cell.value == "logged_at":
+                logged_at_col = cell.column
+        
+        # Update cells in-place, preserving all existing formatting
+        # writeback_rows contains (df_idx, bet_id, logged_at); Excel row = df_idx + 2 (row 1 is header)
+        for df_idx, bet_id, logged_at_val in writeback_rows:
+            sheet_row = df_idx + 2
+            if bet_id_col:
+                ws.cell(row=sheet_row, column=bet_id_col, value=bet_id)
+            if logged_at_col:
+                ws.cell(row=sheet_row, column=logged_at_col, value=logged_at_val)
+        
+        wb.save(wb_path)
 
     return inserted
 

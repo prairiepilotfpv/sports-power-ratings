@@ -163,7 +163,27 @@ def _resolve_workbook_path(
         default_path=default_path,
     )
     resolved.parent.mkdir(parents=True, exist_ok=True)
+    if resolved.exists():
+        next_path = _next_available_path(resolved)
+        _LOG.warning("Output exists: %s. Writing to %s.", resolved, next_path)
+        resolved = next_path
     return resolved
+
+
+def _next_available_path(path: Path) -> Path:
+    """Return the first unused filename by appending a numeric suffix."""
+    if not path.exists():
+        return path
+    stem = path.stem
+    suffix = path.suffix
+    parent = path.parent
+    for index in range(1, 1000):
+        candidate = parent / f"{stem}-{index}{suffix}"
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(
+        f"Output exists: {path}. Tried 999 alternate names."
+    )
 
 
 def _build_schedule_dataframe(
@@ -185,6 +205,7 @@ def _build_schedule_dataframe(
     params_nonempty: bool | None = None,
     params_run_id: str | None = None,
     params_market: str | None = None,
+    fit_end_date: str | date | None = None,
 ) -> pd.DataFrame:
     schedule_df = build_forecasts_df(
         db_path=db_path,
@@ -205,6 +226,7 @@ def _build_schedule_dataframe(
         params_nonempty=params_nonempty,
         params_run_id=params_run_id,
         params_market=params_market,
+        fit_end_date=fit_end_date,
     )
     schedule_df = _apply_calibration_to_schedule_df(
         schedule_df,
@@ -221,6 +243,76 @@ def _build_schedule_dataframe(
         if col not in schedule_df.columns:
             schedule_df[col] = pd.NA
     return _order_schedule_export(schedule_df)
+
+
+def _compute_total_recency_adjustment(
+    db_path: str | Path,
+    sport: str,
+    as_of_date: str | date | None = None,
+    lookback_games: int = 100,
+) -> float | None:
+    """Compute adjustment factor for total_mean based on recent game performance.
+    
+    Compares the average total from recent completed games to the season-long average.
+    This accounts for mid-season trends (e.g., January slowdown in NBA).
+    
+    Args:
+        db_path: Path to the sport/season database.
+        sport: Sport identifier (e.g., 'nba').
+        as_of_date: Optional cutoff date; if None, uses all completed games.
+        lookback_games: Number of recent games to average for recency adjustment.
+    
+    Returns:
+        Adjustment factor (e.g., -6.0 means subtract 6 points from predicted totals).
+        Returns None if insufficient data.
+    """
+    try:
+        conn = sqlite3.connect(db_path)
+        query = """
+            SELECT date, home_score, away_score,
+                   home_score + away_score as total_score
+            FROM games
+            WHERE home_score IS NOT NULL AND away_score IS NOT NULL
+        """
+        if as_of_date:
+            as_of = pd.to_datetime(as_of_date)
+            query += f" AND date <= '{as_of.strftime('%Y-%m-%d')}'"
+        query += " ORDER BY date DESC LIMIT ?"
+        
+        recent_games = pd.read_sql(query, conn, params=(lookback_games,))
+        conn.close()
+        
+        if recent_games.empty or len(recent_games) < 20:
+            return None
+        
+        # Also get overall average for context
+        conn = sqlite3.connect(db_path)
+        all_games = pd.read_sql(
+            "SELECT home_score + away_score as total FROM games WHERE home_score IS NOT NULL",
+            conn
+        )
+        conn.close()
+        
+        if all_games.empty:
+            return None
+        
+        recent_avg = recent_games["total_score"].mean()
+        season_avg = all_games["total"].mean()
+        
+        # Return adjustment as (recent - season), so positive means recent games are higher-scoring
+        adjustment = recent_avg - season_avg
+        
+        _LOG.info(
+            "Total recency adjustment: recent_avg=%.1f, season_avg=%.1f, adjustment=%+.1f",
+            recent_avg,
+            season_avg,
+            adjustment,
+        )
+        
+        return adjustment
+    except Exception as e:
+        _LOG.warning("Failed to compute total recency adjustment: %s", e)
+        return None
 
 
 def _apply_calibration_to_schedule_df(
@@ -302,6 +394,7 @@ def _build_market_forecasts_for_ensembles(
     as_of_date: date,
     allowed_models_by_market: dict[str, list[str] | None] | None = None,
     market_metrics: dict[str, str] | None = None,
+    fit_end_date: date | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     rows_by_market: dict[str, list[dict[str, Any]]] = {
         Market.ML.name: [],
@@ -355,6 +448,7 @@ def _build_market_forecasts_for_ensembles(
                 params_nonempty=resolved.params_nonempty,
                 params_run_id=resolved.source_run_id,
                 params_market=market.name,
+                fit_end_date=fit_end_date,
             )
             if market == Market.ML:
                 market_schedule = _apply_calibration_to_schedule_df(
@@ -629,6 +723,20 @@ def _dashboard_rows_for_today(
     return rows
 
 
+def _filter_games_as_of(
+    df: pd.DataFrame, as_of_date: date | None
+) -> pd.DataFrame:
+    """Filter games to a specific date (exact match, not <= cutoff)."""
+    if as_of_date is None or df.empty or "date" not in df.columns:
+        return df
+    parsed = pd.to_datetime(as_of_date, errors="coerce")
+    if pd.isna(parsed):
+        return df
+    cutoff = parsed.date()
+    dates = pd.to_datetime(df["date"], errors="coerce").dt.date
+    return df[dates == cutoff]
+
+
 def _resolve_as_of_date(value: str | date | None) -> date:
     if value is None:
         return pd.Timestamp.today().date()
@@ -810,8 +918,13 @@ def _build_bets_dataframe(
     df = schedule_df.assign(
         _date=pd.to_datetime(schedule_df["date"], errors="coerce").dt.date
     )
-    df = df[df["status"] == "scheduled"]
-    df = df[df["_date"] == as_of_date]
+    # Filter to games marked as scheduled (no scores yet)
+    # NOTE: We do NOT filter by as_of_date here, because the schedule_df
+    # passed in is already filtered by market CSV. Applying an additional
+    # date filter would exclude multi-day betting data.
+    # The as_of_date parameter is kept for backwards compatibility but not used here.
+    if "status" in df.columns:
+        df = df[df["status"] == "scheduled"]
     
     # CRITICAL DEDUPLICATION: Ensure each game_id appears exactly once in input.
     # If the input schedule contains duplicate game_ids (e.g., from multiple market runs),
@@ -1308,6 +1421,11 @@ def build_schedule_excel_report(
     models = _resolve_models(model)
     bets_model_name = _resolve_bets_model(models, bets_model)
     resolved_as_of_date = _resolve_as_of_date(as_of_date)
+    
+    # Filter to specific date if provided
+    if as_of_date is not None:
+        df = _filter_games_as_of(df, resolved_as_of_date)
+    fit_end_date = resolved_as_of_date if as_of_date is not None else None
     report_path = _resolve_workbook_path(
         output_path,
         sport=sport,
@@ -1404,6 +1522,7 @@ def build_schedule_excel_report(
                     params_nonempty=params_nonempty,
                     params_run_id=resolution.source_run_id,
                     params_market=market.name,
+                    fit_end_date=fit_end_date,
                 )
                 schedule_df = _apply_calibration_to_schedule_df(
                     schedule_df,
@@ -1414,9 +1533,12 @@ def build_schedule_excel_report(
                 schedule_df = _order_schedule_export(schedule_df)
                 market_frames.append(schedule_df)
 
+                played_for_metadata = _filter_games_as_of(
+                    _completed_games(model_df), fit_end_date
+                )
                 metadata = _build_model_metadata(
                     model_name=model_name,
-                    played=_completed_games(model_df),
+                    played=played_for_metadata,
                     schedule_df=schedule_df,
                     params_source=params_source,
                     params_source_label=params_source_label,
@@ -1476,9 +1598,12 @@ def build_schedule_excel_report(
             params_fingerprints = {md.get("params_fingerprint") for _, md in market_metadatas if md.get("params_fingerprint")}
             params_nonempty_flags = {str(md.get("params_nonempty")) for _, md in market_metadatas if md.get("params_nonempty") is not None}
 
+            combined_played = _filter_games_as_of(
+                _completed_games(model_df), fit_end_date
+            )
             combined_metadata = _build_model_metadata(
                 model_name=model_name,
-                played=_completed_games(model_df),
+                played=combined_played,
                 schedule_df=model_df_all_markets,
                 params_source=params_source_joined,
                 params_source_label=",".join(sorted(params_source_labels)) if params_source_labels else params_source_joined,
@@ -1578,6 +1703,7 @@ def build_schedule_excel_report(
                 as_of_date=resolved_as_of_date,
                 allowed_models_by_market=allowed_models_map,
                 market_metrics=market_metrics,
+                fit_end_date=fit_end_date,
             )
 
             # Ensure all required ensemble columns exist in bets_schedule_df before ensemble writes.
@@ -1930,6 +2056,16 @@ def build_schedule_excel_report(
                             "config_source": cfg_meta.get("source"),
                             "config_path": cfg_meta.get("path"),
                         }
+                        # Compute recency adjustment for totals (e.g., to account for January slowdown)
+                        total_adjustment = None
+                        if db_path and sport and season:
+                            total_adjustment = _compute_total_recency_adjustment(
+                                db_path,
+                                sport,
+                                as_of_date=as_of_date,
+                                lookback_games=100,
+                            )
+                        
                         for gid in pd.unique(bets_schedule_df["game_id"]):
                             try:
                                 subset = forecast_df[forecast_df["game_id"] == gid]
@@ -1940,6 +2076,11 @@ def build_schedule_excel_report(
                                 )
                                 if total_mean_raw is None:
                                     continue
+                                
+                                # Apply recency adjustment if available
+                                if total_adjustment is not None and abs(total_adjustment) > 0.5:
+                                    total_mean_raw = total_mean_raw + total_adjustment
+                                
                                 mask = bets_schedule_df["game_id"] == gid
                                 bets_schedule_df.loc[mask, "total"] = total_mean_raw
                                 if total_sd_raw is not None:
@@ -1955,6 +2096,16 @@ def build_schedule_excel_report(
                                 continue
                     else:
                         # Single-model: pass through TOTAL data directly (no ensemble)
+                        # Compute recency adjustment for totals
+                        total_adjustment = None
+                        if db_path and sport and season:
+                            total_adjustment = _compute_total_recency_adjustment(
+                                db_path,
+                                sport,
+                                as_of_date=as_of_date,
+                                lookback_games=100,
+                            )
+                        
                         single_model_name = list(unique_total_models)[0] if unique_total_models else bets_model_name
                         for gid in pd.unique(bets_schedule_df["game_id"]):
                             try:
@@ -1967,6 +2118,11 @@ def build_schedule_excel_report(
                                 total_sd = row.get("total_sd")
                                 if total_mean is None or (isinstance(total_mean, float) and pd.isna(total_mean)):
                                     continue
+                                
+                                # Apply recency adjustment if available
+                                if total_adjustment is not None and abs(total_adjustment) > 0.5:
+                                    total_mean = total_mean + total_adjustment
+                                
                                 mask = bets_schedule_df["game_id"] == gid
                                 bets_schedule_df.loc[mask, "total"] = total_mean
                                 if total_sd is not None and not (isinstance(total_sd, float) and pd.isna(total_sd)):
