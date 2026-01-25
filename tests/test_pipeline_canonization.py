@@ -11,6 +11,7 @@ These tests ensure that core workflows remain stable as models/sports/ensembles 
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import date
 from pathlib import Path
@@ -29,7 +30,7 @@ from ingest.schema import GameResult
 from ingest.sources import SportsReferenceSource
 from pipelines.ingest import ingest_games
 from pipelines.run_rankings import run_rankings
-from pipelines.schedule import build_schedule_excel_report
+from pipelines.schedule import MODEL_METADATA_DATA_START_ROW, build_schedule_excel_report
 from pipelines.backtest import run_backtest_pipeline
 
 
@@ -102,8 +103,12 @@ class TestPipelineCanonization:
         assert schedule_path.exists()
         
         # Verify schedule has projections
-        schedule_df = pd.read_excel(schedule_path, sheet_name="elo", skiprows=2)
-        future_games = schedule_df[schedule_df["status"] == "upcoming"]
+        schedule_df = pd.read_excel(
+            schedule_path,
+            sheet_name="elo",
+            skiprows=MODEL_METADATA_DATA_START_ROW - 1,
+        )
+        future_games = schedule_df[schedule_df["status"] == "scheduled"]
         assert len(future_games) > 0
         assert future_games["projected_win_prob"].notna().all()
         
@@ -247,38 +252,56 @@ class TestPipelineCanonization:
         init_db(db_path)
         
         # Save different params for each market
+        ml_params = {"k_factor": 20.0, "_market_tag": "ML"}
         save_model_market_tuning_run(
             db_path,
             sport="nba",
             season="2024-25",
             model="elo",
             market="ML",
-            metric="log_loss",
-            score=0.5,
-            params={"k_factor": 20.0, "_market_tag": "ML"},
-            start_date="2025-01-01",
-            end_date="2025-01-10",
+            metric_optimized="backtest_log_loss",
             run_id="test_ml",
+            best_score=0.5,
+            best_params_json=json.dumps(ml_params, sort_keys=True),
+            summary_metrics_json=None,
+            started_at=None,
+            finished_at=None,
+            notes=None,
         )
         set_active_model_market_params(
-            db_path, "nba", "2024-25", "elo", "ML", "test_ml"
+            db_path,
+            sport="nba",
+            season="2024-25",
+            model="elo",
+            market="ML",
+            params=ml_params,
+            source_run_id="test_ml",
         )
         
+        spread_params = {"k_factor": 30.0, "_market_tag": "SPREAD"}
         save_model_market_tuning_run(
             db_path,
             sport="nba",
             season="2024-25",
             model="elo",
             market="SPREAD",
-            metric="mae_margin",
-            score=5.0,
-            params={"k_factor": 30.0, "_market_tag": "SPREAD"},
-            start_date="2025-01-01",
-            end_date="2025-01-10",
+            metric_optimized="backtest_mae_margin",
             run_id="test_spread",
+            best_score=5.0,
+            best_params_json=json.dumps(spread_params, sort_keys=True),
+            summary_metrics_json=None,
+            started_at=None,
+            finished_at=None,
+            notes=None,
         )
         set_active_model_market_params(
-            db_path, "nba", "2024-25", "elo", "SPREAD", "test_spread"
+            db_path,
+            sport="nba",
+            season="2024-25",
+            model="elo",
+            market="SPREAD",
+            params=spread_params,
+            source_run_id="test_spread",
         )
         
         # Query and verify isolation
@@ -296,7 +319,6 @@ class TestPipelineCanonization:
         assert len(results) == 2
         params_by_market = {row[0]: row[1] for row in results}
         
-        import json
         ml_params = json.loads(params_by_market["ML"])
         spread_params = json.loads(params_by_market["SPREAD"])
         
@@ -333,7 +355,13 @@ class TestPipelineCanonization:
         save_games(db_path, games)
         
         # Single model - should show model name, not "ensemble"
-        run_rankings(db_path, "nba", "2024-25", "elo", tmp_path / "elo.csv")
+        run_rankings(
+            db_path,
+            sport="nba",
+            season="2024-25",
+            model="elo",
+            output_path=tmp_path / "elo.csv",
+        )
         
         schedule_path = build_schedule_excel_report(
             db_path,
@@ -361,6 +389,15 @@ class TestPipelineCanonization:
         
         games = [
             GameResult(
+                date=date(2025, 1, 1),
+                home_team="A",
+                away_team="B",
+                home_score=101,
+                away_score=95,
+                sport="nba",
+                season="2024-25",
+            ),
+            GameResult(
                 date=date(2025, 1, 10),
                 home_team="A",
                 away_team="B",
@@ -371,7 +408,13 @@ class TestPipelineCanonization:
             ),
         ]
         save_games(db_path, games)
-        run_rankings(db_path, "nba", "2024-25", "elo", tmp_path / "elo.csv")
+        run_rankings(
+            db_path,
+            sport="nba",
+            season="2024-25",
+            model="elo",
+            output_path=tmp_path / "elo.csv",
+        )
         
         schedule_path = build_schedule_excel_report(
             db_path,
@@ -382,7 +425,11 @@ class TestPipelineCanonization:
             as_of_date=date(2025, 1, 5),
         )
         
-        df = pd.read_excel(schedule_path, sheet_name="elo", skiprows=2)
+        df = pd.read_excel(
+            schedule_path,
+            sheet_name="elo",
+            skiprows=MODEL_METADATA_DATA_START_ROW - 1,
+        )
         assert list(df.columns) == SCHEDULE_EXPORT_COLUMNS, \
             "Schedule columns must match SCHEDULE_EXPORT_COLUMNS contract"
 
@@ -422,9 +469,9 @@ class TestPipelineCanonization:
         
         # Verify metrics computed successfully
         assert not outputs.metrics_overall.empty
-        assert "log_loss" in outputs.metrics_overall.index
-        assert "mae_margin" in outputs.metrics_overall.index
-        assert "mae_total" in outputs.metrics_overall.index
+        assert "log_loss" in outputs.metrics_overall.columns
+        assert "mae_margin" in outputs.metrics_overall.columns
+        assert "mae_total" in outputs.metrics_overall.columns
 
 
 class TestSystemInvariants:

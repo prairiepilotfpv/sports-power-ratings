@@ -9,11 +9,7 @@ from ensemble.io import load_ml_weights
 
 
 def test_ml_weighted_equal_weights(tmp_path, monkeypatch):
-    # Ensure no weights file exists for the test sport/season
-    out_dir = Path("outputs") / "ensembles" / "TESTSPORT" / "2025"
-    if out_dir.exists():
-        for f in out_dir.glob("*"):
-            f.unlink()
+    monkeypatch.chdir(tmp_path)
     ens = MLWeightedAverageEnsemble("TESTSPORT", "2025")
     df = pd.DataFrame(
         [{"model_name": "a", "p_home_win": 0.6}, {"model_name": "b", "p_home_win": 0.4}]
@@ -25,7 +21,8 @@ def test_ml_weighted_equal_weights(tmp_path, monkeypatch):
     assert len(comps_list) == 2
 
 
-def test_ml_weighted_respects_weights(tmp_path):
+def test_ml_weighted_respects_weights(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     # Write a small weights file and ensure renormalization works
     base = Path("outputs") / "ensembles" / "NBA" / "2025-26"
     base.mkdir(parents=True, exist_ok=True)

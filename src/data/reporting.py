@@ -102,7 +102,7 @@ def edge_bucket_report(db_path: str | Path, *, sport: str, season: str) -> List[
             LEFT JOIN opportunities o ON b.source_opportunity_id = o.id
             LEFT JOIN games g ON b.game_id = g.game_id
             WHERE g.sport = ? AND g.season = ?
-            GROUP BY edge
+            GROUP BY o.edge
         """
         rows = cur.execute(q, (sport, season)).fetchall()
         buckets: Dict[str, Dict[str, Any]] = {}

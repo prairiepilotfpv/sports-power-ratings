@@ -6,7 +6,7 @@ import json
 import logging
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List
 import re
 import sqlite3
 
@@ -138,9 +138,12 @@ def _order_schedule_export(schedule_df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _resolve_models(model: str | None) -> list[str]:
+def _resolve_models(model: str | Iterable[str] | None) -> list[str]:
     if model is None:
         return list_models()
+    if isinstance(model, (list, tuple, set)):
+        models = [normalize_model_name(m) for m in model]
+        return list(dict.fromkeys(models))
     normalized = normalize_model_name(model)
     if normalized in {"all", "*"}:
         return list_models()

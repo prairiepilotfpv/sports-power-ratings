@@ -21,6 +21,8 @@ def test_tune_all_models_and_metrics_summary(tmp_path: Path, monkeypatch) -> Non
     }
     grid_path = tmp_path / "grid.json"
     grid_path.write_text(json.dumps(grid_override), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    csv_path = Path(__file__).resolve().parents[1] / "fixtures" / "mini_nba.csv"
 
     monkeypatch.setattr(
         "models.registry.list_backtest_models", lambda: ["elo", "toor"]
@@ -39,7 +41,7 @@ def test_tune_all_models_and_metrics_summary(tmp_path: Path, monkeypatch) -> Non
         rolling_days = None
         rolling_games = None
         output_dir = str(tmp_path)
-        csv = "tests/fixtures/mini_nba.csv"
+        csv = str(csv_path)
         grid_file = str(grid_path)
         apply_best = False
         apply_metric = "log_loss"
@@ -55,6 +57,6 @@ def test_tune_all_models_and_metrics_summary(tmp_path: Path, monkeypatch) -> Non
         for metric in ("log_loss", "brier_score"):
             assert (tmp_path / model / metric).exists()
 
-    summary_dir = Path("outputs/tuning/nba/2024-25/_all")
+    summary_dir = tmp_path / "outputs" / "tuning" / "nba" / "2024-25" / "_all"
     summaries = list(summary_dir.glob("tune_summary_*.csv"))
     assert summaries

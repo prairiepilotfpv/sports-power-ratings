@@ -2033,7 +2033,6 @@ def _run_betting(args: argparse.Namespace) -> None:
         if not sport or not season:
             # Read CSV to infer sport/season from game_id
             import pandas as pd
-            from pathlib import Path
             csv_file = Path(csv_path)
             if csv_file.exists():
                 df = pd.read_csv(csv_file)

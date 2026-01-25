@@ -62,6 +62,9 @@ outputs/**/*.csv
 outputs/**/*.xlsx
 tmp_*
 
+# SSAT reference (ignored from VCS/tests)
+docs/ssat/
+
 # OS/editor
 .DS_Store
 Thumbs.db
