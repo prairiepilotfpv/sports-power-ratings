@@ -4,33 +4,22 @@ from __future__ import annotations
 
 import json
 import logging
-import atexit
 from math import sqrt
 from typing import Any
 
 import pandas as pd
 
 from .io import load_market_weights
+from .schema import create_component, sort_components
 from markets.base import Market
+from models.registry import normalize_model_name
 
 
 logger = logging.getLogger(__name__)
-_LOG_REGISTERED = False
-
-
-def _register_log_hook() -> None:
-    global _LOG_REGISTERED
-    if _LOG_REGISTERED:
-        return
-    atexit.register(SpreadWeightedAverageEnsemble.log_between_var_usage)
-    _LOG_REGISTERED = True
 
 
 class SpreadWeightedAverageEnsemble:
     """Combine multiple model margin forecasts using weighted average."""
-
-    _combine_calls: int = 0
-    _between_var_applied_calls: int = 0
 
     def __init__(
         self,
@@ -49,7 +38,6 @@ class SpreadWeightedAverageEnsemble:
             if weights is not None
             else (load_market_weights(sport, season, Market.SPREAD.name, ensemble_id) or {})
         )
-        _register_log_hook()
 
     @property
     def ensemble_id(self) -> str:
@@ -70,10 +58,6 @@ class SpreadWeightedAverageEnsemble:
         if game_rows is None or game_rows.empty:
             return None, None, "[]"
 
-        cls = type(self)
-        cls._combine_calls += 1
-        applied_between_var = False
-
         rows = list(game_rows.itertuples(index=False))
         models: list[str] = []
         margins: list[float] = []
@@ -87,7 +71,8 @@ class SpreadWeightedAverageEnsemble:
                 model = r[0]
                 margin = r[1]
                 sd = r[2] if len(r) > 2 else None
-            models.append(str(model))
+            # Normalize model name for consistent lookups (Issue #10 fix)
+            models.append(normalize_model_name(str(model)))
             try:
                 margins.append(float(margin))
             except Exception:
@@ -97,20 +82,33 @@ class SpreadWeightedAverageEnsemble:
             except Exception:
                 sds.append(float("nan"))
 
-        raw_weights: list[float] = [float(self._weights.get(m, 1.0)) for m in models]
+        # Build raw weights (default 0.0 when not specified - Issue #2 fix)
+        raw_weights: list[float] = [float(self._weights.get(m, 0.0)) for m in models]
+
+        # Warn about models with zero weight
+        zero_weight_models = [m for m, w in zip(models, raw_weights) if w == 0.0]
+        if zero_weight_models:
+            logger.warning(
+                "SPREAD ensemble: Models excluded (zero weight): %s. "
+                "To include, add weights to config for sport=%s, season=%s",
+                zero_weight_models, self.sport, self.season
+            )
+
         is_valid_margin = [not pd.isna(m) for m in margins]
         total_valid = sum(w for w, v in zip(raw_weights, is_valid_margin) if v)
 
         components: list[dict[str, Any]] = []
         if total_valid <= 0:
             for m, mean, sd in zip(models, margins, sds):
-                comp = {
-                    "model": m,
-                    "margin_mean": None if pd.isna(mean) else float(mean),
-                    "margin_sd": None if pd.isna(sd) else float(sd),
-                    "w": 0.0,
-                }
+                comp = create_component(
+                    model=m,
+                    weight=0.0,
+                    value=None if pd.isna(mean) else float(mean),
+                    uncertainty=None if pd.isna(sd) else float(sd)
+                )
                 components.append(comp)
+            # Sort for deterministic ordering (Issue #11 fix)
+            components = sort_components(components)
             return None, None, json.dumps(components, sort_keys=True)
 
         combined_mean = 0.0
@@ -119,24 +117,24 @@ class SpreadWeightedAverageEnsemble:
                 adj_w = 0.0
             else:
                 adj_w = float(w) / float(total_valid)
-            comp = {
-                "model": m,
-                "margin_mean": None if pd.isna(mean) else float(mean),
-                "margin_sd": None if pd.isna(sd) else float(sd),
-                "w": float(adj_w),
-            }
+            comp = create_component(
+                model=m,
+                weight=float(adj_w),
+                value=None if pd.isna(mean) else float(mean),
+                uncertainty=None if pd.isna(sd) else float(sd)
+            )
             components.append(comp)
-            if comp["margin_mean"] is not None:
-                combined_mean += comp["margin_mean"] * comp["w"]
+            if comp["value"] is not None:
+                combined_mean += comp["value"] * comp["weight"]
 
         # Compute weighted RMS SD over components that reported sd values.
         sd_weights = []
         sd_values = []
         for comp in components:
-            if comp["margin_sd"] is None:
+            if comp["uncertainty"] is None:
                 continue
-            sd_weights.append(comp["w"])
-            sd_values.append(comp["margin_sd"])
+            sd_weights.append(comp["weight"])
+            sd_values.append(comp["uncertainty"])
 
         combined_sd = None
         within_var = None
@@ -147,40 +145,46 @@ class SpreadWeightedAverageEnsemble:
                 within_var = sum(w * (sd ** 2) for w, sd in zip(normalized, sd_values))
                 combined_sd = sqrt(within_var)
 
+        # Between-model variance calculation (Issue #1 fix)
         if within_var is not None and self._include_between_model_variance:
             var_set = [
                 comp
                 for comp in components
-                if comp.get("margin_mean") is not None
-                and comp.get("margin_sd") is not None
-                and comp.get("w", 0.0) > 0.0
+                if comp.get("value") is not None
+                and comp.get("uncertainty") is not None
+                and comp.get("weight", 0.0) > 0.0
             ]
             if len(var_set) >= 2:
-                weight_sum = sum(comp["w"] for comp in var_set)
-                if weight_sum > 0:
-                    normalized_weights = [comp["w"] / weight_sum for comp in var_set]
-                    mean_for_var_set = sum(
-                        w * comp["margin_mean"] for w, comp in zip(normalized_weights, var_set)
-                    )
-                    between_var = sum(
-                        w * ((comp["margin_mean"] - mean_for_var_set) ** 2)
-                        for w, comp in zip(normalized_weights, var_set)
-                    )
-                    combined_sd = sqrt(within_var + between_var)
-                    applied_between_var = True
+                # Issue #1 FIX: Use the ALREADY-NORMALIZED weights from components
+                # Don't re-normalize! The weights in components already sum to 1.0
+                weights_for_var = [comp["weight"] for comp in var_set]
 
-        if applied_between_var:
-            cls._between_var_applied_calls += 1
+                # Use the already-computed weighted mean (no need to recompute)
+                mean_for_var_set = combined_mean
 
+                # Compute between-model variance using the SAME weights as the mean
+                between_var = sum(
+                    w * ((comp["value"] - mean_for_var_set) ** 2)
+                    for w, comp in zip(weights_for_var, var_set)
+                )
+                combined_sd = sqrt(within_var + between_var)
+
+                logger.debug(
+                    "SPREAD ensemble: Applied between-model variance (within=%.2f, between=%.2f, "
+                    "total_sd=%.2f) for %d models with uncertainty",
+                    within_var, between_var, combined_sd, len(var_set)
+                )
+            else:
+                # Issue #8 fix: Warn when variance is skipped
+                models_with_sd = [c["model"] for c in components if c.get("uncertainty") is not None and c.get("weight", 0.0) > 0.0]
+                if len(models_with_sd) == 1:
+                    logger.debug(
+                        "SPREAD ensemble: Between-model variance skipped (only 1 model with SD: %s). "
+                        "Need ≥2 models with both value and uncertainty.",
+                        models_with_sd[0]
+                    )
+
+        # Sort for deterministic ordering (Issue #11 fix)
+        components = sort_components(components)
         return float(combined_mean), combined_sd, json.dumps(components, sort_keys=True)
 
-    @classmethod
-    def log_between_var_usage(cls) -> None:
-        """Log aggregated usage of between-model variance application."""
-        if cls._combine_calls <= 0:
-            return
-        logger.info(
-            "Spread ensemble between_var applied for %s/%s games (>=2 mean+sd components).",
-            cls._between_var_applied_calls,
-            cls._combine_calls,
-        )

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Dict, Iterable
 
 from markets.registry import get_market_spec
+from models.registry import normalize_model_name
+
+logger = logging.getLogger(__name__)
 
 
 def _market_weight_candidates(
@@ -63,20 +67,35 @@ def load_market_weights(
     try:
         with path.open("r", encoding="utf-8") as fh:
             data = json.load(fh)
-        if not isinstance(data, dict):
-            return None
-        raw_weights = data.get("weights") if isinstance(data.get("weights"), dict) else data
-        weights: dict[str, float] = {}
-        for k, v in raw_weights.items():
-            try:
-                weights[str(k)] = float(v)
-            except Exception:
-                continue
-        if not weights:
-            return None
-        return weights
-    except Exception:
+    except json.JSONDecodeError as e:
+        # Issue #9 fix: Specific exception handling for JSON errors
+        logger.warning(
+            "Failed to parse ensemble weights JSON at %s: %s",
+            path, e
+        )
         return None
+    except Exception as e:
+        # Issue #9 fix: Log unexpected errors
+        logger.error(
+            "Unexpected error loading ensemble weights at %s: %s",
+            path, e
+        )
+        return None
+
+    if not isinstance(data, dict):
+        return None
+    raw_weights = data.get("weights") if isinstance(data.get("weights"), dict) else data
+    weights: dict[str, float] = {}
+    for k, v in raw_weights.items():
+        try:
+            # Issue #10 fix: Normalize model names when loading weights
+            normalized_key = normalize_model_name(str(k))
+            weights[normalized_key] = float(v)
+        except Exception:
+            continue
+    if not weights:
+        return None
+    return weights
 
 
 def load_ml_weights(

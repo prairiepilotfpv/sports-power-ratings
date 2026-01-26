@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import pandas as pd
 
 from .io import load_ml_weights
 from .base import BaseEnsemble
+from .schema import create_component, sort_components
 from markets.base import Market
+from models.registry import normalize_model_name
+
+logger = logging.getLogger(__name__)
 
 
 class MLWeightedAverageEnsemble:
@@ -80,14 +85,24 @@ class MLWeightedAverageEnsemble:
             except Exception:
                 model = r[0]
                 prob = r[1]
-            models.append(str(model))
+            # Normalize model name for consistent lookups (Issue #10 fix)
+            models.append(normalize_model_name(str(model)))
             try:
                 probs.append(float(prob))
             except Exception:
                 probs.append(float("nan"))
 
-        # Build raw weights (default 1.0 when not specified)
-        raw_weights: list[float] = [float(self._weights.get(m, 1.0)) for m in models]
+        # Build raw weights (default 0.0 when not specified - Issue #2 fix)
+        raw_weights: list[float] = [float(self._weights.get(m, 0.0)) for m in models]
+
+        # Warn about models with zero weight
+        zero_weight_models = [m for m, w in zip(models, raw_weights) if w == 0.0]
+        if zero_weight_models:
+            logger.warning(
+                "Models excluded from ensemble (zero weight): %s. "
+                "To include these models, add weights to config for sport=%s, season=%s",
+                zero_weight_models, self.sport, self.season
+            )
 
         # Identify which model probs are valid and renormalize weights over them.
         is_valid_prob = [not pd.isna(p) for p in probs]
@@ -102,8 +117,15 @@ class MLWeightedAverageEnsemble:
             # No valid probabilities or no positive weight to distribute.
             # Return components JSON (weights set to 0 for invalid/unused) and None for combined.
             for m, p, w in zip(models, probs, raw_weights):
-                comp = {"model": m, "prob": None if pd.isna(p) else float(p), "weight": 0.0}
+                comp = create_component(
+                    model=m,
+                    weight=0.0,
+                    value=None if pd.isna(p) else float(p),
+                    uncertainty=None
+                )
                 components.append(comp)
+            # Sort for deterministic ordering (Issue #11 fix)
+            components = sort_components(components)
             return None, json.dumps(components, sort_keys=True)
 
         # Compute adjusted weights for valid models; invalid models get weight 0.
@@ -112,13 +134,22 @@ class MLWeightedAverageEnsemble:
                 adj_w = 0.0
             else:
                 adj_w = float(w) / float(total_valid)
-            comp = {"model": m, "prob": None if pd.isna(p) else float(p), "weight": float(adj_w)}
+            comp = create_component(
+                model=m,
+                weight=float(adj_w),
+                value=None if pd.isna(p) else float(p),
+                uncertainty=None
+            )
             components.append(comp)
-            if comp["prob"] is not None:
-                combined += comp["prob"] * comp["weight"]
+            if comp["value"] is not None:
+                combined += comp["value"] * comp["weight"]
                 valid_any = True
 
         if not valid_any:
+            # Sort for deterministic ordering (Issue #11 fix)
+            components = sort_components(components)
             return None, json.dumps(components, sort_keys=True)
 
+        # Sort for deterministic ordering (Issue #11 fix)
+        components = sort_components(components)
         return float(combined), json.dumps(components, sort_keys=True)

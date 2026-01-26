@@ -195,6 +195,8 @@ def save_bets_predictions(
         "spread_source",
         "total_source",
         "ml_ensemble_components_json",
+        "spread_ensemble_components_json",
+        "total_ensemble_components_json",
     ]
     
     cols_to_keep = required_cols + [c for c in optional_cols if c in bets_df.columns]
@@ -226,21 +228,23 @@ def save_bets_predictions(
     for col in optional_cols:
         if col not in save_df.columns:
             save_df[col] = None
-    if "ml_ensemble_components_json" in save_df.columns:
-        def _normalize_components(value: Any) -> str | None:
-            if value is None or (isinstance(value, float) and pd.isna(value)):
-                return None
-            if isinstance(value, str):
-                text = value.strip()
-                return text if text else None
-            try:
-                return json.dumps(value)
-            except Exception:
-                return str(value)
 
-        save_df["ml_ensemble_components_json"] = save_df["ml_ensemble_components_json"].apply(
-            _normalize_components
-        )
+    # Normalize ensemble components JSON columns
+    def _normalize_components(value: Any) -> str | None:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return None
+        if isinstance(value, str):
+            text = value.strip()
+            return text if text else None
+        try:
+            return json.dumps(value)
+        except Exception:
+            return str(value)
+
+    # Apply normalization to all ensemble components columns
+    for col in ["ml_ensemble_components_json", "spread_ensemble_components_json", "total_ensemble_components_json"]:
+        if col in save_df.columns:
+            save_df[col] = save_df[col].apply(_normalize_components)
     
     # Map market_type to correct source column
     # ML uses market_forecast_source, SPREAD uses spread_source, TOTAL uses total_source
@@ -284,8 +288,9 @@ def save_bets_predictions(
             INSERT OR REPLACE INTO bets_predictions
             (game_id, sport, season, prediction_date, home_win_prob,
              model_prob, edge, ev, market_type, selection, line,
-             market_forecast_source, ml_ensemble_components_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             market_forecast_source, ml_ensemble_components_json,
+             spread_ensemble_components_json, total_ensemble_components_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             save_df[
                 [
@@ -302,6 +307,8 @@ def save_bets_predictions(
                     "line",
                     "market_forecast_source",
                     "ml_ensemble_components_json",
+                    "spread_ensemble_components_json",
+                    "total_ensemble_components_json",
                 ]
             ].values,
         )

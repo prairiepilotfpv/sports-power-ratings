@@ -394,6 +394,26 @@ def _add_bets_predictions_market_source(conn: sqlite3.Connection) -> None:
         )
 
 
+def _add_spread_total_ensemble_components(conn: sqlite3.Connection) -> None:
+    """Add spread_ensemble_components_json and total_ensemble_components_json columns.
+
+    This migration enables persisting ensemble component JSON for SPREAD and TOTAL markets,
+    similar to the existing ml_ensemble_components_json column. This allows for validation
+    and auditing of ensemble predictions across all market types.
+    """
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(bets_predictions)")]
+    if not cols:
+        return
+    if "spread_ensemble_components_json" not in cols:
+        conn.execute(
+            "ALTER TABLE bets_predictions ADD COLUMN spread_ensemble_components_json TEXT"
+        )
+    if "total_ensemble_components_json" not in cols:
+        conn.execute(
+            "ALTER TABLE bets_predictions ADD COLUMN total_ensemble_components_json TEXT"
+        )
+
+
 def _fix_bets_predictions_unique_constraint(conn: sqlite3.Connection) -> None:
     """Fix UNIQUE constraint to allow multiple market/selection combos per game per date.
     
@@ -690,6 +710,7 @@ MIGRATIONS: list[Migration] = [
     Migration(13, "add_bets_predictions_components_json", _add_bets_predictions_components_json),
     Migration(14, "add_bets_predictions_market_source", _add_bets_predictions_market_source),
     Migration(15, "fix_bets_predictions_unique_constraint", _fix_bets_predictions_unique_constraint),
+    Migration(16, "add_spread_total_ensemble_components", _add_spread_total_ensemble_components),
 ]
 
 LATEST_SCHEMA_VERSION = max((m.version for m in MIGRATIONS), default=0)
