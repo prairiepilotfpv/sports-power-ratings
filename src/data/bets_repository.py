@@ -7,6 +7,7 @@ comparing historical predictions against actual results.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,13 +38,26 @@ def save_bets_predictions(
     """
     if prediction_date is None:
         prediction_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    from data.repository import init_db
+
+    init_db(db_path)
     
     if bets_df.empty:
         return 0
     
     # Only keep relevant columns
     required_cols = ["game_id"]
-    optional_cols = ["home_win_prob", "model_prob", "edge", "ev", "market_type", "selection", "line"]
+    optional_cols = [
+        "home_win_prob",
+        "model_prob",
+        "edge",
+        "ev",
+        "market_type",
+        "selection",
+        "line",
+        "ml_ensemble_components_json",
+    ]
     
     cols_to_keep = required_cols + [c for c in optional_cols if c in bets_df.columns]
     save_df = bets_df[cols_to_keep].copy()
@@ -64,6 +78,21 @@ def save_bets_predictions(
     for col in optional_cols:
         if col not in save_df.columns:
             save_df[col] = None
+    if "ml_ensemble_components_json" in save_df.columns:
+        def _normalize_components(value: Any) -> str | None:
+            if value is None or (isinstance(value, float) and pd.isna(value)):
+                return None
+            if isinstance(value, str):
+                text = value.strip()
+                return text if text else None
+            try:
+                return json.dumps(value)
+            except Exception:
+                return str(value)
+
+        save_df["ml_ensemble_components_json"] = save_df["ml_ensemble_components_json"].apply(
+            _normalize_components
+        )
     
     # Insert via upsert (replace on conflict)
     conn = sqlite3.connect(db_path)
@@ -74,9 +103,10 @@ def save_bets_predictions(
         cursor.executemany(
             """
             INSERT OR REPLACE INTO bets_predictions
-            (game_id, sport, season, prediction_date, home_win_prob, 
-             model_prob, edge, ev, market_type, selection, line)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (game_id, sport, season, prediction_date, home_win_prob,
+             model_prob, edge, ev, market_type, selection, line,
+             ml_ensemble_components_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             save_df[
                 [
@@ -91,6 +121,7 @@ def save_bets_predictions(
                     "market_type",
                     "selection",
                     "line",
+                    "ml_ensemble_components_json",
                 ]
             ].values,
         )
@@ -135,13 +166,20 @@ def load_bets_predictions_for_validation(
     
     conn = sqlite3.connect(db_path)
     try:
-        query = """
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(bets_predictions)")]
+        has_components = "ml_ensemble_components_json" in cols
+        select_cols = [
+            "bp.game_id",
+            "bp.prediction_date",
+            "bp.home_win_prob",
+            "g.home_score",
+            "g.away_score",
+        ]
+        if has_components:
+            select_cols.append("bp.ml_ensemble_components_json")
+        query = f"""
         SELECT
-            bp.game_id,
-            bp.prediction_date,
-            bp.home_win_prob,
-            g.home_score,
-            g.away_score
+            {", ".join(select_cols)}
         FROM bets_predictions bp
         JOIN games g ON bp.game_id = g.game_id
         WHERE bp.sport = ? AND bp.season = ?
@@ -150,8 +188,10 @@ def load_bets_predictions_for_validation(
         ORDER BY bp.prediction_date DESC, bp.game_id
         """
         params: list[Any] = [sport, season, start_date, prediction_date]
-        
-        return pd.read_sql(query, conn, params=params)
+        df = pd.read_sql(query, conn, params=params)
+        if not has_components:
+            df["ml_ensemble_components_json"] = None
+        return df
     finally:
         conn.close()
 

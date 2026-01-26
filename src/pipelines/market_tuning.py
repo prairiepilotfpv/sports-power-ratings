@@ -5,22 +5,34 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import logging
 import math
 from pathlib import Path
 from typing import Any, Iterable
 
 from backtest.runner import load_games_df_from_csv, run_backtest
 from data.repository import (
+    get_active_ensemble_market_selection,
+    load_selection_run,
     save_ensemble_market_tuning_run,
     save_model_market_tuning_run,
+    set_active_ensemble_market_tuning_run,
     set_active_ensemble_market_weights,
 )
+from ensemble.config import DEFAULT_MARKET_MODELS
 from markets.base import Market
-from models.registry import get_backtest_model, normalize_model_name
-from pipelines.ensemble_tuning import tune_market_ensemble
+from models.registry import get_backtest_model, list_backtest_models, normalize_model_name
+from pipelines.ensemble_tuning import (
+    GamesDatasetMetadata,
+    _ensemble_metrics,
+    _metric_name_for_market,
+    tune_market_ensemble,
+)
 from pipelines.market_utils import _metric_optimized_label, _resolve_market_metric
 from pipelines.model_params import activate_best_params
 from pipelines.tuning import run_tuning_pipeline
+
+_LOG = logging.getLogger(__name__)
 
 SUPPORTED_MARKETS = ("ML", "SPREAD", "TOTAL")
 
@@ -262,6 +274,11 @@ class EnsembleMarketTuningResult:
     models: list[str]
     summary_metrics: dict[str, Any] | None
     artifact_path: Path
+    activated: bool
+    baseline_score: float | None
+    selection_models: list[str]
+    selection_run_id: str | None
+    metadata: GamesDatasetMetadata | None
 
 
 def run_ensemble_market_tuning(
@@ -272,12 +289,24 @@ def run_ensemble_market_tuning(
     ensemble_id: str,
     start_date: str,
     end_date: str,
-    models: Iterable[str] | None,
-    csv_path: str | Path | None,
+    as_of_date: str | None = None,
+    selection_models: Iterable[str] | None = None,
+    selection_run_id: str | None = None,
+    csv_path: str | Path | None = None,
     db_path: str | Path,
+    activate: bool = True,
 ) -> EnsembleMarketTuningResult:
     normalized_market = _normalize_market(market)
     metric_optimized = _metric_optimized_label(normalized_market)
+    selection_models_list, selection_run_id_used = _resolve_selection_models(
+        sport=sport,
+        season=season,
+        normalized_market=normalized_market,
+        ensemble_id=ensemble_id,
+        db_path=db_path,
+        override_models=selection_models,
+        selection_run_id=selection_run_id,
+    )
     started_at = _utc_now()
     result = tune_market_ensemble(
         sport=sport,
@@ -285,13 +314,35 @@ def run_ensemble_market_tuning(
         market=Market[normalized_market],
         start_date=start_date,
         end_date=end_date,
+        as_of_date=as_of_date,
         ensemble_id=ensemble_id,
-        models=models,
+        models=selection_models_list,
         csv_path=csv_path,
         db_path=db_path,
     )
+    total_weight = sum(result.weights.values())
+    if not math.isclose(total_weight, 1.0, rel_tol=1e-9):
+        raise ValueError("Persisted ensemble weights must sum to 1.0.")
+    if any(weight < -1e-9 for weight in result.weights.values()):
+        raise ValueError("Persisted ensemble weights must be non-negative.")
     run_id = _build_ensemble_run_id(start_date, end_date)
     finished_at = _utc_now()
+
+    datasets = result.dataset
+    metric_key = _metric_name_for_market(Market[normalized_market])
+    baseline_score: float | None = None
+    if datasets is not None and selection_models_list:
+        equal_weights = {model: 1.0 / len(selection_models_list) for model in selection_models_list}
+        baseline_metrics = _ensemble_metrics(
+            datasets.pred_matrix,
+            datasets.targets,
+            equal_weights,
+            market=Market[normalized_market],
+            models=selection_models_list,
+        )
+        baseline_score = float(baseline_metrics.get(metric_key) or float("inf"))
+    else:
+        baseline_score = float("inf")
 
     save_ensemble_market_tuning_run(
         db_path,
@@ -302,26 +353,59 @@ def run_ensemble_market_tuning(
         metric_optimized=metric_optimized,
         run_id=run_id,
         best_score=result.best_score,
+        baseline_score=baseline_score,
         weights_json=json.dumps(result.weights, sort_keys=True),
         models_json=json.dumps(result.models, sort_keys=True),
+        selection_run_id=selection_run_id_used,
+        selection_models_json=json.dumps(selection_models_list, sort_keys=True),
         summary_metrics_json=(
             _json_dumps(result.summary_metrics)
             if result.summary_metrics is not None
             else None
         ),
+        data_source=result.metadata.data_source if result.metadata else None,
+        dataset_db_path=result.metadata.db_path if result.metadata else None,
+        csv_path=result.metadata.csv_path if result.metadata else None,
+        asof=result.metadata.asof if result.metadata else None,
+        window_start=start_date,
+        window_end=end_date,
+        notes=None,
         started_at=started_at,
         finished_at=finished_at,
     )
-    set_active_ensemble_market_weights(
-        db_path,
-        sport=sport,
-        season=season,
-        market=normalized_market,
-        ensemble_id=ensemble_id,
-        weights_json=json.dumps(result.weights, sort_keys=True),
-        models_json=json.dumps(result.models, sort_keys=True),
-        source_run_id=run_id,
+
+    should_activate = (
+        activate
+        and result.best_score is not None
+        and baseline_score is not None
+        and result.best_score + 1e-8 < baseline_score
     )
+    if should_activate:
+        set_active_ensemble_market_weights(
+            db_path,
+            sport=sport,
+            season=season,
+            market=normalized_market,
+            ensemble_id=ensemble_id,
+            weights_json=json.dumps(result.weights, sort_keys=True),
+            models_json=json.dumps(result.models, sort_keys=True),
+            source_run_id=run_id,
+        )
+        set_active_ensemble_market_tuning_run(
+            db_path=db_path,
+            sport=sport,
+            season=season,
+            market=normalized_market,
+            ensemble_id=ensemble_id,
+            active_run_id=run_id,
+        )
+    else:
+        _LOG.info(
+            "Tuning run did not beat baseline (best=%s baseline=%s); active weights unchanged.",
+            result.best_score,
+            baseline_score,
+        )
+
     return EnsembleMarketTuningResult(
         market=normalized_market,
         ensemble_id=ensemble_id,
@@ -333,7 +417,74 @@ def run_ensemble_market_tuning(
         models=result.models,
         summary_metrics=result.summary_metrics,
         artifact_path=result.artifact_path,
+        activated=should_activate,
+        baseline_score=baseline_score,
+        selection_models=selection_models_list,
+        selection_run_id=selection_run_id_used,
+        metadata=result.metadata,
     )
+
+
+def _resolve_selection_models(
+    *,
+    sport: str,
+    season: str,
+    normalized_market: str,
+    ensemble_id: str,
+    db_path: str | Path,
+    override_models: Iterable[str] | None,
+    selection_run_id: str | None,
+) -> tuple[list[str], str | None]:
+    backtest_models = set(list_backtest_models())
+
+    def _normalize_list(models: Iterable[str]) -> list[str]:
+        normalized: list[str] = []
+        for raw in models:
+            name = normalize_model_name(raw)
+            if name and name in backtest_models:
+                normalized.append(name)
+        return list(dict.fromkeys(normalized))
+
+    if selection_run_id:
+        selection = load_selection_run(db_path, run_id=selection_run_id)
+        if selection is None:
+            raise ValueError(f"Selection run not found: {selection_run_id}")
+        normalized = _normalize_list(selection.get("selected", []))
+        if normalized:
+            return normalized, selection["run_id"]
+
+    if override_models:
+        normalized = _normalize_list(override_models)
+        if not normalized:
+            raise ValueError("Selection override contains no supported backtest models.")
+        return normalized, None
+
+    active = get_active_ensemble_market_selection(
+        db_path=db_path,
+        sport=sport,
+        season=season,
+        market=normalized_market,
+        ensemble_id=ensemble_id,
+    )
+    if active:
+        selection = load_selection_run(db_path, run_id=active["active_run_id"])
+        if selection:
+            normalized = _normalize_list(selection.get("selected", []))
+            if normalized:
+                return normalized, selection["run_id"]
+
+    fallback = _normalize_list(DEFAULT_MARKET_MODELS.get(normalized_market, []))
+    if not fallback:
+        fallback = _normalize_list(list_backtest_models())
+    if not fallback:
+        raise ValueError(f"No candidate models available for market {normalized_market}")
+    _LOG.warning(
+        "No active selection for %s/%s market %s; falling back to default allowlist.",
+        sport,
+        season,
+        normalized_market,
+    )
+    return fallback, None
 
 
 def _normalize_market(market: str) -> str:

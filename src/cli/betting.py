@@ -62,7 +62,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     parse_export = sub.add_parser("parse-export", help="Parse betting app export CSV and assign game_ids from database")
     parse_export.add_argument("--csv", dest="csv_path", required=True, help="CSV export from betting app (league, start_time, game, type, odds, stake, result)")
     parse_export.add_argument("--sport", help="Optional sport filter (nba, ncaaf, nhl, etc.); if omitted, auto-detects all sports in CSV")
-    parse_export.add_argument("--season", default="2025-26", help="Season code (default: 2025-26)")
+    parse_export.add_argument("--season", required=True, help="Season code (e.g., 2025-26).")
     parse_export.add_argument("--db", help="Optional DB path override (use <sport> placeholder for multi-sport CSVs)")
     parse_export.add_argument("--output", help="Optional output CSV path; defaults to input filename with '-with-ids' suffix")
 

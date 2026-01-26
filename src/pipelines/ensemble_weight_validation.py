@@ -111,6 +111,66 @@ def validate_ensemble_ml_weights(
         pd.Series(tuned_probs, dtype=float),
         pd.Series(outcomes, dtype=float),
     )
+
+    equal_weight_metrics = None
+    equal_by_date: list[dict[str, Any]] = []
+    if "ml_ensemble_components_json" in valid_data.columns:
+        components_mask = valid_data["ml_ensemble_components_json"].notna()
+        if components_mask.any():
+            equal_subset = valid_data.loc[components_mask].copy()
+            equal_probs = _compute_equal_weight_probs(equal_subset)
+            if equal_probs is not None:
+                equal_outcomes = equal_subset["home_win"].values
+                equal_weight_metrics = {
+                    "n_games": int(len(equal_subset)),
+                    "equal_log_loss": float(
+                        log_loss(
+                            pd.Series(equal_probs, dtype=float),
+                            pd.Series(equal_outcomes, dtype=float),
+                        )
+                    ),
+                    "equal_brier_score": float(
+                        brier_score(
+                            pd.Series(equal_probs, dtype=float),
+                            pd.Series(equal_outcomes, dtype=float),
+                        )
+                    ),
+                    "tuned_log_loss_on_equal": float(
+                        log_loss(
+                            pd.Series(equal_subset["tuned_prob"], dtype=float),
+                            pd.Series(equal_outcomes, dtype=float),
+                        )
+                    ),
+                    "tuned_brier_score_on_equal": float(
+                        brier_score(
+                            pd.Series(equal_subset["tuned_prob"], dtype=float),
+                            pd.Series(equal_outcomes, dtype=float),
+                        )
+                    ),
+                }
+                for pred_date, group in equal_subset.groupby("prediction_date"):
+                    group_probs = _compute_equal_weight_probs(group)
+                    if group_probs is None:
+                        continue
+                    group_outcomes = group["home_win"].values
+                    equal_by_date.append(
+                        {
+                            "prediction_date": pred_date,
+                            "n_games": len(group),
+                            "equal_log_loss": float(
+                                log_loss(
+                                    pd.Series(group_probs, dtype=float),
+                                    pd.Series(group_outcomes, dtype=float),
+                                )
+                            ),
+                            "equal_brier_score": float(
+                                brier_score(
+                                    pd.Series(group_probs, dtype=float),
+                                    pd.Series(group_outcomes, dtype=float),
+                                )
+                            ),
+                        }
+                    )
     
     # Compute by-date breakdown
     date_results = []
@@ -137,6 +197,10 @@ def validate_ensemble_ml_weights(
     print("  [Validation] Overall (all dates):")
     print(f"    Tuned ensemble log-loss: {tuned_loss:.4f}")
     print(f"    Tuned ensemble brier-score: {tuned_brier:.4f}")
+    if equal_weight_metrics is not None:
+        print("    Equal-weight baseline:")
+        print(f"      log-loss: {equal_weight_metrics['equal_log_loss']:.4f}")
+        print(f"      brier-score: {equal_weight_metrics['equal_brier_score']:.4f}")
     
     # Print per-date results
     if date_results:
@@ -149,8 +213,15 @@ def validate_ensemble_ml_weights(
                 f"brier={dr['brier_score']:.4f}"
             )
     
+    status = "complete" if equal_weight_metrics is not None else "incomplete"
+    reason = (
+        None
+        if equal_weight_metrics is not None
+        else "Missing or invalid ml_ensemble_components_json for equal-weight baseline"
+    )
+
     # Return comprehensive metrics
-    return {
+    result = {
         "n_games": len(valid_data),
         "n_prediction_dates": len(date_groups),
         "date_range_start": valid_data["prediction_date"].min(),
@@ -158,9 +229,15 @@ def validate_ensemble_ml_weights(
         "tuned_log_loss": float(tuned_loss),
         "tuned_brier_score": float(tuned_brier),
         "by_date": date_results,
-        "status": "incomplete",
-        "reason": "MVP: Only tuned weights; equal-weight baseline comparison in phase 2",
+        "status": status,
     }
+    if reason:
+        result["reason"] = reason
+    if equal_weight_metrics is not None:
+        result["equal_weight"] = equal_weight_metrics
+        if equal_by_date:
+            result["equal_by_date"] = equal_by_date
+    return result
 
 
 def _compute_equal_weight_probs(

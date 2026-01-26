@@ -1,4 +1,0 @@
-date,home_team,away_team,home_score,away_score,neutral,overtime,game_id,status,home_rating,away_rating,projected_winner,projected_spread,projected_home_spread,projected_win_prob,home_advantage,projected_home_score,projected_away_score,projected_total,result_margin,result_total
-2024-01-01,A,B,100.0,90.0,False,False,,final,0.0,0.0,A,-10.0,10.0,0.8209575629125413,10.0,101.875,91.875,193.75,10.0,190.0
-2024-01-02,C,A,95.0,110.0,False,False,,final,0.0,0.0,A,15.0,-15.0,0.09243388013713606,-15.0,93.125,108.125,201.25,-15.0,205.0
-2024-01-03,B,C,,,False,False,,scheduled,0.0,0.0,C,-0.0,0.0,0.5,0.0,98.75,98.75,197.5,,

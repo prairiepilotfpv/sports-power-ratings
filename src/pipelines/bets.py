@@ -273,6 +273,7 @@ def log_bets(
                 df.at[idx, "bet_id"] = bet_id
                 df.at[idx, "logged_at"] = logged_at
                 df.at[idx, "log_status"] = "logged"
+                writeback_rows.append((idx, bet_id, logged_at))
             inserted += 1
 
     finally:
@@ -296,6 +297,15 @@ def log_bets(
                 bet_id_col = cell.column
             elif cell.value == "logged_at":
                 logged_at_col = cell.column
+        next_col = ws.max_column + 1
+        if bet_id_col is None:
+            bet_id_col = next_col
+            ws.cell(row=1, column=bet_id_col, value="bet_id")
+            next_col += 1
+        if logged_at_col is None:
+            logged_at_col = next_col
+            ws.cell(row=1, column=logged_at_col, value="logged_at")
+            next_col += 1
         
         # Update cells in-place, preserving all existing formatting
         # writeback_rows contains (df_idx, bet_id, logged_at); Excel row = df_idx + 2 (row 1 is header)

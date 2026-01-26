@@ -88,12 +88,61 @@ NHL_TEAM_CODE_MAP = {
 }
 
 
+def _resolve_db_path(db_path: str, *, sport: str, season: str | None) -> Path:
+    path_str = db_path.replace("<sport>", sport)
+    if "<season>" in path_str and not season:
+        raise ValueError("db_path includes <season> placeholder but no season was provided.")
+    if season:
+        path_str = path_str.replace("<season>", season)
+    path = Path(path_str)
+    if path.is_dir():
+        if season:
+            candidate = path / f"{season}.db"
+            if candidate.exists():
+                return candidate
+            raise FileNotFoundError(
+                f"Database not found for sport={sport} season={season} at {candidate}"
+            )
+        candidates = sorted(path.glob("*.db"))
+        if not candidates:
+            raise FileNotFoundError(f"No database files found in {path}")
+        if len(candidates) == 1:
+            return candidates[0]
+        raise ValueError(
+            f"Multiple database files found for sport={sport} in {path}; pass --season or --db."
+        )
+    return path
+
+
+def _infer_season_from_db(conn: sqlite3.Connection, *, sport: str) -> str:
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT season FROM games WHERE sport = ? AND season IS NOT NULL ORDER BY season",
+            (sport,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT season FROM games WHERE season IS NOT NULL ORDER BY season"
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            raise ValueError(f"Unable to read seasons from games table: {exc}") from exc
+    seasons = [row[0] for row in rows if row and row[0]]
+    if not seasons:
+        raise ValueError("No seasons found in games table; pass --season.")
+    if len(seasons) > 1:
+        raise ValueError(
+            f"Multiple seasons found in games table: {seasons}. Pass --season."
+        )
+    return seasons[0]
+
+
 def parse_betting_app_export(
     csv_path: str,
     db_path: str,
     output_path: str | None = None,
     sport: str = 'nba',
-    season: str = '2025-26',
+    season: str | None = None,
 ) -> tuple[int, int, list[str]]:
     """Parse betting app export CSV and assign game_ids from database.
     
@@ -109,7 +158,7 @@ def parse_betting_app_export(
         db_path: Path to the database
         output_path: Optional output path; defaults to csv_path with "-with-ids" suffix
         sport: Sport code (nba, ncaaf, nhl, etc.)
-        season: Season code (e.g., 2025-26)
+        season: Season code (e.g., 2025-26). If omitted, inferred from the DB.
     
     Returns:
         Tuple of (matched_count, total_count, unmatched_games)
@@ -118,7 +167,7 @@ def parse_betting_app_export(
     if not csv_file.exists():
         raise FileNotFoundError(f"CSV not found: {csv_file}")
     
-    db_file = Path(db_path)
+    db_file = _resolve_db_path(db_path, sport=sport, season=season)
     if not db_file.exists():
         raise FileNotFoundError(f"Database not found: {db_file}")
     
@@ -143,14 +192,17 @@ def parse_betting_app_export(
         team_code_map = TEAM_CODE_MAP
     
     # Get games from database
-    conn = sqlite3.connect(db_path)
-    cur = conn.cursor()
-    cur.execute(
-        'SELECT game_id, home_team, away_team, date FROM games WHERE sport = ? AND season = ?',
-        (sport, season)
-    )
-    games = cur.fetchall()
-    conn.close()
+    with sqlite3.connect(db_file) as conn:
+        if season:
+            season = str(season).strip()
+        if not season:
+            season = _infer_season_from_db(conn, sport=sport)
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT game_id, home_team, away_team, date FROM games WHERE sport = ? AND season = ?',
+            (sport, season)
+        )
+        games = cur.fetchall()
     
     # Build lookup dict: {(date, home_team_lower, away_team_lower): game_id}
     game_lookup = {}
@@ -229,6 +281,7 @@ def parse_betting_app_exports_by_sport(
     csv_path: str,
     db_path: str,
     output_dir: str | None = None,
+    season: str | None = None,
 ) -> dict:
     """Parse betting app export with mixed sports and split into separate files with game_ids.
     
@@ -263,7 +316,7 @@ def parse_betting_app_exports_by_sport(
         sport_df.to_csv(temp_csv, index=False)
         
         # Parse with game_ids
-        db_path_sport = Path(db_path.replace('<sport>', sport))
+        db_path_sport = _resolve_db_path(db_path, sport=sport, season=season)
         
         # Skip sports that don't have a database
         if not db_path_sport.exists():
@@ -278,7 +331,7 @@ def parse_betting_app_exports_by_sport(
                 db_path=str(db_path_sport),
                 output_path=csv_file.parent / f"{csv_file.stem}_{sport}_with_ids.csv",
                 sport=sport,
-                season="2025-26",  # Add default season
+                season=season,
             )
             results[sport] = {'matched': matched, 'total': total, 'unmatched': unmatched}
         finally:

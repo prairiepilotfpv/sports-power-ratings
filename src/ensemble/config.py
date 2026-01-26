@@ -37,19 +37,19 @@ from models.registry import normalize_model_name
 _MARKET_KEYS = {"ML", "SPREAD", "TOTAL"}
 _METRIC_SLOTS = {"log_loss", "mae_margin", "mae_total"}
 
-DEFAULT_MARKET_MODELS: dict[str, list[str]] = {
+_FALLBACK_MARKET_MODELS: dict[str, list[str]] = {
     "ML": ["elo", "bradley-terry"],
     "SPREAD": ["elo", "gssd", "toor"],
     "TOTAL": ["poisson", "gssd", "toor"],
 }
 
-DEFAULT_MARKET_METRICS: dict[str, str] = {
+_FALLBACK_MARKET_METRICS: dict[str, str] = {
     "ML": "log_loss",
     "SPREAD": "mae_margin",
     "TOTAL": "mae_total",
 }
 
-DEFAULT_ENSEMBLE_IDS: dict[str, str] = {
+_FALLBACK_ENSEMBLE_IDS: dict[str, str] = {
     "ML": "ensemble_ml_v1",
     "SPREAD": "ensemble_spread_v1",
     "TOTAL": "ensemble_total_v1",
@@ -79,6 +79,104 @@ def _normalize_market_key(key: str) -> str:
     return norm
 
 
+def _load_default_market_defaults(
+    *,
+    fallback_models: dict[str, list[str]],
+    fallback_metrics: dict[str, str],
+    fallback_ensemble_ids: dict[str, str],
+) -> tuple[dict[str, list[str]], dict[str, str], dict[str, str], list[str]]:
+    models = {k: list(v) for k, v in fallback_models.items()}
+    metrics = dict(fallback_metrics)
+    ensemble_ids = dict(fallback_ensemble_ids)
+    warnings: list[str] = []
+
+    for market in sorted(_MARKET_KEYS):
+        path = _global_default_config_path(market)
+        if not path.exists():
+            warnings.append(f"default config missing for {market}: {path}")
+            continue
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            warnings.append(f"default config unreadable for {market}: {exc}")
+            continue
+
+        entry: dict | None = None
+        if isinstance(raw, dict) and "markets" in raw:
+            markets = raw.get("markets") or {}
+            entry = markets.get(market) if isinstance(markets, dict) else None
+        elif isinstance(raw, dict):
+            entry = raw
+
+        if not isinstance(entry, dict):
+            warnings.append(f"default config invalid for {market}: expected object")
+            continue
+
+        raw_market = entry.get("market")
+        if raw_market is not None:
+            try:
+                normalized = _normalize_market_key(raw_market)
+                if normalized != market:
+                    warnings.append(
+                        f"default config market mismatch for {market}: {raw_market}"
+                    )
+            except ValueError as exc:
+                warnings.append(f"default config invalid market for {market}: {exc}")
+
+        raw_models = entry.get("models")
+        if isinstance(raw_models, list):
+            parsed_models = [str(m).strip() for m in raw_models if str(m).strip()]
+            if parsed_models:
+                models[market] = list(dict.fromkeys(parsed_models))
+            else:
+                warnings.append(
+                    f"default config models empty for {market}; using fallback"
+                )
+        else:
+            warnings.append(
+                f"default config models missing for {market}; using fallback"
+            )
+
+        metric_slot = entry.get("metric_slot")
+        if metric_slot is not None:
+            metric_slot = str(metric_slot).strip().lower()
+            if metric_slot in _METRIC_SLOTS:
+                metrics[market] = metric_slot
+            else:
+                warnings.append(
+                    f"default config metric_slot invalid for {market}: {metric_slot}"
+                )
+        else:
+            warnings.append(
+                f"default config metric_slot missing for {market}; using fallback"
+            )
+
+        ensemble_id = entry.get("ensemble_id")
+        if ensemble_id is not None:
+            ensemble_id = str(ensemble_id).strip()
+            if ensemble_id:
+                ensemble_ids[market] = ensemble_id
+            else:
+                warnings.append(
+                    f"default config ensemble_id empty for {market}; using fallback"
+                )
+        else:
+            warnings.append(
+                f"default config ensemble_id missing for {market}; using fallback"
+            )
+
+    return models, metrics, ensemble_ids, warnings
+
+
+DEFAULT_MARKET_MODELS, DEFAULT_MARKET_METRICS, DEFAULT_ENSEMBLE_IDS, DEFAULT_CONFIG_WARNINGS = (
+    _load_default_market_defaults(
+        fallback_models=_FALLBACK_MARKET_MODELS,
+        fallback_metrics=_FALLBACK_MARKET_METRICS,
+        fallback_ensemble_ids=_FALLBACK_ENSEMBLE_IDS,
+    )
+)
+
+
 def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -102,7 +200,8 @@ def _normalize_models_and_weights(
     warnings: list[str] = []
     models: list[str]
     if raw_models is None:
-        models = list(default_models)
+        normalized_defaults = [normalize_model_name(m) for m in default_models]
+        models = [m for m in normalized_defaults if m]
         warnings.append(
             f"models missing for {market_key}; using default allowlist {default_models}"
         )
@@ -112,11 +211,15 @@ def _normalize_models_and_weights(
         models = []
         for m in raw_models:
             name = str(m).strip()
-            if name:
-                models.append(name)
+            if not name:
+                continue
+            normalized = normalize_model_name(name)
+            if normalized:
+                models.append(normalized)
         models = list(dict.fromkeys(models))
         if not models:
-            models = list(default_models)
+            normalized_defaults = [normalize_model_name(m) for m in default_models]
+            models = [m for m in normalized_defaults if m]
             warnings.append(
                 f"models empty for {market_key}; using default allowlist {default_models}"
             )
@@ -127,12 +230,27 @@ def _normalize_models_and_weights(
             raise ValueError(f"weights for {market_key} must be an object")
         weights = {}
         for mk, mv in raw_weights.items():
+            key_raw = str(mk).strip()
+            if not key_raw:
+                continue
+            key_norm = normalize_model_name(key_raw)
+            if not key_norm:
+                warnings.append(
+                    f"Invalid weight key {mk} in {market_key}; dropping entry"
+                )
+                continue
             try:
-                weights[str(mk).strip()] = float(mv)
+                weight_value = float(mv)
             except Exception:
                 warnings.append(
                     f"Invalid weight for model {mk} in {market_key}; dropping entry"
                 )
+                continue
+            if key_norm in weights:
+                warnings.append(
+                    f"Duplicate weight key {key_raw} normalized to {key_norm} in {market_key}; summing"
+                )
+            weights[key_norm] = weights.get(key_norm, 0.0) + weight_value
         if not weights:
             warnings.append(
                 f"weights empty for {market_key}; using equal weights"
@@ -146,6 +264,13 @@ def _normalize_models_and_weights(
                 f"weights trimmed for {market_key} to match listed models"
             )
         weights = filtered or None
+        if weights is not None and models:
+            missing_weights = [m for m in models if m not in weights]
+            if missing_weights:
+                warnings.append(
+                    f"weights missing for {market_key} models {missing_weights}; using equal weights"
+                )
+                weights = None
 
     if weights is not None:
         total = sum(weights.values())
@@ -481,6 +606,8 @@ def load_ensemble_config(
     resolved_markets: dict[str, dict] = {}
     meta_by_market: dict[str, dict] = {}
     aggregate_warnings: list[str] = []
+    if DEFAULT_CONFIG_WARNINGS:
+        aggregate_warnings.extend(DEFAULT_CONFIG_WARNINGS)
 
     for market in sorted(_MARKET_KEYS):
         market_config, meta, warnings = _resolve_market_config(

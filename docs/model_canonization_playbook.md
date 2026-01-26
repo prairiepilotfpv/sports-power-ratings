@@ -72,6 +72,11 @@ Rules:
 
 ## Canonization Workflow
 
+### Registration locations (single sources of truth)
+When adding a new model, make sure it is registered in these two places:
+1) `src/models/registry.py` (model class registration)
+2) `src/ensemble/config.py` (DEFAULT_MARKET_MODELS allowlists used by tuning + ensembles)
+
 ### Step 0 — Recon (no code changes)
 For the target model:
 1) Identify tunable surface: `__init__` args + `fit()` kwargs

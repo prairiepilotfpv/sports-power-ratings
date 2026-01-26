@@ -339,6 +339,51 @@ def _add_team_identity_and_market_lines(conn: sqlite3.Connection) -> None:
     )
 
 
+def _add_validation_runs_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS validation_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            sport TEXT NOT NULL,
+            season TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            config_json TEXT,
+            summary_json TEXT,
+            issues_json TEXT,
+            workbook_path TEXT,
+            report_path TEXT,
+            summary_path TEXT,
+            artifacts_dir TEXT
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_validation_runs_sport_season
+        ON validation_runs(sport, season, created_at);
+        """
+    )
+
+
+def _add_validation_runs_workbook_path(conn: sqlite3.Connection) -> None:
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(validation_runs)")]
+    if not cols:
+        return
+    if "workbook_path" not in cols:
+        conn.execute("ALTER TABLE validation_runs ADD COLUMN workbook_path TEXT")
+
+
+def _add_bets_predictions_components_json(conn: sqlite3.Connection) -> None:
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(bets_predictions)")]
+    if not cols:
+        return
+    if "ml_ensemble_components_json" not in cols:
+        conn.execute(
+            "ALTER TABLE bets_predictions ADD COLUMN ml_ensemble_components_json TEXT"
+        )
+
+
 def _backfill_game_ids(conn: sqlite3.Connection) -> None:
     """Compute deterministic game_id for games missing one and update rows.
 
@@ -559,6 +604,9 @@ MIGRATIONS: list[Migration] = [
     Migration(8, "add_team_identity_and_market_lines", _add_team_identity_and_market_lines),
     Migration(9, "backfill_game_ids", _backfill_game_ids),
     Migration(10, "migrate_to_deterministic_game_id_and_update_refs", _migrate_game_ids_and_update_references),
+    Migration(11, "add_validation_runs_table", _add_validation_runs_table),
+    Migration(12, "add_validation_runs_workbook_path", _add_validation_runs_workbook_path),
+    Migration(13, "add_bets_predictions_components_json", _add_bets_predictions_components_json),
 ]
 
 LATEST_SCHEMA_VERSION = max((m.version for m in MIGRATIONS), default=0)

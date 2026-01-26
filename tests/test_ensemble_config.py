@@ -52,3 +52,25 @@ def test_load_ensemble_config_reads_meta(tmp_path: Path) -> None:
     # sport/season defaulting should keep values even if omitted in file
     assert loaded["sport"] == "nba"
     assert loaded["season"] == "2025-26"
+
+
+def test_validate_normalizes_model_names_case_insensitive() -> None:
+    raw = {
+        "sport": "nba",
+        "season": "2025-26",
+        "markets": {
+            "ML": {
+                "ensemble_id": "ensemble_ml_v1",
+                "metric_slot": "log_loss",
+                "models": ["Elo", "Bradley-Terry"],
+                "weights": {"ELO": 0.6, "bradley-terry": 0.4},
+            }
+        },
+    }
+    normalized, warnings = validate_ensemble_config(raw, available_models=["elo", "bradley-terry"])
+    market = normalized["markets"]["ML"]
+    assert market["models"] == ["elo", "bradley-terry"]
+    weights = market["weights"]
+    assert set(weights) == {"elo", "bradley-terry"}
+    assert pytest.approx(sum(weights.values())) == 1.0
+    assert "weights missing" not in " ".join(warnings)

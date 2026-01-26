@@ -143,9 +143,19 @@ CREATE TABLE IF NOT EXISTS ensemble_market_tuning_runs (
     metric_optimized TEXT NOT NULL,
     run_id TEXT NOT NULL,
     best_score REAL,
+    baseline_score REAL,
     weights_json TEXT,
     models_json TEXT,
+    selection_run_id TEXT,
+    selection_models_json TEXT,
     summary_metrics_json TEXT,
+    data_source TEXT,
+    db_path TEXT,
+    csv_path TEXT,
+    asof TEXT,
+    window_start TEXT,
+    window_end TEXT,
+    notes TEXT,
     started_at TEXT,
     finished_at TEXT
 );
@@ -163,6 +173,51 @@ CREATE TABLE IF NOT EXISTS ensemble_market_active_weights (
     models_json TEXT NOT NULL,
     source_run_id TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(sport, season, market, ensemble_id)
+);
+
+CREATE TABLE IF NOT EXISTS ensemble_market_selection_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    market TEXT NOT NULL,
+    ensemble_id TEXT NOT NULL,
+    run_id TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    window_start TEXT,
+    window_end TEXT,
+    asof TEXT,
+    data_source TEXT NOT NULL,
+    db_path TEXT,
+    csv_path TEXT,
+    scorable_games INTEGER NOT NULL,
+    date_min TEXT,
+    date_max TEXT,
+    candidates_json TEXT NOT NULL,
+    selected_json TEXT NOT NULL,
+    objective_metric TEXT NOT NULL,
+    summary_json TEXT NOT NULL,
+    baseline_score REAL,
+    notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ensemble_market_active_selection (
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    market TEXT NOT NULL,
+    ensemble_id TEXT NOT NULL,
+    active_run_id TEXT NOT NULL,
+    activated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(sport, season, market, ensemble_id)
+);
+
+CREATE TABLE IF NOT EXISTS ensemble_market_active_tuning (
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    market TEXT NOT NULL,
+    ensemble_id TEXT NOT NULL,
+    active_run_id TEXT NOT NULL,
+    activated_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(sport, season, market, ensemble_id)
 );
 
@@ -203,6 +258,24 @@ CREATE TABLE IF NOT EXISTS market_line_import_errors (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS validation_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    config_json TEXT,
+    summary_json TEXT,
+    issues_json TEXT,
+    workbook_path TEXT,
+    report_path TEXT,
+    summary_path TEXT,
+    artifacts_dir TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_validation_runs_sport_season
+    ON validation_runs(sport, season, created_at);
+
 CREATE TABLE IF NOT EXISTS bets_predictions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     game_id TEXT NOT NULL,
@@ -216,6 +289,7 @@ CREATE TABLE IF NOT EXISTS bets_predictions (
     market_type TEXT,
     selection TEXT,
     line REAL,
+    ml_ensemble_components_json TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(game_id, sport, season, prediction_date),
     FOREIGN KEY(game_id) REFERENCES games(game_id)
@@ -231,6 +305,7 @@ def init_db(db_path: str | Path) -> None:
         conn.executescript(SCHEMA)
         apply_migrations(conn)
         _ensure_model_market_active_params_columns(conn)
+        _ensure_ensemble_market_tuning_runs_columns(conn)
         conn.commit()
 
 
@@ -244,6 +319,27 @@ def _ensure_model_market_active_params_columns(conn: sqlite3.Connection) -> None
         conn.execute("ALTER TABLE model_market_active_params ADD COLUMN metric_optimized TEXT")
     if "best_score" not in cols:
         conn.execute("ALTER TABLE model_market_active_params ADD COLUMN best_score REAL")
+
+
+def _ensure_ensemble_market_tuning_runs_columns(conn: sqlite3.Connection) -> None:
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(ensemble_market_tuning_runs)")]
+    if not cols:
+        return
+    additional_columns = [
+        ("baseline_score", "REAL"),
+        ("selection_run_id", "TEXT"),
+        ("selection_models_json", "TEXT"),
+        ("data_source", "TEXT"),
+        ("db_path", "TEXT"),
+        ("csv_path", "TEXT"),
+        ("asof", "TEXT"),
+        ("window_start", "TEXT"),
+        ("window_end", "TEXT"),
+        ("notes", "TEXT"),
+    ]
+    for name, col_type in additional_columns:
+        if name not in cols:
+            conn.execute(f"ALTER TABLE ensemble_market_tuning_runs ADD COLUMN {name} {col_type}")
 
 
 def save_games(db_path: str | Path, games: Iterable[GameResult]) -> int:
@@ -1101,11 +1197,21 @@ def save_ensemble_market_tuning_run(
     metric_optimized: str,
     run_id: str,
     best_score: float | None,
-    weights_json: str | None,
-    models_json: str | None,
-    summary_metrics_json: str | None,
-    started_at: str | None,
-    finished_at: str | None,
+    baseline_score: float | None = None,
+    weights_json: str | None = None,
+    models_json: str | None = None,
+    selection_run_id: str | None = None,
+    selection_models_json: str | None = None,
+    summary_metrics_json: str | None = None,
+    data_source: str | None = None,
+    dataset_db_path: str | None = None,
+    csv_path: str | None = None,
+    asof: str | None = None,
+    window_start: str | None = None,
+    window_end: str | None = None,
+    notes: str | None = None,
+    started_at: str | None = None,
+    finished_at: str | None = None,
 ) -> None:
     init_db(db_path)
     with closing(sqlite3.connect(Path(db_path))) as conn:
@@ -1119,12 +1225,22 @@ def save_ensemble_market_tuning_run(
                 metric_optimized,
                 run_id,
                 best_score,
+                baseline_score,
                 weights_json,
                 models_json,
+                selection_run_id,
+                selection_models_json,
                 summary_metrics_json,
+                data_source,
+                db_path,
+                csv_path,
+                asof,
+                window_start,
+                window_end,
+                notes,
                 started_at,
                 finished_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 sport,
@@ -1134,14 +1250,337 @@ def save_ensemble_market_tuning_run(
                 metric_optimized,
                 run_id,
                 best_score,
+                baseline_score,
                 weights_json,
                 models_json,
+                selection_run_id,
+                selection_models_json,
                 summary_metrics_json,
+                data_source,
+                dataset_db_path,
+                csv_path,
+                asof,
+                window_start,
+                window_end,
+                notes,
                 started_at,
                 finished_at,
             ),
         )
         conn.commit()
+
+
+def _json_from_value(value: object | None) -> str | None:
+    if value is None:
+        return None
+    return value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+
+
+def save_ensemble_market_selection_run(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    market: str,
+    ensemble_id: str,
+    run_id: str,
+    window_start: str | None,
+    window_end: str | None,
+    asof: str | None,
+    data_source: str,
+    dataset_db_path: str | None,
+    csv_path: str | None,
+    scorable_games: int,
+    date_min: str | None,
+    date_max: str | None,
+    candidates: list[str],
+    selected: list[str],
+    objective_metric: str,
+    summary: dict[str, object],
+    baseline_score: float | None = None,
+    notes: str | None = None,
+) -> None:
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        conn.execute(
+            """
+            INSERT INTO ensemble_market_selection_runs (
+                sport,
+                season,
+                market,
+                ensemble_id,
+                run_id,
+                window_start,
+                window_end,
+                asof,
+                data_source,
+                db_path,
+                csv_path,
+                scorable_games,
+                date_min,
+                date_max,
+                candidates_json,
+                selected_json,
+                objective_metric,
+                summary_json,
+                baseline_score,
+                notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sport,
+                season,
+                market,
+                ensemble_id,
+                run_id,
+                window_start,
+                window_end,
+                asof,
+                data_source,
+                dataset_db_path,
+                csv_path,
+                scorable_games,
+                date_min,
+                date_max,
+                _json_from_value(candidates),
+                _json_from_value(selected),
+                objective_metric,
+                _json_from_value(summary),
+                baseline_score,
+                notes,
+            ),
+        )
+        conn.commit()
+
+
+def set_active_ensemble_market_selection(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    market: str,
+    ensemble_id: str,
+    active_run_id: str,
+) -> None:
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        conn.execute(
+            """
+            INSERT INTO ensemble_market_active_selection (
+                sport,
+                season,
+                market,
+                ensemble_id,
+                active_run_id,
+                activated_at
+            ) VALUES (?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(sport, season, market, ensemble_id) DO UPDATE SET
+                active_run_id = excluded.active_run_id,
+                activated_at = datetime('now')
+            """,
+            (sport, season, market, ensemble_id, active_run_id),
+        )
+        conn.commit()
+
+
+def get_active_ensemble_market_selection(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    market: str,
+    ensemble_id: str,
+) -> dict[str, object] | None:
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT active_run_id, activated_at
+            FROM ensemble_market_active_selection
+            WHERE sport = ? AND season = ? AND market = ? AND ensemble_id = ?
+            """,
+            (sport, season, market, ensemble_id),
+        ).fetchone()
+    if row is None:
+        return None
+    return {"active_run_id": row[0], "activated_at": row[1]}
+
+
+def set_active_ensemble_market_tuning_run(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    market: str,
+    ensemble_id: str,
+    active_run_id: str,
+) -> None:
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        conn.execute(
+            """
+            INSERT INTO ensemble_market_active_tuning (
+                sport,
+                season,
+                market,
+                ensemble_id,
+                active_run_id,
+                activated_at
+            ) VALUES (?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(sport, season, market, ensemble_id) DO UPDATE SET
+                active_run_id = excluded.active_run_id,
+                activated_at = datetime('now')
+            """,
+            (sport, season, market, ensemble_id, active_run_id),
+        )
+        conn.commit()
+
+
+def get_active_ensemble_market_tuning_run(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    market: str,
+    ensemble_id: str,
+) -> dict[str, object] | None:
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT active_run_id, activated_at
+            FROM ensemble_market_active_tuning
+            WHERE sport = ? AND season = ? AND market = ? AND ensemble_id = ?
+            """,
+            (sport, season, market, ensemble_id),
+        ).fetchone()
+    if row is None:
+        return None
+    return {"active_run_id": row[0], "activated_at": row[1]}
+
+
+def load_selection_run(
+    db_path: str | Path,
+    *,
+    run_id: str,
+) -> dict[str, object] | None:
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT
+                sport,
+                season,
+                market,
+                ensemble_id,
+                run_id,
+                window_start,
+                window_end,
+                asof,
+                data_source,
+                db_path,
+                csv_path,
+                scorable_games,
+                date_min,
+                date_max,
+                candidates_json,
+                selected_json,
+                objective_metric,
+                summary_json,
+                baseline_score,
+                notes
+            FROM ensemble_market_selection_runs
+            WHERE run_id = ?
+            LIMIT 1
+            """,
+            (run_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "sport": row[0],
+        "season": row[1],
+        "market": row[2],
+        "ensemble_id": row[3],
+        "run_id": row[4],
+        "window_start": row[5],
+        "window_end": row[6],
+        "asof": row[7],
+        "data_source": row[8],
+        "db_path": row[9],
+        "csv_path": row[10],
+        "scorable_games": row[11],
+        "date_min": row[12],
+        "date_max": row[13],
+        "candidates": json.loads(row[14]) if row[14] else [],
+        "selected": json.loads(row[15]) if row[15] else [],
+        "objective_metric": row[16],
+        "summary": json.loads(row[17]) if row[17] else {},
+        "baseline_score": row[18],
+        "notes": row[19],
+    }
+
+
+def load_tuning_run(
+    db_path: str | Path,
+    *,
+    run_id: str,
+) -> dict[str, object] | None:
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT
+                sport,
+                season,
+                market,
+                ensemble_id,
+                run_id,
+                metric_optimized,
+                best_score,
+                baseline_score,
+                weights_json,
+                models_json,
+                selection_run_id,
+                selection_models_json,
+                summary_metrics_json,
+                data_source,
+                db_path,
+                csv_path,
+                asof,
+                window_start,
+                window_end,
+                notes
+            FROM ensemble_market_tuning_runs
+            WHERE run_id = ?
+            LIMIT 1
+            """,
+            (run_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "sport": row[0],
+        "season": row[1],
+        "market": row[2],
+        "ensemble_id": row[3],
+        "run_id": row[4],
+        "metric_optimized": row[5],
+        "best_score": row[6],
+        "baseline_score": row[7],
+        "weights": json.loads(row[8]) if row[8] else {},
+        "models": json.loads(row[9]) if row[9] else [],
+        "selection_run_id": row[10],
+        "selection_models": json.loads(row[11]) if row[11] else [],
+        "summary": json.loads(row[12]) if row[12] else {},
+        "data_source": row[13],
+        "db_path": row[14],
+        "csv_path": row[15],
+        "asof": row[16],
+        "window_start": row[17],
+        "window_end": row[18],
+        "notes": row[19],
+    }
 
 
 def set_active_ensemble_market_weights(
@@ -1366,6 +1805,7 @@ def load_best_ensemble_market_tuning_weights_by_optimized_metric(
             SELECT weights_json, run_id
             FROM ensemble_market_tuning_runs
             WHERE sport = ? AND season = ? AND market = ? AND ensemble_id = ? AND metric_optimized = ?
+            AND best_score IS NOT NULL
             ORDER BY best_score ASC
             LIMIT 1
             """,
@@ -1400,3 +1840,54 @@ def load_ensemble_market_tuning_run_by_run_id(
     if not isinstance(data, dict):
         raise ValueError("Stored ensemble weights must be a JSON object.")
     return data, row[1]
+
+
+def save_validation_run(
+    db_path: str | Path,
+    *,
+    run_id: str,
+    sport: str,
+    season: str,
+    config: dict[str, Any],
+    summary: dict[str, Any] | None,
+    issues: list[str] | None,
+    workbook_path: str | None,
+    report_path: str | None,
+    summary_path: str | None,
+    artifacts_dir: str | None,
+) -> None:
+    """Persist a validation run summary to the database."""
+    init_db(db_path)
+    payload_config = json.dumps(config or {}, sort_keys=True)
+    payload_summary = json.dumps(summary or {}, sort_keys=True)
+    payload_issues = json.dumps(issues or [], sort_keys=True)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        conn.execute(
+            """
+            INSERT INTO validation_runs (
+                run_id,
+                sport,
+                season,
+                config_json,
+                summary_json,
+                issues_json,
+                workbook_path,
+                report_path,
+                summary_path,
+                artifacts_dir
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                sport,
+                season,
+                payload_config,
+                payload_summary,
+                payload_issues,
+                workbook_path,
+                report_path,
+                summary_path,
+                artifacts_dir,
+            ),
+        )
+        conn.commit()

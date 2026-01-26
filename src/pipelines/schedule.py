@@ -22,6 +22,11 @@ from data.repository import (
     get_active_ensemble_market_weights_source,
     get_active_model_market_params,
     get_active_model_market_params_source,
+    load_best_ensemble_market_tuning_weights_by_optimized_metric,
+    get_active_ensemble_market_selection,
+    get_active_ensemble_market_tuning_run,
+    load_selection_run,
+    load_tuning_run,
     load_games,
     load_model_metrics,
 )
@@ -53,7 +58,7 @@ from pipelines.excel_formulas import (
     validate_bets_formulas,
     validate_no_ellipsis_formulas,
 )
-from pipelines.market_utils import _metric_name_for_market
+from pipelines.market_utils import _metric_name_for_market, _metric_optimized_label
 from pipelines.matchups import team_home_advantages
 from pipelines.projection_engines import get_projection_engine
 from pipelines.projections import (
@@ -461,7 +466,9 @@ def _build_market_forecasts_for_ensembles(
                 continue
             if "date" in market_schedule.columns and "status" in market_schedule.columns:
                 _dt = pd.to_datetime(market_schedule["date"], errors="coerce").dt.date
-                mask = (market_schedule["status"] == "scheduled") & (_dt == as_of_date)
+                mask = market_schedule["status"] == "scheduled"
+                if as_of_date is not None:
+                    mask &= _dt >= as_of_date
                 subset = market_schedule.loc[mask]
             else:
                 subset = market_schedule
@@ -723,20 +730,6 @@ def _dashboard_rows_for_today(
     return rows
 
 
-def _filter_games_as_of(
-    df: pd.DataFrame, as_of_date: date | None
-) -> pd.DataFrame:
-    """Filter games to a specific date (exact match, not <= cutoff)."""
-    if as_of_date is None or df.empty or "date" not in df.columns:
-        return df
-    parsed = pd.to_datetime(as_of_date, errors="coerce")
-    if pd.isna(parsed):
-        return df
-    cutoff = parsed.date()
-    dates = pd.to_datetime(df["date"], errors="coerce").dt.date
-    return df[dates == cutoff]
-
-
 def _filter_games_through(
     df: pd.DataFrame, as_of_date: date | None
 ) -> pd.DataFrame:
@@ -774,6 +767,175 @@ def _resolve_bets_model(models: list[str], bets_model: str | None) -> str:
         return models[0]
     return models[0]
 
+
+def _resolve_best_ensemble_weights(
+    *,
+    db_path: str | Path | None,
+    sport: str,
+    season: str,
+    market: str,
+    ensemble_id: str,
+) -> tuple[dict[str, float] | None, list[str] | None, str | None]:
+    if db_path is None:
+        return None, None, None
+    metric_optimized = _metric_optimized_label(market)
+    weights, run_id = load_best_ensemble_market_tuning_weights_by_optimized_metric(
+        db_path,
+        sport=sport,
+        season=season,
+        market=market,
+        ensemble_id=ensemble_id,
+        metric_optimized=metric_optimized,
+    )
+    if not weights:
+        return None, None, None
+    return weights, list(weights.keys()), run_id
+
+
+def _resolve_ensemble_weights(
+    *,
+    db_path: str | Path | None,
+    sport: str,
+    season: str,
+    market: str,
+    ensemble_id: str,
+    config_weights: dict[str, float] | None,
+    selection_context: dict[str, object] | None = None,
+    tuning_context: dict[str, object] | None = None,
+    config_warnings: list[str] | None = None,
+) -> tuple[
+    dict[str, float] | None,
+    list[str] | None,
+    str | None,
+    str | None,
+    str | None,
+]:
+    if selection_context:
+        if tuning_context and _selection_matches_tuning(selection_context, tuning_context):
+            return (
+                tuning_context["weights"],
+                tuning_context.get("models") or selection_context["models"],
+                "db_tuned",
+                tuning_context["run_id"],
+                selection_context["run_id"],
+            )
+        if tuning_context:
+            warning = (
+                f"Tuning run {tuning_context['run_id']} selection mismatch "
+                f"(tuning selection={tuning_context.get('selection_models')} "
+                f"vs active selection={selection_context['models']}); using equal weights."
+            )
+            _LOG.warning(warning)
+            if config_warnings is not None:
+                config_warnings.append(warning)
+        models = selection_context["models"]
+        equal_weights = {model: 1.0 / len(models) for model in models}
+        return equal_weights, models, "selection_equal", None, selection_context["run_id"]
+
+    weights, models, run_id = _resolve_best_ensemble_weights(
+        db_path=db_path,
+        sport=sport,
+        season=season,
+        market=market,
+        ensemble_id=ensemble_id,
+    )
+    if weights is not None:
+        return weights, models, "db_best_run", run_id, None
+    if config_weights is not None:
+        return config_weights, None, "config", None, None
+    if db_path is not None:
+        weights, models = get_active_ensemble_market_weights_and_models(
+            db_path,
+            sport=sport,
+            season=season,
+            market=market,
+            ensemble_id=ensemble_id,
+        )
+        if weights is not None:
+            source_run_id = get_active_ensemble_market_weights_source(
+                db_path,
+                sport=sport,
+                season=season,
+                market=market,
+                ensemble_id=ensemble_id,
+            )
+            return weights, models, "db_active", source_run_id, None
+    weights = load_market_weights(sport, season, market, ensemble_id)
+    if weights is not None:
+        return weights, None, "file", None, None
+    return None, None, None, None, None
+
+
+def _load_active_selection_context(
+    *,
+    db_path: str | Path | None,
+    sport: str,
+    season: str,
+    market: str,
+    ensemble_id: str,
+) -> dict[str, object] | None:
+    if db_path is None:
+        return None
+    pointer = get_active_ensemble_market_selection(
+        db_path=db_path,
+        sport=sport,
+        season=season,
+        market=market,
+        ensemble_id=ensemble_id,
+    )
+    if not pointer:
+        return None
+    selection = load_selection_run(db_path, run_id=pointer["active_run_id"])
+    if not selection:
+        return None
+    models = [normalize_model_name(m) for m in selection.get("selected", []) if m]
+    if not models:
+        return None
+    return {"run_id": selection["run_id"], "models": models}
+
+
+def _load_active_tuning_context(
+    *,
+    db_path: str | Path | None,
+    sport: str,
+    season: str,
+    market: str,
+    ensemble_id: str,
+) -> dict[str, object] | None:
+    if db_path is None:
+        return None
+    pointer = get_active_ensemble_market_tuning_run(
+        db_path=db_path,
+        sport=sport,
+        season=season,
+        market=market,
+        ensemble_id=ensemble_id,
+    )
+    if not pointer:
+        return None
+    tuning = load_tuning_run(db_path, run_id=pointer["active_run_id"])
+    if not tuning:
+        return None
+    return {
+        "run_id": tuning["run_id"],
+        "weights": tuning.get("weights") or {},
+        "models": tuning.get("models") or [],
+        "selection_run_id": tuning.get("selection_run_id"),
+        "selection_models": tuning.get("selection_models"),
+    }
+
+
+def _selection_matches_tuning(
+    selection_context: dict[str, object], tuning_context: dict[str, object]
+) -> bool:
+    selection_run_id = selection_context.get("run_id")
+    tuning_selection_run_id = tuning_context.get("selection_run_id")
+    if tuning_selection_run_id and selection_run_id:
+        return tuning_selection_run_id == selection_run_id
+    tuning_selection_models = tuning_context.get("selection_models")
+    if tuning_selection_models:
+        return tuning_selection_models == selection_context["models"]
+    return tuning_context.get("models") == selection_context["models"]
 
 def _sanitize_source_id(value: Any, *, default: str = "direct") -> str:
     text = _normalize_source_label(value, default=default).lower()
@@ -1474,11 +1636,40 @@ def build_schedule_excel_report(
             Market.TOTAL.name, "ensemble_id", "ensemble_total_v1"
         ),
     }
-    allowed_models_map = {
-        Market.ML.name: _market_config_value(Market.ML.name, "models"),
-        Market.SPREAD.name: _market_config_value(Market.SPREAD.name, "models"),
-        Market.TOTAL.name: _market_config_value(Market.TOTAL.name, "models"),
+    selection_contexts = {
+        Market.ML.name: _load_active_selection_context(
+            db_path=db_path, sport=sport, season=season,
+            market=Market.ML.name, ensemble_id=ensemble_ids[Market.ML.name],
+        ),
+        Market.SPREAD.name: _load_active_selection_context(
+            db_path=db_path, sport=sport, season=season,
+            market=Market.SPREAD.name, ensemble_id=ensemble_ids[Market.SPREAD.name],
+        ),
+        Market.TOTAL.name: _load_active_selection_context(
+            db_path=db_path, sport=sport, season=season,
+            market=Market.TOTAL.name, ensemble_id=ensemble_ids[Market.TOTAL.name],
+        ),
     }
+    tuning_contexts = {
+        Market.ML.name: _load_active_tuning_context(
+            db_path=db_path, sport=sport, season=season,
+            market=Market.ML.name, ensemble_id=ensemble_ids[Market.ML.name],
+        ),
+        Market.SPREAD.name: _load_active_tuning_context(
+            db_path=db_path, sport=sport, season=season,
+            market=Market.SPREAD.name, ensemble_id=ensemble_ids[Market.SPREAD.name],
+        ),
+        Market.TOTAL.name: _load_active_tuning_context(
+            db_path=db_path, sport=sport, season=season,
+            market=Market.TOTAL.name, ensemble_id=ensemble_ids[Market.TOTAL.name],
+        ),
+    }
+    allowed_models_map = {}
+    for market_name, selection in selection_contexts.items():
+        if selection:
+            allowed_models_map[market_name] = selection["models"]
+        else:
+            allowed_models_map[market_name] = _market_config_value(market_name, "models")
     market_metrics = {
         Market.ML.name: _market_config_value(Market.ML.name, "metric_slot"),
         Market.SPREAD.name: _market_config_value(Market.SPREAD.name, "metric_slot"),
@@ -1547,8 +1738,6 @@ def build_schedule_excel_report(
                     model=model_name,
                 )
                 schedule_df = _order_schedule_export(schedule_df)
-                if display_date is not None:
-                    schedule_df = _filter_games_as_of(schedule_df, display_date)
                 market_frames.append(schedule_df)
 
                 played_for_metadata = _filter_games_through(
@@ -1748,26 +1937,17 @@ def build_schedule_excel_report(
             if bets_schedule_df is not None and ml_rows:
                 forecast_df = pd.DataFrame(ml_rows)
                 if not forecast_df.empty:
-                    weights = config_weights_map.get(Market.ML.name)
-                    ensemble_models = None
-                    weight_source = "config" if weights else None
-                    if weights is None:
-                        weights, ensemble_models = get_active_ensemble_market_weights_and_models(
-                            db_path,
-                            sport=sport,
-                            season=season,
-                            market=Market.ML.name,
-                            ensemble_id=ensemble_ids[Market.ML.name],
-                        )
-                        weight_source = "db" if weights else weight_source
-                    if weights is None:
-                        weights = load_market_weights(
-                            sport,
-                            season,
-                            Market.ML.name,
-                            ensemble_ids[Market.ML.name],
-                        )
-                        weight_source = "file" if weights else weight_source
+                    weights, ensemble_models, weight_source, weight_run_id, selection_run_id = _resolve_ensemble_weights(
+                        db_path=db_path,
+                        sport=sport,
+                        season=season,
+                        market=Market.ML.name,
+                        ensemble_id=ensemble_ids[Market.ML.name],
+                        config_weights=config_weights_map.get(Market.ML.name),
+                        selection_context=selection_contexts[Market.ML.name],
+                        tuning_context=tuning_contexts[Market.ML.name],
+                        config_warnings=config_warnings,
+                    )
                     
                     # Filter forecast data to only include models the ensemble was trained on
                     if ensemble_models:
@@ -1795,10 +1975,18 @@ def build_schedule_excel_report(
                             "configured_models": ensemble_models or used_models,
                             "configured_weights": config_weights_map.get(Market.ML.name),
                             "weights_source": weight_source or "equal",
+                            "source_run_id": weight_run_id,
                             "weights": weights,
                             "used_models": used_models,
                             "config_source": cfg_meta.get("source"),
                             "config_path": cfg_meta.get("path"),
+                            "selection_run_id": selection_run_id,
+                            "selection_models": (
+                                selection_contexts[Market.ML.name]["models"]
+                                if selection_contexts[Market.ML.name]
+                                else None
+                            ),
+                            "tuning_run_id": weight_run_id if weight_source == "db_tuned" else None,
                         }
                         # Load calibrator for the ensemble source, if present
                         try:
@@ -1866,19 +2054,16 @@ def build_schedule_excel_report(
             _LOG.warning(f"ML ensemble application failed: {e}", exc_info=True)
             pass
 
-        if (
+        ml_components_missing = (
             bets_schedule_df is not None
             and (
                 "ml_ensemble_components_json" not in bets_schedule_df.columns
                 or not bets_schedule_df["ml_ensemble_components_json"].notna().any()
             )
-        ):
-            if not ensemble_applied:
-                _LOG.warning(
-                    "ML ensemble fallback ran without an applied ensemble; "
-                    "ml_ensemble_components_json remains blank."
-                )
-            else:
+        )
+        fallback_applied = False
+        if ml_components_missing and not ensemble_applied:
+            try:
                 fallback_rows = market_forecast_rows.get(Market.ML.name, [])
                 if fallback_rows:
                     fallback_df = pd.DataFrame(fallback_rows)
@@ -1889,22 +2074,17 @@ def build_schedule_excel_report(
                                 fallback_df["model_name"].isin(set(allowed_models))
                             ]
                         if not fallback_df.empty:
-                            weights = config_weights_map.get(Market.ML.name)
-                            if weights is None:
-                                weights = get_active_ensemble_market_weights(
-                                    db_path,
-                                    sport=sport,
-                                    season=season,
-                                    market=Market.ML.name,
-                                    ensemble_id=ensemble_ids[Market.ML.name],
-                                )
-                            if weights is None:
-                                weights = load_market_weights(
-                                    sport,
-                                    season,
-                                    Market.ML.name,
-                                    ensemble_ids[Market.ML.name],
-                                )
+                            weights, _, _, _, _ = _resolve_ensemble_weights(
+                                db_path=db_path,
+                                sport=sport,
+                                season=season,
+                                market=Market.ML.name,
+                                ensemble_id=ensemble_ids[Market.ML.name],
+                                config_weights=config_weights_map.get(Market.ML.name),
+                                selection_context=selection_contexts[Market.ML.name],
+                                tuning_context=tuning_contexts[Market.ML.name],
+                                config_warnings=config_warnings,
+                            )
                             ensemble = MLWeightedAverageEnsemble(
                                 sport,
                                 season,
@@ -1922,6 +2102,16 @@ def build_schedule_excel_report(
                                 bets_schedule_df.loc[
                                     mask, "ml_ensemble_components_json"
                                 ] = components_json
+                            fallback_applied = True
+            except Exception as exc:  # pragma: no cover - best-effort fallback
+                _LOG.warning(
+                    "ML ensemble fallback failed: %s", exc, exc_info=False
+                )
+        if ml_components_missing and not fallback_applied and not ensemble_applied:
+            _LOG.warning(
+                "ML ensemble fallback ran without an applied ensemble; "
+                "ml_ensemble_components_json remains blank."
+            )
 
         # Apply SPREAD data to bets_schedule_df. For multi-model, use ensemble; for
         # single model, pass through the model's SPREAD forecast directly. This ensures
@@ -1932,18 +2122,17 @@ def build_schedule_excel_report(
             if bets_schedule_df is not None and spread_rows:
                 forecast_df = pd.DataFrame(spread_rows)
                 if not forecast_df.empty:
-                    weights = config_weights_map.get(Market.SPREAD.name)
-                    ensemble_models = None
-                    weight_source = "config" if weights else None
-                    if weights is None:
-                        weights, ensemble_models = get_active_ensemble_market_weights_and_models(
-                            db_path,
-                            sport=sport,
-                            season=season,
-                            market=Market.SPREAD.name,
-                            ensemble_id=ensemble_ids[Market.SPREAD.name],
-                        )
-                        weight_source = "db" if weights else weight_source
+                    weights, ensemble_models, weight_source, weight_run_id, selection_run_id = _resolve_ensemble_weights(
+                        db_path=db_path,
+                        sport=sport,
+                        season=season,
+                        market=Market.SPREAD.name,
+                        ensemble_id=ensemble_ids[Market.SPREAD.name],
+                        config_weights=config_weights_map.get(Market.SPREAD.name),
+                        selection_context=selection_contexts[Market.SPREAD.name],
+                        tuning_context=tuning_contexts[Market.SPREAD.name],
+                        config_warnings=config_warnings,
+                    )
                     
                     # Filter forecast data to only include models the ensemble was trained on
                     if ensemble_models:
@@ -1960,14 +2149,6 @@ def build_schedule_excel_report(
 
                     if use_ensemble:
                         # Multi-model: use weighted ensemble
-                        if weights is None:
-                            weights = load_market_weights(
-                                sport,
-                                season,
-                                Market.SPREAD.name,
-                                ensemble_ids[Market.SPREAD.name],
-                            )
-                            weight_source = "file" if weights else weight_source
                         spread_ensemble = SpreadWeightedAverageEnsemble(
                             sport,
                             season,
@@ -1982,10 +2163,18 @@ def build_schedule_excel_report(
                             "configured_models": ensemble_models or used_models,
                             "configured_weights": config_weights_map.get(Market.SPREAD.name),
                             "weights_source": weight_source or "equal",
+                            "source_run_id": weight_run_id,
                             "weights": weights,
                             "used_models": used_models,
                             "config_source": cfg_meta.get("source"),
                             "config_path": cfg_meta.get("path"),
+                            "selection_run_id": selection_run_id,
+                            "selection_models": (
+                                selection_contexts[Market.SPREAD.name]["models"]
+                                if selection_contexts[Market.SPREAD.name]
+                                else None
+                            ),
+                            "tuning_run_id": weight_run_id if weight_source == "db_tuned" else None,
                         }
                         spread_games_updated = 0
                         bets_game_ids = pd.unique(bets_schedule_df["game_id"])
@@ -2053,18 +2242,17 @@ def build_schedule_excel_report(
             if bets_schedule_df is not None and total_rows:
                 forecast_df = pd.DataFrame(total_rows)
                 if not forecast_df.empty:
-                    weights = config_weights_map.get(Market.TOTAL.name)
-                    ensemble_models = None
-                    weight_source = "config" if weights else None
-                    if weights is None:
-                        weights, ensemble_models = get_active_ensemble_market_weights_and_models(
-                            db_path,
-                            sport=sport,
-                            season=season,
-                            market=Market.TOTAL.name,
-                            ensemble_id=ensemble_ids[Market.TOTAL.name],
-                        )
-                        weight_source = "db" if weights else weight_source
+                    weights, ensemble_models, weight_source, weight_run_id, selection_run_id = _resolve_ensemble_weights(
+                        db_path=db_path,
+                        sport=sport,
+                        season=season,
+                        market=Market.TOTAL.name,
+                        ensemble_id=ensemble_ids[Market.TOTAL.name],
+                        config_weights=config_weights_map.get(Market.TOTAL.name),
+                        selection_context=selection_contexts[Market.TOTAL.name],
+                        tuning_context=tuning_contexts[Market.TOTAL.name],
+                        config_warnings=config_warnings,
+                    )
                     
                     # Filter forecast data to only include models the ensemble was trained on
                     if ensemble_models:
@@ -2081,14 +2269,6 @@ def build_schedule_excel_report(
 
                     if use_ensemble:
                         # Multi-model: use weighted ensemble
-                        if weights is None:
-                            weights = load_market_weights(
-                                sport,
-                                season,
-                                Market.TOTAL.name,
-                                ensemble_ids[Market.TOTAL.name],
-                            )
-                            weight_source = "file" if weights else weight_source
                         total_ensemble = TotalWeightedAverageEnsemble(
                             sport,
                             season,
@@ -2103,10 +2283,18 @@ def build_schedule_excel_report(
                             "configured_models": ensemble_models or used_models,
                             "configured_weights": config_weights_map.get(Market.TOTAL.name),
                             "weights_source": weight_source or "equal",
+                            "source_run_id": weight_run_id,
                             "weights": weights,
                             "used_models": used_models,
                             "config_source": cfg_meta.get("source"),
                             "config_path": cfg_meta.get("path"),
+                            "selection_run_id": selection_run_id,
+                            "selection_models": (
+                                selection_contexts[Market.TOTAL.name]["models"]
+                                if selection_contexts[Market.TOTAL.name]
+                                else None
+                            ),
+                            "tuning_run_id": weight_run_id if weight_source == "db_tuned" else None,
                         }
                         # Compute recency adjustment for totals (e.g., to account for January slowdown)
                         total_adjustment = None

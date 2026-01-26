@@ -4,7 +4,8 @@
   "metric_slot": "mae_total",
   "models": ["poisson", "gssd", "toor"],
   "weights": {
-    "poisson": 0.5,
-    "gssd": 0.5
+    "poisson": 0.3333333333,
+    "gssd": 0.3333333333,
+    "toor": 0.3333333333
   }
 }

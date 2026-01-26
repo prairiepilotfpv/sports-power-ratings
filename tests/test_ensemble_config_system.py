@@ -15,6 +15,7 @@ def test_load_ensemble_config_uses_global_defaults(monkeypatch, tmp_path):
     )
     markets = config.get("markets", {})
     meta = (config.get("_meta", {}) or {}).get("markets", {})
+    assert not config.get("_meta", {}).get("warnings")
     assert markets["ML"]["models"] == ["elo", "bradley-terry"]
     assert markets["SPREAD"]["models"] == ["elo", "gssd", "toor"]
     assert markets["TOTAL"]["models"] == ["poisson", "gssd", "toor"]

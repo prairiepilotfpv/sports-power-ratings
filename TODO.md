@@ -7,6 +7,7 @@
 
 ## Future enhancements
 - [ ] **Start Time column**: Parse and persist game start times from Sports Reference CSVs. The parser currently handles rows with/without Time columns but doesn't store start_time in the database. Would enable time-based filtering for betting workflows.
+- [ ] Add optional dynamic ensemble weights (per-date/per-game) via a weight provider or combine-time override; keep existing fixed-weight behavior as default.
 
 ## Pipeline & output sanity
 - [ ] Audit the market ingestion/bets workflow to ensure the retired `market-review` path no longer blocks production and that any manual steps are documented or removed.

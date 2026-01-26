@@ -7,8 +7,20 @@ from __future__ import annotations
 
 import argparse
 import os
+from pathlib import Path
 import sqlite3
+import sys
 from typing import Iterable
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SRC_DIR = _REPO_ROOT / "src"
+_SRC_STR = str(_SRC_DIR)
+_ROOT_STR = str(_REPO_ROOT)
+if _SRC_STR not in sys.path:
+    sys.path.insert(0, _SRC_STR)
+if _ROOT_STR not in sys.path:
+    insert_at = sys.path.index(_SRC_STR) + 1 if _SRC_STR in sys.path else 0
+    sys.path.insert(insert_at, _ROOT_STR)
 
 from src.data.migrations import analyze_migration, apply_migrations
 

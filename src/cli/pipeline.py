@@ -12,9 +12,15 @@ import pandas as pd
 
 
 def _ensure_src_on_path() -> None:
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    if str(src_dir) not in sys.path:
-        sys.path.insert(0, str(src_dir))
+    repo_root = Path(__file__).resolve().parents[2]
+    src_dir = repo_root / "src"
+    src_str = str(src_dir)
+    root_str = str(repo_root)
+    if src_str not in sys.path:
+        sys.path.insert(0, src_str)
+    if root_str not in sys.path:
+        insert_at = sys.path.index(src_str) + 1 if src_str in sys.path else 0
+        sys.path.insert(insert_at, root_str)
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -461,6 +467,68 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db)",
     )
 
+    validation_report_parser = subparsers.add_parser(
+        "validation-report",
+        help="Generate a system validation report (tuning, ensembles, EV).",
+    )
+    validation_report_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
+    validation_report_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
+    validation_report_parser.add_argument("--db", help="Optional SQLite DB path override")
+    validation_report_parser.add_argument(
+        "--output-dir",
+        help="Optional output directory override (default: outputs/validation/<sport>/<season>).",
+    )
+    validation_report_parser.add_argument(
+        "--days-back",
+        type=int,
+        default=7,
+        help="Rolling window for ML ensemble weight validation (default: 7).",
+    )
+    validation_report_parser.add_argument(
+        "--top-n",
+        type=int,
+        default=5,
+        help="Top tuning runs per group to include in the report (default: 5).",
+    )
+    validation_report_parser.add_argument(
+        "--skip-backtest",
+        action="store_true",
+        help="Skip fresh backtest runs (use stored metrics only).",
+    )
+    validation_report_parser.add_argument(
+        "--backtest-models",
+        help="Comma-separated backtest model list (default: all backtest models).",
+    )
+    validation_report_parser.add_argument(
+        "--backtest-window",
+        choices=["expanding", "rolling"],
+        default="expanding",
+        help="Backtest window type (default: expanding).",
+    )
+    validation_report_parser.add_argument(
+        "--backtest-start",
+        help="Optional backtest start date (YYYY-MM-DD). Defaults to first scored game.",
+    )
+    validation_report_parser.add_argument(
+        "--backtest-end",
+        help="Optional backtest end date (YYYY-MM-DD). Defaults to last scored game.",
+    )
+    validation_report_parser.add_argument(
+        "--backtest-rolling-days",
+        type=int,
+        help="Rolling window size in days (required if --backtest-window=rolling).",
+    )
+    validation_report_parser.add_argument(
+        "--backtest-rolling-games",
+        type=int,
+        help="Rolling window size in games (optional alternative for rolling).",
+    )
+    validation_report_parser.add_argument(
+        "--keep-backtest-artifacts",
+        action="store_true",
+        help="Keep per-run backtest artifacts under outputs/validation/.../backtests.",
+    )
+
     backtest_parser = subparsers.add_parser(
         "backtest",
         aliases=["bt"],
@@ -854,7 +922,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     tune_ensemble_parser.add_argument(
         "--models",
-        help="Comma-separated list of base models to include (default: ML-capable models).",
+        help="Comma-separated list of models to override the active selection (default: use active selection).",
+    )
+    tune_ensemble_parser.add_argument(
+        "--selection-run-id",
+        help="Optional selection run_id to force a specific member list instead of the active selection.",
+    )
+    tune_ensemble_parser.add_argument(
+        "--as-of",
+        dest="as_of",
+        help="Optional cutoff date for training data (YYYY-MM-DD).",
     )
     tune_ensemble_parser.add_argument(
         "--csv",
@@ -862,8 +939,90 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     tune_ensemble_parser.add_argument(
         "--db",
+        "--db-path",
+        dest="db",
         help="Optional SQLite DB path override for historical games.",
     )
+    tune_ensemble_parser.add_argument(
+        "--no-activate",
+        dest="activate",
+        action="store_false",
+        help="Skip activation of tuned weights even when they improve the baseline.",
+    )
+    tune_ensemble_parser.set_defaults(activate=True)
+
+    select_parser = subparsers.add_parser(
+        "select-ensemble",
+        help="Select ensemble members for a market using completed games.",
+    )
+    select_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
+    select_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
+    select_parser.add_argument("--market", default="ML", help="Market identifier (default: ML).")
+    select_parser.add_argument(
+        "--ensemble",
+        default="ensemble_ml_v1",
+        help="Ensemble id to select (default: ensemble_ml_v1).",
+    )
+    select_parser.add_argument(
+        "--start",
+        dest="start",
+        help="Optional earliest game date to consider (YYYY-MM-DD).",
+    )
+    select_parser.add_argument(
+        "--end",
+        dest="end",
+        help="Optional latest game date to consider (YYYY-MM-DD).",
+    )
+    select_parser.add_argument(
+        "--as-of",
+        dest="as_of",
+        help="Optional cutoff date for dataset (YYYY-MM-DD).",
+    )
+    select_parser.add_argument(
+        "--candidates",
+        help="Comma-separated list of candidate models to consider (defaults to ensemble config).",
+    )
+    select_parser.add_argument(
+        "--min-coverage",
+        dest="min_coverage",
+        type=float,
+        default=0.95,
+        help="Minimum coverage fraction per model (default: 0.95).",
+    )
+    select_parser.add_argument(
+        "--max-members",
+        dest="max_members",
+        type=int,
+        default=3,
+        help="Maximum number of ensemble members to select (default: 3).",
+    )
+    select_parser.add_argument(
+        "--epsilon",
+        type=float,
+        default=1e-4,
+        help="Minimum metric improvement required to add another member (default: 1e-4).",
+    )
+    select_parser.add_argument(
+        "--notes",
+        help="Optional notes to persist with the selection run.",
+    )
+    select_parser.add_argument(
+        "--csv",
+        help="Optional CSV path of historical games (defaults to DB for sport/season).",
+    )
+    select_parser.add_argument(
+        "--db",
+        "--db-path",
+        dest="db",
+        help="Optional SQLite DB path override for historical games.",
+    )
+    select_parser.add_argument(
+        "--no-activate",
+        dest="activate",
+        action="store_false",
+        help="Skip activating the selection even if it improves.",
+    )
+    select_parser.set_defaults(activate=True)
 
     calibrate_parser = subparsers.add_parser(
         "calibrate",
@@ -1353,6 +1512,49 @@ def _run_report(args: argparse.Namespace) -> None:
         print(f"Saved Excel report -> {result_path}")
 
 
+def _run_validation_report(args: argparse.Namespace) -> None:
+    """Generate a system validation report for tuning/ensembles/EV."""
+    _ensure_src_on_path()
+    from data.paths import db_path_for
+    from pipelines.validation_report import run_validation_report
+
+    db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
+    _echo_db_path(db_path)
+    output_dir = Path(args.output_dir) if getattr(args, "output_dir", None) else None
+    backtest_models = None
+    if getattr(args, "backtest_models", None):
+        backtest_models = [m.strip() for m in args.backtest_models.split(",") if m.strip()]
+    backtest_window = getattr(args, "backtest_window", "expanding")
+    if (
+        backtest_window == "rolling"
+        and getattr(args, "backtest_rolling_days", None) is None
+        and getattr(args, "backtest_rolling_games", None) is None
+    ):
+        raise ValueError("Rolling backtests require --backtest-rolling-days or --backtest-rolling-games.")
+    outputs = run_validation_report(
+        db_path=db_path,
+        sport=args.sport,
+        season=args.season,
+        output_dir=output_dir,
+        days_back=int(getattr(args, "days_back", 7)),
+        top_n=int(getattr(args, "top_n", 5)),
+        run_backtests=not bool(getattr(args, "skip_backtest", False)),
+        backtest_models=backtest_models,
+        backtest_window=backtest_window,
+        backtest_start=getattr(args, "backtest_start", None),
+        backtest_end=getattr(args, "backtest_end", None),
+        backtest_rolling_days=getattr(args, "backtest_rolling_days", None),
+        backtest_rolling_games=getattr(args, "backtest_rolling_games", None),
+        keep_backtest_artifacts=bool(getattr(args, "keep_backtest_artifacts", False)),
+    )
+    print(f"Validation report -> {outputs.report_path}")
+    print(f"Validation workbook -> {outputs.workbook_path}")
+    if outputs.summary_path:
+        print(f"Validation summary -> {outputs.summary_path}")
+    for name, path in outputs.frame_paths.items():
+        print(f"Validation data ({name}) -> {path}")
+
+
 def _run_backtest(args: argparse.Namespace) -> None:
     """Run a backtest pipeline for a single model."""
     _ensure_src_on_path()
@@ -1673,10 +1875,14 @@ def _run_tune_ensemble(args: argparse.Namespace) -> None:
 
     start_date = _require_iso_date(args.start_date, field="--start-date")
     end_date = _require_iso_date(args.end_date, field="--end-date")
-    model_list = None
+    selection_models = None
     if args.models:
-        model_list = [m.strip() for m in args.models.split(",") if m.strip()]
-    db_path = args.db or db_path_for(args.sport, args.season)
+        selection_models = [m.strip() for m in args.models.split(",") if m.strip()]
+    selection_run_id = getattr(args, "selection_run_id", None)
+    as_of = _optional_iso_date(getattr(args, "as_of", None), field="--as-of")
+    db_path = _resolve_db_path(args)
+    if db_path is None:
+        raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
     _echo_db_path(Path(db_path))
     result = run_ensemble_market_tuning(
         sport=args.sport,
@@ -1684,14 +1890,63 @@ def _run_tune_ensemble(args: argparse.Namespace) -> None:
         market=args.market,
         start_date=start_date,
         end_date=end_date,
+        as_of_date=as_of,
         ensemble_id=args.ensemble,
-        models=model_list,
+        selection_models=selection_models,
+        selection_run_id=selection_run_id,
+        csv_path=args.csv,
+        db_path=db_path,
+        activate=bool(getattr(args, "activate", True)),
+    )
+    print(f"Ensemble tuned on {result.games} games for {result.selection_models}.")
+    print(f"Best score ({result.metric_optimized}) = {result.best_score}")
+    if result.baseline_score is not None and result.baseline_score != float("inf"):
+        print(f"Baseline (equal weights) = {result.baseline_score}")
+    print(f"Activated tuned weights: {'yes' if result.activated else 'no'}")
+    print(f"Saved weights -> {result.artifact_path}")
+    print(f"Stored tuning run -> {result.run_id}")
+    if result.selection_run_id:
+        print(f"Selection run -> {result.selection_run_id}")
+
+
+def _run_select_ensemble(args: argparse.Namespace) -> None:
+    _ensure_src_on_path()
+    from pipelines.ensemble_tuning import run_market_ensemble_selection
+
+    start_date = _optional_iso_date(args.start, field="--start")
+    end_date = _optional_iso_date(args.end, field="--end")
+    as_of_date = _optional_iso_date(args.as_of, field="--as-of")
+    candidate_models = None
+    if args.candidates:
+        candidate_models = [m.strip() for m in args.candidates.split(",") if m.strip()]
+    db_path = _resolve_db_path(args)
+    if db_path is None:
+        raise ValueError("DB path could not be resolved; pass --db or --sport/--season")
+    _echo_db_path(Path(db_path))
+    selection, activated = run_market_ensemble_selection(
+        sport=args.sport,
+        season=args.season,
+        market=args.market,
+        ensemble_id=args.ensemble,
+        start_date=start_date,
+        end_date=end_date,
+        as_of_date=as_of_date,
+        candidates=candidate_models,
+        min_coverage=args.min_coverage,
+        max_members=args.max_members,
+        epsilon=args.epsilon,
+        activate=bool(getattr(args, "activate", True)),
+        notes=args.notes,
         csv_path=args.csv,
         db_path=db_path,
     )
-    print(f"Ensemble tuned on {result.games} games.")
-    print(f"Saved weights -> {result.artifact_path}")
-    print(f"Stored tuning run -> {result.run_id}")
+    print(f"Selection run -> run_id={selection.run_id}")
+    print(f"Selected models: {', '.join(selection.selected_models)}")
+    print(
+        f"Score ({selection.objective_metric}) = {selection.score:.6f} "
+        f"on {selection.games} games (as-of {selection.metadata.asof})"
+    )
+    print(f"Activated selection: {'yes' if activated else 'no'}")
 
 
 def _run_calibrate_ensemble(args: argparse.Namespace) -> None:
@@ -1743,6 +1998,8 @@ def main(argv: list[str] | None = None) -> None:
         _run_market_bets(args)
     elif args.command == "report":
         _run_report(args)
+    elif args.command == "validation-report":
+        _run_validation_report(args)
     elif args.command == "backtest":
         _run_backtest(args)
     elif args.command == "tune":
@@ -1753,6 +2010,8 @@ def main(argv: list[str] | None = None) -> None:
         _run_tune_model(args)
     elif args.command == "tune-ensemble":
         _run_tune_ensemble(args)
+    elif args.command == "select-ensemble":
+        _run_select_ensemble(args)
     elif args.command == "init-ensemble-config":
         _run_init_ensemble_config(args)
     elif args.command == "calibrate":
@@ -1873,24 +2132,25 @@ def _run_betting(args: argparse.Namespace) -> None:
             raise ValueError("--csv is required for parse-export")
         
         sport = getattr(args, "sport", None)
-        season = getattr(args, "season", "2025-26")
+        season = getattr(args, "season", None)
         output = getattr(args, "output", None)
         
         # Handle DB path
         db_override = getattr(args, "db", None)
         if db_override:
             db_base = db_override
-        else:
+        elif season:
             db_base = f"data/db/<sport>/{season}.db"
+        else:
+            db_base = "data/db/<sport>"
         
         print(f"Parsing betting app export: {csv_path}")
         
         if sport:
             # Single sport mode
-            db_path = db_base.replace("<sport>", sport)
             matched, total, unmatched = betting_app.parse_betting_app_export(
                 csv_path=csv_path,
-                db_path=db_path,
+                db_path=db_base,
                 output_path=output,
                 sport=sport,
                 season=season,
@@ -1908,6 +2168,7 @@ def _run_betting(args: argparse.Namespace) -> None:
                 csv_path=csv_path,
                 db_path=db_base,
                 output_dir=output,
+                season=season,
             )
             print("\nResults by sport:")
             for sport_code, stats in results.items():
@@ -2266,6 +2527,12 @@ def _require_iso_date(value: str, *, field: str) -> str:
     if normalized != value:
         print(f"Normalized {field} to {normalized}")
     return normalized
+
+
+def _optional_iso_date(value: str | None, *, field: str) -> str | None:
+    if value is None:
+        return None
+    return _require_iso_date(value, field=field)
 
 
 def _run_activate_tuning(args: argparse.Namespace) -> None:

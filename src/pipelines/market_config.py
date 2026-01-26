@@ -30,6 +30,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ensemble.config import (
+    DEFAULT_ENSEMBLE_IDS,
+    DEFAULT_MARKET_METRICS,
+    DEFAULT_MARKET_MODELS,
+)
 from markets.base import Market
 from models.registry import normalize_model_name, list_models
 from pipelines.market_utils import _resolve_market_metric
@@ -45,25 +50,6 @@ from data.repository import (
 
 logger = logging.getLogger(__name__)
 
-
-# Default model allowlists per market (can be overridden by ensemble config)
-DEFAULT_MARKET_MODELS: dict[str, list[str]] = {
-    "ML": ["elo", "bradley-terry"],
-    "SPREAD": ["elo", "gssd", "toor"],
-    "TOTAL": ["poisson", "gssd", "toor"],
-}
-
-DEFAULT_MARKET_METRICS: dict[str, str] = {
-    "ML": "log_loss",
-    "SPREAD": "mae_margin",
-    "TOTAL": "mae_total",
-}
-
-DEFAULT_ENSEMBLE_IDS: dict[str, str] = {
-    "ML": "ensemble_ml_v1",
-    "SPREAD": "ensemble_spread_v1",
-    "TOTAL": "ensemble_total_v1",
-}
 
 VALID_MARKETS = {"ML", "SPREAD", "TOTAL"}
 
