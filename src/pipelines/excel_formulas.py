@@ -25,6 +25,11 @@ def _cell_ref_letter(letter: str, row: int) -> str:
 
 
 def _column_has_values(ws: Worksheet, col: int) -> bool:
+    def _wrap_with_cal_cell(cell_ref: str | None, expr: str) -> str:
+        if cell_ref:
+            return f"IF({cell_ref}<>\"\",{cell_ref},{expr})"
+        return expr
+
     for row in range(2, ws.max_row + 1):
         value = ws.cell(row=row, column=col).value
         if value is None:
@@ -164,6 +169,12 @@ def apply_model_prob_formulas_for_bets_sheet(ws: Worksheet) -> None:
     total_sd_col = inputs["total"]["sd"]
     if not spread_mean_col or not spread_sd_col or not total_mean_col or not total_sd_col:
         return
+    spread_calibrated_col = header_letters.get("spread_prob_calibrated")
+    total_calibrated_col = header_letters.get("total_prob_calibrated")
+    def _wrap_with_cal_cell(cell_ref: str | None, expr: str) -> str:
+        if cell_ref:
+            return f"IF({cell_ref}<>\"\",{cell_ref},{expr})"
+        return expr
 
     for row in range(2, ws.max_row + 1):
         market_cell = _cell_ref_letter(market_col, row)
@@ -187,23 +198,39 @@ def apply_model_prob_formulas_for_bets_sheet(ws: Worksheet) -> None:
         )
         total_cdf = f"(0.5*(1+ERF(({line_cell}-{total_mean_cell})/({total_sd_cell}*SQRT(2)))))"
 
-        ws[model_cell].value = (
-            f"=@IF({market_cell}=\"ML\","
-            f"IF({selection_cell}={home_team_cell},{home_win_cell},"
-            f"IF({selection_cell}={away_team_cell},{away_win_cell},\"\")),"
-            f"IF({market_cell}=\"spread\","
+        spread_base = (
             f"IF(OR({line_cell}=\"\",{spread_sd_cell}=\"\"),\"\","
             f"IF({selection_cell}={home_team_cell},"
             f"1-{spread_cdf_selection_home},"
             f"IF({selection_cell}={away_team_cell},"
-            f"{spread_cdf_selection_away},\"\"))),"
-            f"IF({market_cell}=\"total\","
+            f"{spread_cdf_selection_away},\"\")))"
+        )
+        total_base = (
             f"IF(OR({line_cell}=\"\",{total_sd_cell}=\"\"),\"\","
             f"IF({selection_cell}=\"Over\","
             f"1-{total_cdf},"
             f"IF({selection_cell}=\"Under\","
-            f"{total_cdf},\"\"))),"
-            "\"\")))"
+            f"{total_cdf},\"\")))"
+        )
+        spread_cal_cell = (
+            _cell_ref_letter(spread_calibrated_col, row)
+            if spread_calibrated_col
+            else None
+        )
+        total_cal_cell = (
+            _cell_ref_letter(total_calibrated_col, row)
+            if total_calibrated_col
+            else None
+        )
+        spread_formula = _wrap_with_cal_cell(spread_cal_cell, spread_base)
+        total_formula = _wrap_with_cal_cell(total_cal_cell, total_base)
+
+        ws[model_cell].value = (
+            f"=@IF({market_cell}=\"ML\","
+            f"IF({selection_cell}={home_team_cell},{home_win_cell},"
+            f"IF({selection_cell}={away_team_cell},{away_win_cell},\"\")),"
+            f"IF({market_cell}=\"spread\",{spread_formula},"
+            f"IF({market_cell}=\"total\",{total_formula},\"\")))"
         )
 
 

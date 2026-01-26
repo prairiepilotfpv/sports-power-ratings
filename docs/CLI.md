@@ -467,3 +467,19 @@ python -m src.cli.pipeline calibrate --sport nba --season 2025-26 --market ML --
 ```
 
 - Calibrators are written to `outputs/calibrators/<sport>/<season>/<source_id>/<market>/`.
+
+## calibrate-history — fit per-market calibrators from historical projections
+
+```bash
+python -m src.cli.pipeline calibrate-history --sport nba --season 2025-26 \
+  --market-source ML=ensemble_ml_v1 \
+  --market-source SPREAD=spread_ensemble_v1 \
+  --market-source TOTAL=total_ensemble_v1 \
+  --start-date 2020-10-10 --end-date 2025-05-01 \
+  --db data/db/nba/2025-26.db --method isotonic
+```
+
+- Reuses `calibrate_market_from_history` so each market calibrator only sees historical predictions + outcomes (not bet stakes).
+- Repeat `--market-source MARKET=source_id` for every market you want to tune in the single command.
+- Calibrators ship to `outputs/calibrators/<sport>/<season>/<source_id>/<market>/` (same layout as `calibrate`), but the data source is historical forecasts rather than a specific bet log.
+- `--method` still accepts `auto`, `platt`, or `isotonic`; omit it to let the code decide based on sample size.

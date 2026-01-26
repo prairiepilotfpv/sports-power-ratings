@@ -282,3 +282,101 @@ def test_spread_model_prob_signed_lines(selection, line, expected):
     model_prob = _evaluate_model_prob(ws, 2)
 
     assert model_prob == pytest.approx(expected, rel=1e-6)
+
+
+def test_spread_model_prob_prefers_calibrated_column():
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "BETS"
+
+    headers = [
+        "market_type",
+        "selection",
+        "line",
+        "model_prob",
+        "home_team",
+        "away_team",
+        "home_win_prob",
+        "away_win_prob",
+        "margin_mean",
+        "margin_sd",
+        "total",
+        "total_sd",
+        "spread_prob_calibrated",
+    ]
+    ws.append(headers)
+    ws.append(
+        [
+            "spread",
+            "HomeTeam",
+            -3.5,
+            "",
+            "HomeTeam",
+            "AwayTeam",
+            0.55,
+            0.45,
+            4.0,
+            12.0,
+            210.5,
+            15.0,
+            0.33,
+        ]
+    )
+
+    apply_model_prob_formulas_for_bets_sheet(ws)
+    letters = build_header_letter_map(ws)
+    spread_cal_cell = f"{letters['spread_prob_calibrated']}2"
+    model_col = headers.index("model_prob") + 1
+    formula = ws[f"{get_column_letter(model_col)}2"].value
+
+    assert isinstance(formula, str)
+    assert spread_cal_cell in formula
+
+
+def test_total_model_prob_prefers_calibrated_column():
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "BETS"
+
+    headers = [
+        "market_type",
+        "selection",
+        "line",
+        "model_prob",
+        "home_team",
+        "away_team",
+        "home_win_prob",
+        "away_win_prob",
+        "margin_mean",
+        "margin_sd",
+        "total",
+        "total_sd",
+        "total_prob_calibrated",
+    ]
+    ws.append(headers)
+    ws.append(
+        [
+            "total",
+            "Over",
+            210.5,
+            "",
+            "HomeTeam",
+            "AwayTeam",
+            0.55,
+            0.45,
+            4.0,
+            12.0,
+            210.5,
+            15.0,
+            0.15,
+        ]
+    )
+
+    apply_model_prob_formulas_for_bets_sheet(ws)
+    letters = build_header_letter_map(ws)
+    total_cal_cell = f"{letters['total_prob_calibrated']}2"
+    model_col = headers.index("model_prob") + 1
+    formula = ws[f"{get_column_letter(model_col)}2"].value
+
+    assert isinstance(formula, str)
+    assert total_cal_cell in formula

@@ -384,6 +384,87 @@ def _add_bets_predictions_components_json(conn: sqlite3.Connection) -> None:
         )
 
 
+def _add_bets_predictions_market_source(conn: sqlite3.Connection) -> None:
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(bets_predictions)")]
+    if not cols:
+        return
+    if "market_forecast_source" not in cols:
+        conn.execute(
+            "ALTER TABLE bets_predictions ADD COLUMN market_forecast_source TEXT"
+        )
+
+
+def _fix_bets_predictions_unique_constraint(conn: sqlite3.Connection) -> None:
+    """Fix UNIQUE constraint to allow multiple market/selection combos per game per date.
+    
+    The original constraint UNIQUE(game_id, sport, season, prediction_date) only allows
+    one row per game per date. But BETS predictions have 6 rows per game (2×ML, 2×SPREAD, 2×TOTAL).
+    
+    This migration:
+    1. Drops the old constraint
+    2. Adds a new constraint that includes market_type and selection
+    3. This allows multiple predictions per game per date (one per market/selection combo)
+    """
+    # Check if the table exists and has the old constraint
+    constraints = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='bets_predictions'"
+    ).fetchone()
+    
+    if not constraints or constraints[0] is None:
+        return
+    
+    constraint_sql = constraints[0]
+    
+    # Check if it has the old UNIQUE constraint (without market_type/selection)
+    if "UNIQUE(game_id, sport, season, prediction_date)" not in constraint_sql:
+        return  # Already fixed or never had the constraint
+    
+    # Recreate the table with the corrected constraint
+    # First, save the old data
+    old_data = conn.execute(
+        "SELECT game_id, sport, season, prediction_date, home_win_prob, model_prob, "
+        "edge, ev, market_type, selection, line, market_forecast_source, "
+        "ml_ensemble_components_json FROM bets_predictions"
+    ).fetchall()
+    
+    # Drop the old table
+    conn.execute("DROP TABLE bets_predictions")
+    
+    # Recreate with the corrected constraint
+    conn.execute("""
+        CREATE TABLE bets_predictions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id TEXT NOT NULL,
+            sport TEXT NOT NULL,
+            season TEXT NOT NULL,
+            prediction_date TEXT NOT NULL,
+            home_win_prob REAL NOT NULL,
+            model_prob REAL,
+            edge REAL,
+            ev REAL,
+            market_type TEXT,
+            selection TEXT,
+            line REAL,
+            market_forecast_source TEXT,
+            ml_ensemble_components_json TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(game_id, sport, season, prediction_date, market_type, selection),
+            FOREIGN KEY(game_id) REFERENCES games(game_id)
+        )
+    """)
+    
+    # Restore the data
+    if old_data:
+        conn.executemany(
+            """INSERT INTO bets_predictions
+            (game_id, sport, season, prediction_date, home_win_prob, model_prob,
+             edge, ev, market_type, selection, line, market_forecast_source,
+             ml_ensemble_components_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            old_data
+        )
+
+
 def _backfill_game_ids(conn: sqlite3.Connection) -> None:
     """Compute deterministic game_id for games missing one and update rows.
 
@@ -607,6 +688,8 @@ MIGRATIONS: list[Migration] = [
     Migration(11, "add_validation_runs_table", _add_validation_runs_table),
     Migration(12, "add_validation_runs_workbook_path", _add_validation_runs_workbook_path),
     Migration(13, "add_bets_predictions_components_json", _add_bets_predictions_components_json),
+    Migration(14, "add_bets_predictions_market_source", _add_bets_predictions_market_source),
+    Migration(15, "fix_bets_predictions_unique_constraint", _fix_bets_predictions_unique_constraint),
 ]
 
 LATEST_SCHEMA_VERSION = max((m.version for m in MIGRATIONS), default=0)

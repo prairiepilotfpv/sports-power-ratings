@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Mapping
 import re
 import sqlite3
 
@@ -63,7 +64,9 @@ from pipelines.matchups import team_home_advantages
 from pipelines.projection_engines import get_projection_engine
 from pipelines.projections import (
     average_total_points,
+    cover_prob,
     fit_total_model,
+    over_prob,
     team_scoring_averages,
 )
 from pipelines.metadata import prediction_hash
@@ -334,46 +337,136 @@ def _apply_calibration_to_schedule_df(
     season: str,
     model: str,
 ) -> pd.DataFrame:
-    """Apply the latest ML calibrator, if available, to schedule win probabilities."""
-    if schedule_df.empty or "home_win_prob" not in schedule_df.columns:
-        return schedule_df
-
-    calibrator = load_latest_calibrator(
-        sport=sport,
-        season=season,
-        model=model,
-        market=Market.ML,
-    )
-    if calibrator is None:
+    """Apply calibrators for all markets (ML, SPREAD, TOTAL) to schedule predictions.
+    
+    Loads the latest calibrator for each market and applies transformations:
+    - ML: Calibrates home_win_prob and away_win_prob
+    - SPREAD: Calibrates margin_mean and margin_sd
+    - TOTAL: Calibrates total_mean and total_sd
+    """
+    if schedule_df.empty:
         return schedule_df
 
     df = schedule_df.copy()
-    raw_probs = pd.to_numeric(df["home_win_prob"], errors="coerce")
-    valid_mask = raw_probs.notna()
-    if not valid_mask.any():
-        return df
-
-    # Calibrators should be stored under outputs/calibrators/<sport>/<season>/<model>.
-    df["home_win_prob_raw"] = df["home_win_prob"]
-    df["away_win_prob_raw"] = df["away_win_prob"]
-
-    try:
-        calibrated = pd.Series(pd.NA, index=df.index, dtype="float")
-        calibrated_values = calibrator.transform(raw_probs.loc[valid_mask].astype(float))
-        calibrated.loc[valid_mask] = pd.to_numeric(calibrated_values, errors="coerce")
-        df["home_win_prob_calibrated"] = calibrated
-        df["away_win_prob_calibrated"] = 1.0 - calibrated
-    except Exception:
-        return df
-
-    calibrated_mask = df["home_win_prob_calibrated"].notna()
-    df.loc[calibrated_mask, "home_win_prob"] = df.loc[
-        calibrated_mask, "home_win_prob_calibrated"
-    ]
-    df.loc[calibrated_mask, "away_win_prob"] = df.loc[
-        calibrated_mask, "away_win_prob_calibrated"
-    ]
-
+    
+    # ========== ML MARKET CALIBRATION ==========
+    if "home_win_prob" in df.columns:
+        ml_calibrator = load_latest_calibrator(
+            sport=sport,
+            season=season,
+            model=model,
+            market="ML",
+        )
+        
+        if ml_calibrator is not None:
+            raw_probs = pd.to_numeric(df["home_win_prob"], errors="coerce")
+            valid_mask = raw_probs.notna()
+            
+            if valid_mask.any():
+                # Store raw values
+                df["home_win_prob_raw"] = df["home_win_prob"]
+                df["away_win_prob_raw"] = df["away_win_prob"]
+                
+                try:
+                    calibrated = pd.Series(pd.NA, index=df.index, dtype="float")
+                    calibrated_values = ml_calibrator.transform(raw_probs.loc[valid_mask].astype(float))
+                    calibrated.loc[valid_mask] = pd.to_numeric(calibrated_values, errors="coerce")
+                    df["home_win_prob_calibrated"] = calibrated
+                    df["away_win_prob_calibrated"] = 1.0 - calibrated
+                    
+                    # Use calibrated values in place of raw
+                    calibrated_mask = df["home_win_prob_calibrated"].notna()
+                    df.loc[calibrated_mask, "home_win_prob"] = df.loc[
+                        calibrated_mask, "home_win_prob_calibrated"
+                    ]
+                    df.loc[calibrated_mask, "away_win_prob"] = df.loc[
+                        calibrated_mask, "away_win_prob_calibrated"
+                    ]
+                    
+                    _LOG.info(
+                        f"[_apply_calibration_to_schedule_df] Applied ML calibrator to "
+                        f"{calibrated_mask.sum()} rows"
+                    )
+                except Exception as e:
+                    _LOG.warning(f"[_apply_calibration_to_schedule_df] ML calibration failed: {e}")
+    
+    # ========== SPREAD MARKET CALIBRATION ==========
+    if "margin_mean" in df.columns and "margin_sd" in df.columns:
+        spread_calibrator = load_latest_calibrator(
+            sport=sport,
+            season=season,
+            model=model,
+            market="spread",
+        )
+        
+        if spread_calibrator is not None:
+            # Check if it's a distribution calibrator
+            if hasattr(spread_calibrator, "metadata") and "marginal_distribution" in str(spread_calibrator.metadata.get("method", "")):
+                margin_mean = pd.to_numeric(df["margin_mean"], errors="coerce")
+                margin_sd = pd.to_numeric(df["margin_sd"], errors="coerce")
+                valid_mask = (margin_mean.notna()) & (margin_sd.notna()) & (margin_sd > 0)
+                
+                if valid_mask.any():
+                    try:
+                        # Build input DataFrame for calibrator
+                        calib_input = pd.DataFrame({
+                            "pred_mean": margin_mean.loc[valid_mask],
+                            "pred_sd": margin_sd.loc[valid_mask],
+                        })
+                        
+                        # Apply calibrator
+                        calib_result = spread_calibrator.transform(calib_input)
+                        
+                        # Update values
+                        df.loc[valid_mask, "margin_mean"] = calib_result["calibrated_mean"].values
+                        df.loc[valid_mask, "margin_sd"] = calib_result["calibrated_sd"].values
+                        
+                        _LOG.info(
+                            f"[_apply_calibration_to_schedule_df] Applied SPREAD distribution calibrator "
+                            f"to {valid_mask.sum()} rows"
+                        )
+                    except Exception as e:
+                        _LOG.warning(f"[_apply_calibration_to_schedule_df] SPREAD calibration failed: {e}")
+    
+    # ========== TOTAL MARKET CALIBRATION ==========
+    if "total_mean" in df.columns and "total_sd" in df.columns:
+        total_calibrator = load_latest_calibrator(
+            sport=sport,
+            season=season,
+            model=model,
+            market="total",
+        )
+        
+        if total_calibrator is not None:
+            # Check if it's a distribution calibrator
+            if hasattr(total_calibrator, "metadata") and "marginal_distribution" in str(total_calibrator.metadata.get("method", "")):
+                total_mean = pd.to_numeric(df["total_mean"], errors="coerce")
+                total_sd = pd.to_numeric(df["total_sd"], errors="coerce")
+                valid_mask = (total_mean.notna()) & (total_sd.notna()) & (total_sd > 0)
+                
+                if valid_mask.any():
+                    try:
+                        # Build input DataFrame for calibrator
+                        calib_input = pd.DataFrame({
+                            "pred_mean": total_mean.loc[valid_mask],
+                            "pred_sd": total_sd.loc[valid_mask],
+                        })
+                        
+                        # Apply calibrator
+                        calib_result = total_calibrator.transform(calib_input)
+                        
+                        # Update values
+                        df.loc[valid_mask, "total_mean"] = calib_result["calibrated_mean"].values
+                        df.loc[valid_mask, "total_sd"] = calib_result["calibrated_sd"].values
+                        
+                        _LOG.info(
+                            f"[_apply_calibration_to_schedule_df] Applied TOTAL distribution calibrator "
+                            f"to {valid_mask.sum()} rows"
+                        )
+                    except Exception as e:
+                        _LOG.warning(f"[_apply_calibration_to_schedule_df] TOTAL calibration failed: {e}")
+    
+    # ========== UPDATE WINNER WIN PROB WITH CALIBRATED VALUES ==========
     if "projected_winner" in df.columns:
         home_wins = df["projected_winner"] == df["home_team"]
         away_wins = df["projected_winner"] == df["away_team"]
@@ -1075,6 +1168,8 @@ def _build_bets_dataframe(
             "spread_ensemble_components_json",
             "total_source",
             "total_ensemble_components_json",
+            "spread_prob_calibrated",
+            "total_prob_calibrated",
         ]
     )
 
@@ -1257,6 +1352,8 @@ def _build_bets_dataframe(
             "spread_ensemble_components_json": "",
             "total_source": "",
             "total_ensemble_components_json": "",
+            "spread_prob_calibrated": "",
+            "total_prob_calibrated": "",
         }
         
         # Add calibrated fields if present
@@ -1374,7 +1471,208 @@ def _build_bets_dataframe(
                 f"BETS invariant violation: {len(invalid_counts)} game(s) do not have exactly 6 rows: {invalid_counts.to_dict()}"
             )
     
+    bets_df = _apply_spread_total_calibrators(
+        bets_df,
+        sport=sport,
+        season=season,
+    )
+    
+    # Calculate model_prob for each market type
+    bets_df = _calculate_model_prob(bets_df)
+    
     return bets_df
+
+
+def _calculate_model_prob(bets_df: pd.DataFrame) -> pd.DataFrame:
+    """Calculate model_prob for each market type row.
+    
+    For ML: uses home_win_prob or away_win_prob based on selection
+    For SPREAD: calculates CDF probability for cover
+    For TOTAL: calculates CDF probability for over/under
+    
+    This ensures model_prob is populated for database persistence and calibration.
+    """
+    if bets_df.empty or "market_type" not in bets_df.columns:
+        return bets_df
+    
+    out_df = bets_df.copy()
+    
+    # ML market: use home_win_prob or away_win_prob based on selection
+    if "home_team" in out_df.columns and "selection" in out_df.columns:
+        ml_mask = out_df["market_type"] == "ML"
+        if ml_mask.any():
+            def _ml_prob(row):
+                sel = str(row.get("selection", "")).strip()
+                home = str(row.get("home_team", "")).strip()
+                if sel == home:
+                    return row.get("home_win_prob")
+                else:
+                    return row.get("away_win_prob")
+            out_df.loc[ml_mask, "model_prob"] = out_df[ml_mask].apply(_ml_prob, axis=1)
+    
+    # SPREAD market: calculate CDF probability
+    if "spread_source" in out_df.columns:
+        spread_mask = out_df["market_type"] == "spread"
+        if spread_mask.any():
+            out_df.loc[spread_mask, "model_prob"] = out_df[spread_mask].apply(
+                _spread_raw_probability, axis=1
+            )
+    
+    # TOTAL market: calculate CDF probability
+    if "total_source" in out_df.columns:
+        total_mask = out_df["market_type"] == "total"
+        if total_mask.any():
+            out_df.loc[total_mask, "model_prob"] = out_df[total_mask].apply(
+                _total_raw_probability, axis=1
+            )
+    
+    return out_df
+
+
+def _apply_spread_total_calibrators(
+    bets_df: pd.DataFrame,
+    *,
+    sport: str | None,
+    season: str | None,
+) -> pd.DataFrame:
+    if bets_df.empty:
+        return bets_df
+    out_df = bets_df.copy()
+    for col in ("spread_prob_calibrated", "total_prob_calibrated"):
+        if col not in out_df.columns:
+            out_df[col] = pd.NA
+
+    spread_sources = set(
+        out_df["spread_source"].dropna().astype(str).tolist() if "spread_source" in out_df else []
+    )
+    total_sources = set(
+        out_df["total_source"].dropna().astype(str).tolist() if "total_source" in out_df else []
+    )
+
+    spread_cals = _load_market_calibrators(spread_sources, sport, season, Market.SPREAD)
+    total_cals = _load_market_calibrators(total_sources, sport, season, Market.TOTAL)
+
+    if spread_cals and "spread_prob_calibrated" in out_df.columns:
+        mask = out_df["market_type"] == "spread"
+        if mask.any():
+            out_df.loc[mask, "spread_prob_calibrated"] = out_df.loc[mask].apply(
+                lambda row: _apply_market_calibrator(
+                    spread_cals,
+                    row.get("spread_source"),
+                    _spread_raw_probability(row),
+                ),
+                axis=1,
+            )
+
+    if total_cals and "total_prob_calibrated" in out_df.columns:
+        mask = out_df["market_type"] == "total"
+        if mask.any():
+            out_df.loc[mask, "total_prob_calibrated"] = out_df.loc[mask].apply(
+                lambda row: _apply_market_calibrator(
+                    total_cals,
+                    row.get("total_source"),
+                    _total_raw_probability(row),
+                ),
+                axis=1,
+            )
+
+    return out_df
+
+
+def _apply_market_calibrator(
+    calibrators: dict[str, object],
+    source: str | None,
+    raw_prob: float | None,
+) -> float | pd.NA:
+    if not source or raw_prob is None:
+        return pd.NA
+    calibrator = calibrators.get(source)
+    if calibrator is None:
+        return pd.NA
+    try:
+        transformed = calibrator.transform(pd.Series([raw_prob]))
+    except Exception:
+        return pd.NA
+    if transformed.empty:
+        return pd.NA
+    val = transformed.iloc[0]
+    if pd.isna(val):
+        return pd.NA
+    return float(val)
+
+
+def _load_market_calibrators(
+    sources: Iterable[str],
+    sport: str | None,
+    season: str | None,
+    market: Market,
+) -> dict[str, object]:
+    cals: dict[str, object] = {}
+    if not sport or not season:
+        return cals
+    for source in sources:
+        if not source or source in cals:
+            continue
+        try:
+            calibrator = load_latest_calibrator(
+                sport=sport,
+                season=season,
+                model=source,
+                market=market,
+            )
+        except Exception:
+            calibrator = None
+        if calibrator is not None:
+            cals[source] = calibrator
+    return cals
+
+
+def _spread_raw_probability(row: Mapping[str, Any]) -> float | None:
+    line = _coerce_float(row.get("line"))
+    mean = _coerce_float(row.get("margin_mean"))
+    sd = _coerce_float(row.get("margin_sd"))
+    if line is None or mean is None or sd is None:
+        return None
+    selection = str(row.get("selection") or "").strip()
+    home_team = str(row.get("home_team") or "").strip()
+    away_team = str(row.get("away_team") or "").strip()
+    if selection and home_team and selection == home_team:
+        return cover_prob(line, mean, sd, sign_convention="away_minus_home")
+    if selection and away_team and selection == away_team:
+        base = cover_prob(-line, mean, sd, sign_convention="away_minus_home")
+        if base is None:
+            return None
+        return 1.0 - base
+    return None
+
+
+def _total_raw_probability(row: Mapping[str, Any]) -> float | None:
+    line = _coerce_float(row.get("line"))
+    mean = _coerce_float(row.get("total"))
+    sd = _coerce_float(row.get("total_sd"))
+    if line is None or mean is None or sd is None:
+        return None
+    selection = str(row.get("selection") or "").strip().lower()
+    over_p = over_prob(line, mean, sd)
+    if over_p is None:
+        return None
+    if selection == "over":
+        return over_p
+    if selection == "under":
+        return 1.0 - over_p
+    return None
+
+
+def _coerce_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        val = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(val) or math.isinf(val):
+        return None
+    return val
 
 
 def _training_date_range(df: pd.DataFrame) -> str:
@@ -2394,29 +2692,16 @@ def build_schedule_excel_report(
         spread_ensemble_id = ensemble_ids.get(Market.SPREAD.name, "ensemble_spread_v1")
         total_ensemble_id = ensemble_ids.get(Market.TOTAL.name, "ensemble_total_v1")
 
-        spread_source_id = (
-            spread_ensemble_id
-            if spread_ensemble_applied
-            else _first_nonempty_source(
-                bets_schedule_df if bets_schedule_df is not None else pd.DataFrame(),
-                "spread_source",
-                as_of_date=resolved_as_of_date,
-            )
-            or "direct"
-        )
-        total_source_id = (
-            total_ensemble_id
-            if total_ensemble_applied
-            else _first_nonempty_source(
-                bets_schedule_df if bets_schedule_df is not None else pd.DataFrame(),
-                "total_source",
-                as_of_date=resolved_as_of_date,
-            )
-            or "direct"
-        )
+        # CRITICAL: Always use the ensemble source IDs for SPREAD and TOTAL markets.
+        # This ensures calibrate-history can find predictions by their canonical ensemble sources,
+        # even when individual market forecasts aren't applied to the BETS schedule.
+        # The ensemble IDs are canonical identifiers for where predictions came from.
+        spread_source_id = spread_ensemble_id
+        total_source_id = total_ensemble_id
         ml_source_id = (
             ml_ensemble_id if ensemble_applied else (bets_model_name or "direct")
         )
+        _LOG.info(f"[get_schedule] Sources: ML={ml_source_id}, SPREAD={spread_source_id}, TOTAL={total_source_id}, ensemble_applied={ensemble_applied}")
         review_run_id = _deterministic_review_run_id(
             sport=sport,
             season=season,
@@ -2434,6 +2719,32 @@ def build_schedule_excel_report(
             sport=sport,
             season=season,
         )
+        
+        # Populate ensemble source IDs in BETS dataframe for all rows
+        # This ensures the correct source is persisted to the database
+        if not bets_df.empty:
+            # For SPREAD rows, always set to ensemble ID (overwrite any pass-through or fallback values)
+            if "market_type" in bets_df.columns and "spread_source" in bets_df.columns:
+                mask = bets_df["market_type"] == "spread"
+                count = mask.sum()
+                if count > 0:
+                    before_sources = bets_df.loc[mask, "spread_source"].unique()
+                    _LOG.info(f"[BETS] SPREAD rows BEFORE: {before_sources}, count={count}")
+                    bets_df.loc[mask, "spread_source"] = spread_source_id
+                    after_sources = bets_df.loc[mask, "spread_source"].unique()
+                    _LOG.info(f"[BETS] SPREAD rows AFTER: {after_sources}, spread_source_id={spread_source_id}")
+            
+            # For TOTAL rows, always set to ensemble ID (overwrite any pass-through or fallback values)
+            if "market_type" in bets_df.columns and "total_source" in bets_df.columns:
+                mask = bets_df["market_type"] == "total"
+                count = mask.sum()
+                if count > 0:
+                    before_sources = bets_df.loc[mask, "total_source"].unique()
+                    _LOG.info(f"[BETS] TOTAL rows BEFORE: {before_sources}, count={count}")
+                    bets_df.loc[mask, "total_source"] = total_source_id
+                    after_sources = bets_df.loc[mask, "total_source"].unique()
+                    _LOG.info(f"[BETS] TOTAL rows AFTER: {after_sources}, total_source_id={total_source_id}")
+        
         bets_df.to_excel(writer, sheet_name="BETS", index=False)
 
         param_sources = _collect_market_param_sources(

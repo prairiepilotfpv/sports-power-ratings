@@ -289,6 +289,7 @@ CREATE TABLE IF NOT EXISTS bets_predictions (
     market_type TEXT,
     selection TEXT,
     line REAL,
+    market_forecast_source TEXT,
     ml_ensemble_components_json TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(game_id, sport, season, prediction_date),

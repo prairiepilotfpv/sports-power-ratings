@@ -14,8 +14,7 @@ import numpy as np
 import pandas as pd
 
 from backtest.runner import load_games_df_from_csv, load_games_df_from_db, run_backtest
-from calibration.isotonic import IsotonicCalibrator
-from calibration.platt import PlattScalingCalibrator
+from pipelines.calibration_utils import select_calibrator
 from data.paths import db_path_for
 from data.repository import (
     get_active_ensemble_market_selection,
@@ -762,7 +761,7 @@ def calibrate_ml_ensemble(
             "home_win": dataset.targets,
         }
     )
-    calibrator = _select_calibrator(method, len(calib_df))
+    calibrator = select_calibrator(method, len(calib_df))
     calibrator.fit(calib_df)
 
     spec = get_market_spec("ML")
@@ -779,16 +778,6 @@ def json_dumps(payload: dict) -> str:
 
     return json.dumps(payload, indent=2, sort_keys=True)
 
-
-def _select_calibrator(method: str, n_samples: int):
-    normalized = (method or "").strip().lower()
-    if normalized in {"platt", "logistic"}:
-        return PlattScalingCalibrator()
-    if normalized == "isotonic":
-        return IsotonicCalibrator()
-    if normalized != "auto":
-        raise ValueError("calibrator method must be auto, platt, or isotonic.")
-    return IsotonicCalibrator() if n_samples >= 500 else PlattScalingCalibrator()
 
 
 def _load_games_df(
