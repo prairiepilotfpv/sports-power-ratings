@@ -9,7 +9,7 @@ from ensemble.total_v1 import TotalWeightedAverageEnsemble
 
 def test_total_equal_weights_when_no_config(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    ens = TotalWeightedAverageEnsemble("TESTSPORT", "2025")
+    ens = TotalWeightedAverageEnsemble("TESTSPORT", "2025", weights={"a": 1.0, "b": 1.0})
     df = pd.DataFrame(
         [
             {"model_name": "a", "total_mean": 200.0, "total_sd": 10.0},
@@ -20,7 +20,7 @@ def test_total_equal_weights_when_no_config(tmp_path, monkeypatch):
     assert mean == pytest.approx(205.0, rel=1e-6)
     assert sd == pytest.approx((0.5 * 100.0 + 0.5 * 196.0 + 25.0) ** 0.5, rel=1e-6)
     comps_list = json.loads(comps)
-    weight_sum = sum(c["w"] for c in comps_list if c["total_mean"] is not None)
+    weight_sum = sum(c["weight"] for c in comps_list if c["value"] is not None)
     assert weight_sum == pytest.approx(1.0, rel=1e-6)
 
 
@@ -40,7 +40,7 @@ def test_total_renormalizes_missing_total_mean(tmp_path, monkeypatch):
     mean, sd, comps = ens.combine(df)
     assert mean == pytest.approx(200.0, rel=1e-6)
     comps_list = json.loads(comps)
-    weights = {c["model"]: c["w"] for c in comps_list}
+    weights = {c["model"]: c["weight"] for c in comps_list}
     assert weights["a"] == pytest.approx(1.0, rel=1e-6)
     assert weights["b"] == pytest.approx(0.0, rel=1e-6)
     assert sd == pytest.approx(10.0, rel=1e-6)
@@ -48,7 +48,7 @@ def test_total_renormalizes_missing_total_mean(tmp_path, monkeypatch):
 
 def test_total_sd_weighted_rms_uses_only_sd_values(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    ens = TotalWeightedAverageEnsemble("TEST", "2025", include_between_model_variance=False)
+    ens = TotalWeightedAverageEnsemble("TEST", "2025", weights={"a": 1.0, "b": 1.0, "c": 1.0}, include_between_model_variance=False)
     df = pd.DataFrame(
         [
             {"model_name": "a", "total_mean": 200.0, "total_sd": 10.0},
@@ -63,7 +63,7 @@ def test_total_sd_weighted_rms_uses_only_sd_values(tmp_path, monkeypatch):
 
 def test_total_between_variance_agreement_is_noop(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    ens = TotalWeightedAverageEnsemble("TEST", "2025", include_between_model_variance=True)
+    ens = TotalWeightedAverageEnsemble("TEST", "2025", weights={"a": 1.0, "b": 1.0}, include_between_model_variance=True)
     df = pd.DataFrame(
         [
             {"model_name": "a", "total_mean": 205.0, "total_sd": 10.0},
@@ -77,8 +77,8 @@ def test_total_between_variance_agreement_is_noop(tmp_path, monkeypatch):
 
 def test_total_between_variance_disagreement_increases_sd(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    baseline = TotalWeightedAverageEnsemble("TEST", "2025", include_between_model_variance=False)
-    adjusted = TotalWeightedAverageEnsemble("TEST", "2025", include_between_model_variance=True)
+    baseline = TotalWeightedAverageEnsemble("TEST", "2025", weights={"a": 1.0, "b": 1.0, "c": 1.0}, include_between_model_variance=False)
+    adjusted = TotalWeightedAverageEnsemble("TEST", "2025", weights={"a": 1.0, "b": 1.0}, include_between_model_variance=True)
     df = pd.DataFrame(
         [
             {"model_name": "a", "total_mean": 198.0, "total_sd": 10.0},
@@ -94,7 +94,7 @@ def test_total_between_variance_disagreement_increases_sd(tmp_path, monkeypatch)
 
 def test_total_between_variance_handles_missing_values(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    ens = TotalWeightedAverageEnsemble("TEST", "2025", include_between_model_variance=True)
+    ens = TotalWeightedAverageEnsemble("TEST", "2025", weights={"a": 1.0, "b": 1.0}, include_between_model_variance=True)
     df = pd.DataFrame(
         [
             {"model_name": "a", "total_mean": 200.0, "total_sd": 10.0},
@@ -109,7 +109,7 @@ def test_total_between_variance_handles_missing_values(tmp_path, monkeypatch):
 
 def test_total_between_variance_skipped_when_single_var_component(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    ens = TotalWeightedAverageEnsemble("TEST", "2025", include_between_model_variance=True)
+    ens = TotalWeightedAverageEnsemble("TEST", "2025", weights={"a": 1.0, "b": 1.0}, include_between_model_variance=True)
     df = pd.DataFrame(
         [
             {"model_name": "a", "total_mean": 210.0, "total_sd": 10.0},

@@ -1,5 +1,9 @@
 # Logging Analysis Summary
 
+**Update (January 26, 2026):** This analysis references the legacy
+`calibrate-history` workflow, which has since been removed. It is retained
+for historical context only.
+
 ## Issue Identified and Resolved
 
 The system was working correctly all along, but it appeared broken due to missing logging and an incomplete understanding of the workflow.

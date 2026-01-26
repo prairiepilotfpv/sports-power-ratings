@@ -9,7 +9,8 @@ from ensemble.spread_v1 import SpreadWeightedAverageEnsemble
 
 def test_spread_equal_weights_when_no_config(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    ens = SpreadWeightedAverageEnsemble("TESTSPORT", "2025")
+    # Provide explicit equal weights (Issue #2 fix: models default to 0.0 without weights)
+    ens = SpreadWeightedAverageEnsemble("TESTSPORT", "2025", weights={"a": 1.0, "b": 1.0})
     df = pd.DataFrame(
         [
             {"model_name": "a", "margin_mean": 3.0, "margin_sd": 2.0},
@@ -19,7 +20,8 @@ def test_spread_equal_weights_when_no_config(tmp_path, monkeypatch):
     mean, sd, comps = ens.combine(df)
     assert mean == pytest.approx(2.0, rel=1e-6)
     comps_list = json.loads(comps)
-    weight_sum = sum(c["w"] for c in comps_list if c["margin_mean"] is not None)
+    # New schema uses "weight" and "value" instead of "w" and "margin_mean"
+    weight_sum = sum(c["weight"] for c in comps_list if c["value"] is not None)
     assert weight_sum == pytest.approx(1.0, rel=1e-6)
 
 
@@ -39,14 +41,16 @@ def test_spread_renormalizes_missing_margin_mean(tmp_path, monkeypatch):
     mean, sd, comps = ens.combine(df)
     assert mean == pytest.approx(4.0, rel=1e-6)
     comps_list = json.loads(comps)
-    weights = {c["model"]: c["w"] for c in comps_list}
+    # New schema uses "weight" instead of "w"
+    weights = {c["model"]: c["weight"] for c in comps_list}
     assert weights["a"] == pytest.approx(1.0, rel=1e-6)
     assert weights["b"] == pytest.approx(0.0, rel=1e-6)
 
 
 def test_spread_margin_sd_weighted_rms_uses_only_sd_values(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    ens = SpreadWeightedAverageEnsemble("TEST", "2025", include_between_model_variance=False)
+    # Provide explicit equal weights (Issue #2 fix: models default to 0.0 without weights)
+    ens = SpreadWeightedAverageEnsemble("TEST", "2025", weights={"a": 1.0, "b": 1.0, "c": 1.0}, include_between_model_variance=False)
     df = pd.DataFrame(
         [
             {"model_name": "a", "margin_mean": 3.0, "margin_sd": 2.0},
@@ -61,7 +65,8 @@ def test_spread_margin_sd_weighted_rms_uses_only_sd_values(tmp_path, monkeypatch
 
 def test_spread_components_weights_sum_to_one(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    ens = SpreadWeightedAverageEnsemble("TEST", "2025")
+    # Provide explicit weights (Issue #2 fix: models default to 0.0 without weights)
+    ens = SpreadWeightedAverageEnsemble("TEST", "2025", weights={"a": 1.0, "b": 1.0, "c": 1.0})
     df = pd.DataFrame(
         [
             {"model_name": "a", "margin_mean": 3.0, "margin_sd": 2.0},
@@ -71,13 +76,15 @@ def test_spread_components_weights_sum_to_one(tmp_path, monkeypatch):
     )
     _, _, comps = ens.combine(df)
     comps_list = json.loads(comps)
-    weight_sum = sum(c["w"] for c in comps_list if c["margin_mean"] is not None)
+    # New schema uses "weight" and "value" instead of "w" and "margin_mean"
+    weight_sum = sum(c["weight"] for c in comps_list if c["value"] is not None)
     assert weight_sum == pytest.approx(1.0, rel=1e-6)
 
 
 def test_spread_between_variance_agreement_is_noop(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    ens = SpreadWeightedAverageEnsemble("TEST", "2025", include_between_model_variance=True)
+    # Provide explicit weights (Issue #2 fix: models default to 0.0 without weights)
+    ens = SpreadWeightedAverageEnsemble("TEST", "2025", weights={"a": 1.0, "b": 1.0}, include_between_model_variance=True)
     df = pd.DataFrame(
         [
             {"model_name": "a", "margin_mean": 4.0, "margin_sd": 2.0},
@@ -91,8 +98,9 @@ def test_spread_between_variance_agreement_is_noop(tmp_path, monkeypatch):
 
 def test_spread_between_variance_disagreement_increases_sd(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    baseline = SpreadWeightedAverageEnsemble("TEST", "2025", include_between_model_variance=False)
-    adjusted = SpreadWeightedAverageEnsemble("TEST", "2025", include_between_model_variance=True)
+    # Provide explicit weights (Issue #2 fix: models default to 0.0 without weights)
+    baseline = SpreadWeightedAverageEnsemble("TEST", "2025", weights={"a": 1.0, "b": 1.0}, include_between_model_variance=False)
+    adjusted = SpreadWeightedAverageEnsemble("TEST", "2025", weights={"a": 1.0, "b": 1.0}, include_between_model_variance=True)
     df = pd.DataFrame(
         [
             {"model_name": "a", "margin_mean": 3.0, "margin_sd": 2.0},
@@ -108,7 +116,8 @@ def test_spread_between_variance_disagreement_increases_sd(tmp_path, monkeypatch
 
 def test_spread_between_variance_handles_missing_values(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    ens = SpreadWeightedAverageEnsemble("TEST", "2025", include_between_model_variance=True)
+    # Provide explicit weights (Issue #2 fix: models default to 0.0 without weights)
+    ens = SpreadWeightedAverageEnsemble("TEST", "2025", weights={"a": 1.0, "b": 1.0, "c": 1.0}, include_between_model_variance=True)
     df = pd.DataFrame(
         [
             {"model_name": "a", "margin_mean": 4.0, "margin_sd": 2.0},
@@ -123,7 +132,8 @@ def test_spread_between_variance_handles_missing_values(tmp_path, monkeypatch):
 
 def test_spread_between_variance_skipped_when_single_var_component(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    ens = SpreadWeightedAverageEnsemble("TEST", "2025", include_between_model_variance=True)
+    # Provide explicit weights (Issue #2 fix: models default to 0.0 without weights)
+    ens = SpreadWeightedAverageEnsemble("TEST", "2025", weights={"a": 1.0, "b": 1.0}, include_between_model_variance=True)
     df = pd.DataFrame(
         [
             {"model_name": "a", "margin_mean": 4.0, "margin_sd": 2.0},

@@ -81,7 +81,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--models",
         nargs="+",
         required=True,
-        help="Space-separated list of model names to ensemble (e.g., bradley-terry elo toor)",
+        help=(
+            "Space-separated list of model names (kept for compatibility). "
+            "Ensemble membership now follows the ensemble config for each market."
+        ),
     )
     parser.add_argument(
         "--markets",
@@ -168,7 +171,7 @@ def _main(argv: list[str] | None = None) -> int:
         _LOG.info("=" * 80)
 
         for market_name, (calibrator, saved_path) in results.items():
-            status = f"✓ {saved_path}" if saved_path else "✓ Fitted (not saved)"
+            status = f"OK {saved_path}" if saved_path else "OK Fitted (not saved)"
             _LOG.info(f"{market_name}: {status}")
             _LOG.info(f"  Metadata: {calibrator.metadata}")
 

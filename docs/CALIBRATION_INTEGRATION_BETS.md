@@ -152,7 +152,6 @@ This automatically:
 - If no calibrator exists → Uses raw predictions (no error)
 - If calibration fails → Falls back to raw predictions (logged warning)
 - Existing schedule without calibrators still works normally
-- Old `calibrate-history` command still available (deprecated)
 
 ### Notes
 

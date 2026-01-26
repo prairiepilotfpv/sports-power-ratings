@@ -1,5 +1,9 @@
 ## Standalone Calibration System Implementation Summary
 
+**Update (January 26, 2026):** The legacy betting-integrated calibration system
+(`calibrate-history`, `pipelines.history_calibration`) has been removed. This
+document describes the standalone system only.
+
 ### Completed Work
 
 A **completely independent, standalone calibration system** has been created that is:
@@ -32,9 +36,9 @@ A **completely independent, standalone calibration system** has been created tha
   - Filters by date range if needed
   - Returns: game_id, date, home_team, away_team, home_score, away_score
   
-- `generate_model_predictions()`: Generate predictions from models
-  - Loads models and their effective parameters
-  - Calls `forecast_game()` method (generic model interface)
+- `generate_model_predictions()`: Generate backtest predictions from models
+  - Uses the backtest runner (walk-forward, no leakage)
+  - Produces per-game ML/SPREAD/TOTAL outputs
   - Returns: DataFrame with market-specific predictions
   
 - `build_ml_calibration_dataset()`: ML market calibration data
@@ -93,7 +97,7 @@ python -m calibration.standalone_cli \
 #### 1. No Betting Pipeline Integration
 - ❌ Does NOT read from `bets_predictions` table
 - ❌ Does NOT assume betting schema (selection, line, model_prob columns)
-- ❌ Does NOT depend on `pipelines.history_calibration` or `pipelines.calibration_utils`
+- ❌ Does NOT depend on legacy betting calibration modules
 - ✅ Completely independent workflow
 
 #### 2. Raw Game Data Only
@@ -187,7 +191,7 @@ python -m calibration.standalone_cli \
 
 ### Limitations & Future Work
 
-1. **Backward Compatibility**: The old `calibrate-history` command in `pipeline.py` still exists
+1. **Backward Compatibility**: The old betting-integrated command has been removed
    - It's now deprecated; users should use the standalone CLI
    - Can be removed in future refactor
 
@@ -207,7 +211,7 @@ python -m calibration.standalone_cli \
 ### Files NOT Modified
 
 - ✅ `src/cli/pipeline.py` - NOT changed (backward compatibility)
-- ✅ `src/pipelines/history_calibration.py` - NOT removed (may still be used elsewhere)
+- ✅ Legacy `src/pipelines/history_calibration.py` removed
 - ✅ `src/data/bets_repository.py` - NOT changed (betting pipeline intact)
 - ✅ `src/pipelines/schedule.py` - NOT changed (betting pipeline intact)
 

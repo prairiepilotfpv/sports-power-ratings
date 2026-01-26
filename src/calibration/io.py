@@ -80,34 +80,64 @@ def load_latest_calibrator(
     Returns:
         Loaded calibrator object, or None if not found
     """
-    # Construct path: outputs/calibrators/{sport}/{season}/{source_id}/{market}/
-    calib_dir = Path("outputs") / "calibrators" / sport / season / source_id / market
-    
-    if not calib_dir.exists():
-        _LOG.debug(f"[load_latest_calibrator] Calibrator directory not found: {calib_dir}")
-        return None
-    
-    # Find latest calibrator.pkl
-    pkl_files = sorted(calib_dir.glob("calibrator.pkl"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not pkl_files:
-        _LOG.debug(f"[load_latest_calibrator] No calibrator files in {calib_dir}")
-        return None
-    
-    latest_pkl = pkl_files[0]
-    try:
-        calibrator = joblib.load(str(latest_pkl))
-        
-        # Load metadata if available
-        metadata_path = calib_dir / "metadata.json"
-        if metadata_path.exists():
-            with open(metadata_path, "r") as f:
-                metadata = json.load(f)
-                calibrator.metadata = metadata
-        else:
-            calibrator.metadata = {"market": market, "source_id": source_id}
-        
-        _LOG.info(f"[load_latest_calibrator] Loaded {market} calibrator from {latest_pkl}")
-        return calibrator
-    except Exception as e:
-        _LOG.warning(f"[load_latest_calibrator] Failed to load {latest_pkl}: {e}")
-        return None
+    def _candidate_dirs(key: str) -> list[Path]:
+        base = Path("outputs") / "calibrators" / sport
+        dirs: list[Path] = []
+        if season:
+            if market:
+                dirs.append(base / season / key / market)
+            dirs.append(base / season / key)
+        if market:
+            dirs.append(base / key / market)
+        dirs.append(base / key)
+        return dirs
+
+    def _latest_calibrator_file(calib_dir: Path) -> Path | None:
+        if not calib_dir.exists():
+            return None
+        calibrator_pkl = calib_dir / "calibrator.pkl"
+        if calibrator_pkl.exists():
+            return calibrator_pkl
+        joblib_files = list(calib_dir.glob("*.joblib"))
+        pkl_files = list(calib_dir.glob("*.pkl"))
+        candidates = joblib_files + pkl_files
+        if not candidates:
+            return None
+        return sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+
+    # Prefer source_id-based layout, then fall back to model-based legacy layouts.
+    keys = [source_id]
+    if model and model not in keys:
+        keys.append(model)
+
+    for key in keys:
+        for calib_dir in _candidate_dirs(key):
+            latest_file = _latest_calibrator_file(calib_dir)
+            if latest_file is None:
+                continue
+            try:
+                calibrator = joblib.load(str(latest_file))
+
+                # Load metadata if available
+                metadata_path = calib_dir / "metadata.json"
+                if metadata_path.exists():
+                    with open(metadata_path, "r") as f:
+                        metadata = json.load(f)
+                        calibrator.metadata = metadata
+                elif not hasattr(calibrator, "metadata"):
+                    calibrator.metadata = {"market": market, "source_id": key}
+
+                _LOG.info(f"[load_latest_calibrator] Loaded {market} calibrator from {latest_file}")
+                return calibrator
+            except Exception as e:
+                _LOG.warning(f"[load_latest_calibrator] Failed to load {latest_file}: {e}")
+                return None
+
+    _LOG.debug(
+        "[load_latest_calibrator] No calibrator found for sport=%s season=%s key=%s market=%s",
+        sport,
+        season,
+        source_id,
+        market,
+    )
+    return None

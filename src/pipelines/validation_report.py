@@ -1,4 +1,16 @@
-"""System validation report for tuning, ensembles, and EV calculations."""
+"""System validation report for tuning, ensembles, EV calculations, and calibration.
+
+Human guide:
+- This report should make it obvious whether ensembles, backtests, and calibration
+  artifacts exist and are healthy for the given sport/season.
+
+AI guide:
+- When adding new validation sections, follow the pattern:
+  1) compute a report dict entry
+  2) add a DataFrame in `frames`
+  3) wire sheets in `_write_validation_workbook`
+  4) update `summary` with a small count/flag
+"""
 
 from __future__ import annotations
 
@@ -22,6 +34,10 @@ from pipelines.model_params import resolve_model_market_params_with_metadata
 from pipelines.market_utils import _metric_name_for_market
 from utils.odds import american_to_implied, expected_value
 from backtest.runner import load_games_df_from_db, run_backtest
+from calibration.historical_calibration import calibrate_sport_season
+from calibration.io import load_latest_calibrator
+from ensemble.config import load_ensemble_config
+from markets.base import Market
 
 
 VALID_MARKETS = ("ML", "SPREAD", "TOTAL")
@@ -188,6 +204,124 @@ def _history_frame(
             ]
         )
     return pd.DataFrame(rows)
+
+
+def _resolve_calibration_models(
+    *, sport: str, season: str
+) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    """Resolve ensemble-config models for calibration (per market).
+
+    Returns (unique_models, market_entries).
+    """
+    config = load_ensemble_config(sport=sport, season=season, available_models=None)
+    markets = config.get("markets", {}) or {}
+    market_entries: dict[str, dict[str, Any]] = {}
+    models: set[str] = set()
+    for market_key, entry in markets.items():
+        if not isinstance(entry, dict):
+            continue
+        market_entries[market_key] = entry
+        for m in entry.get("models") or []:
+            if m:
+                models.add(str(m))
+    return sorted(models), market_entries
+
+
+def _calibration_status(
+    *,
+    db_path: Path,
+    sport: str,
+    season: str,
+    source_id: str,
+    run_calibration: bool,
+    calibration_start: str | None,
+    calibration_end: str | None,
+) -> tuple[dict[str, Any], pd.DataFrame, list[str]]:
+    """Ensure calibration artifacts exist and report status per market."""
+    issues: list[str] = []
+    rows: list[dict[str, Any]] = []
+    report: dict[str, Any] = {
+        "source_id": source_id,
+        "run_calibration": run_calibration,
+        "start_date": calibration_start,
+        "end_date": calibration_end,
+    }
+
+    models, market_entries = _resolve_calibration_models(sport=sport, season=season)
+    report["models"] = models
+    report["markets"] = list(market_entries.keys())
+    if not models:
+        issues.append("calibration_models_missing")
+        run_calibration = False
+
+    def _market_dir(market: Market) -> Path:
+        return market.value
+
+    def _metadata_for_market(market: Market) -> dict[str, Any]:
+        # Prefer metadata.json to avoid loading pickled objects unless needed.
+        from markets.registry import get_market_spec
+
+        calib_dir = get_market_spec(market).calibrator_dir(sport, season, source_id)
+        meta_path = calib_dir / "metadata.json"
+        if meta_path.exists():
+            try:
+                return json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
+        # Fallback: load calibrator object metadata if available.
+        try:
+            calibrator = load_latest_calibrator(
+                sport=sport,
+                season=season,
+                model=source_id,
+                market=market.value if market == Market.ML else market.value.lower(),
+                source_id=source_id,
+            )
+            return getattr(calibrator, "metadata", {}) if calibrator else {}
+        except Exception:
+            return {}
+
+    def _calibrator_path(market: Market) -> Path:
+        from markets.registry import get_market_spec
+
+        calib_dir = get_market_spec(market).calibrator_dir(sport, season, source_id)
+        return calib_dir / "calibrator.pkl"
+
+    if run_calibration:
+        try:
+            calibrate_sport_season(
+                db_path=db_path,
+                sport=sport,
+                season=season,
+                models=models,
+                markets=[Market.ML, Market.SPREAD, Market.TOTAL],
+                source_id=source_id,
+                method="auto",
+                start_date=calibration_start,
+                end_date=calibration_end,
+            )
+        except Exception as exc:
+            issues.append(f"calibration_run_failed={exc}")
+
+    for market in (Market.ML, Market.SPREAD, Market.TOTAL):
+        path = _calibrator_path(market)
+        exists = path.exists()
+        meta = _metadata_for_market(market) if exists else {}
+        rows.append(
+            {
+                "market": market.value,
+                "source_id": source_id,
+                "exists": exists,
+                "path": str(path),
+                "method": meta.get("method"),
+                "n": meta.get("n"),
+                "saved_at": meta.get("saved_at"),
+            }
+        )
+        if not exists:
+            issues.append(f"calibrator_missing_{market.value}")
+
+    return report, pd.DataFrame(rows), issues
 
 
 def _table_counts(conn: sqlite3.Connection) -> dict[str, int]:
@@ -541,6 +675,10 @@ def build_validation_report(
     backtest_end: str | None = None,
     backtest_rolling_days: int | None = None,
     backtest_rolling_games: int | None = None,
+    run_calibration: bool = True,
+    calibration_source_id: str = "historical",
+    calibration_start: str | None = None,
+    calibration_end: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, pd.DataFrame]]:
     report: dict[str, Any] = {
         "sport": sport,
@@ -559,6 +697,17 @@ def build_validation_report(
             "rolling_games": backtest_rolling_games,
             "models": backtest_models or list_backtest_models(),
         }
+    if calibration_start is None and backtest_start:
+        calibration_start = backtest_start
+    if calibration_end is None and backtest_end:
+        calibration_end = backtest_end
+
+    report["calibration"] = {
+        "source_id": calibration_source_id,
+        "run_calibration": run_calibration,
+        "start_date": calibration_start,
+        "end_date": calibration_end,
+    }
 
     db_path = Path(db_path)
     if not db_path.exists():
@@ -774,6 +923,24 @@ def build_validation_report(
         if bt_issues:
             report["issues"].extend(bt_issues)
 
+    # Calibration status (and optional run to ensure artifacts exist)
+    try:
+        calib_report, calib_frame, calib_issues = _calibration_status(
+            db_path=db_path,
+            sport=sport,
+            season=season,
+            source_id=calibration_source_id,
+            run_calibration=run_calibration,
+            calibration_start=calibration_start,
+            calibration_end=calibration_end,
+        )
+        report["calibration"] = calib_report
+        frames["calibration_status"] = calib_frame
+        if calib_issues:
+            report["issues"].extend(calib_issues)
+    except Exception as exc:
+        report["issues"].append(f"calibration_status_failed={exc}")
+
     # Optional: ML ensemble weight validation (uses bets_predictions)
     try:
         from pipelines.ensemble_weight_validation import validate_ensemble_ml_weights
@@ -807,6 +974,10 @@ def build_validation_report(
         summary["backtest_runs"] = int(len(bt_df))
         if "error" in bt_df.columns:
             summary["backtest_failures"] = int(bt_df["error"].notna().sum())
+    if "calibration_status" in frames:
+        cal_df = frames["calibration_status"]
+        summary["calibration_missing"] = int((~cal_df["exists"]).sum())
+        summary["calibration_markets"] = int(len(cal_df))
     report["summary"] = summary
 
     return report, frames
@@ -958,6 +1129,7 @@ def _write_validation_workbook(
             "EV_VALIDATION": frames.get("ev_validation"),
             "BACKTEST_METRICS": frames.get("backtest_metrics"),
             "BACKTEST_CALIBRATION": frames.get("backtest_calibration"),
+            "CALIBRATION_STATUS": frames.get("calibration_status"),
         }
         for sheet, frame in frame_map.items():
             (frame if frame is not None else pd.DataFrame()).to_excel(
@@ -1043,6 +1215,10 @@ def run_validation_report(
     backtest_rolling_days: int | None = None,
     backtest_rolling_games: int | None = None,
     keep_backtest_artifacts: bool = False,
+    run_calibration: bool = True,
+    calibration_source_id: str = "historical",
+    calibration_start: str | None = None,
+    calibration_end: str | None = None,
 ) -> ValidationReportOutputs:
     prefix = f"{sport}_{season}_{_utcnow_stamp()}"
     out_dir = Path(output_dir) if output_dir is not None else (Path("outputs") / "validation" / sport / season)
@@ -1062,6 +1238,10 @@ def run_validation_report(
         backtest_end=backtest_end,
         backtest_rolling_days=backtest_rolling_days,
         backtest_rolling_games=backtest_rolling_games,
+        run_calibration=run_calibration,
+        calibration_source_id=calibration_source_id,
+        calibration_start=calibration_start,
+        calibration_end=calibration_end,
     )
     outputs = write_validation_report(
         report=report,
@@ -1082,6 +1262,10 @@ def run_validation_report(
             "backtest_rolling_days": backtest_rolling_days,
             "backtest_rolling_games": backtest_rolling_games,
             "keep_backtest_artifacts": keep_backtest_artifacts,
+            "run_calibration": run_calibration,
+            "calibration_source_id": calibration_source_id,
+            "calibration_start": calibration_start,
+            "calibration_end": calibration_end,
         }
         save_validation_run(
             db_path,

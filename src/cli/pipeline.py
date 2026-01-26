@@ -528,6 +528,24 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Keep per-run backtest artifacts under outputs/validation/.../backtests.",
     )
+    validation_report_parser.add_argument(
+        "--skip-calibration",
+        action="store_true",
+        help="Skip running/checking standalone calibration during validation.",
+    )
+    validation_report_parser.add_argument(
+        "--calibration-source-id",
+        default="historical",
+        help="Calibration source id (default: historical).",
+    )
+    validation_report_parser.add_argument(
+        "--calibration-start",
+        help="Optional calibration start date (YYYY-MM-DD).",
+    )
+    validation_report_parser.add_argument(
+        "--calibration-end",
+        help="Optional calibration end date (YYYY-MM-DD).",
+    )
 
     backtest_parser = subparsers.add_parser(
         "backtest",
@@ -1053,31 +1071,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Optional SQLite DB path override for historical games.",
     )
 
-    calibrate_history_parser = subparsers.add_parser(
-        "calibrate-history",
-        help="Fit probability calibrators from scheduled projections (no bets data).",
-    )
-    calibrate_history_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
-    calibrate_history_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
-    calibrate_history_parser.add_argument("--start-date", help="Earliest game date to include (YYYY-MM-DD).")
-    calibrate_history_parser.add_argument("--end-date", help="Latest game date to include (YYYY-MM-DD).")
-    calibrate_history_parser.add_argument(
-        "--market-source",
-        action="append",
-        required=True,
-        help="Mapping for each market in the form MARKET=source_id (repeat for every market).",
-    )
-    calibrate_history_parser.add_argument(
-        "--method",
-        choices=["auto", "platt", "isotonic"],
-        default="auto",
-        help="Calibrator method (default: auto).",
-    )
-    calibrate_history_parser.add_argument(
-        "--db",
-        help="Optional SQLite DB path override for the sport/season.",
-    )
-
     return parser.parse_args(argv)
 
 
@@ -1571,6 +1564,10 @@ def _run_validation_report(args: argparse.Namespace) -> None:
         backtest_rolling_days=getattr(args, "backtest_rolling_days", None),
         backtest_rolling_games=getattr(args, "backtest_rolling_games", None),
         keep_backtest_artifacts=bool(getattr(args, "keep_backtest_artifacts", False)),
+        run_calibration=not bool(getattr(args, "skip_calibration", False)),
+        calibration_source_id=getattr(args, "calibration_source_id", "historical"),
+        calibration_start=getattr(args, "calibration_start", None),
+        calibration_end=getattr(args, "calibration_end", None),
     )
     print(f"Validation report -> {outputs.report_path}")
     print(f"Validation workbook -> {outputs.workbook_path}")
@@ -1999,56 +1996,6 @@ def _run_calibrate_ensemble(args: argparse.Namespace) -> None:
     print(f"Saved calibrator -> {out_path}")
 
 
-def _parse_market_sources(raw_values: list[str]) -> list[tuple[Market, str]]:
-    from markets.base import Market
-
-    parsed: list[tuple[Market, str]] = []
-    for raw in raw_values or []:
-        if "=" not in raw:
-            raise ValueError("--market-source requires MARKET=source_id")
-        market_part, source_part = raw.split("=", 1)
-        market_key = market_part.strip().upper()
-        if not market_key:
-            raise ValueError("--market-source MARKET cannot be empty")
-        try:
-            market_enum = Market[market_key]
-        except KeyError as exc:
-            raise ValueError(f"Unknown market '{market_key}'") from exc
-        source = source_part.strip()
-        if not source:
-            raise ValueError("--market-source source_id cannot be empty")
-        parsed.append((market_enum, source))
-    if not parsed:
-        raise ValueError("At least one --market-source is required")
-    return parsed
-
-
-def _run_calibrate_history(args: argparse.Namespace) -> None:
-    _ensure_src_on_path()
-    from pipelines.history_calibration import calibrate_market_from_history
-
-    db_path = _resolve_db_path(args)
-    if db_path is None:
-        raise ValueError("db_path must be provided via --db or sport/season")
-    start_date = _optional_iso_date(args.start_date, field="--start-date")
-    end_date = _optional_iso_date(args.end_date, field="--end-date")
-    market_sources = _parse_market_sources(getattr(args, "market_source", []))
-    for market, source in market_sources:
-        # History-only calibrations read forecasts/outcomes, not bet stakes, so each
-        # market can be tuned safely from the upstream prediction tables.
-        out_path = calibrate_market_from_history(
-            db_path=db_path,
-            sport=args.sport,
-            season=args.season,
-            market=market,
-            source=source,
-            start_date=start_date,
-            end_date=end_date,
-            method=args.method,
-        )
-        print(f"Saved calibrator for {market.value} -> {out_path}")
-
-
 def main(argv: list[str] | None = None) -> None:
     """CLI entry point: route subcommands to their handlers."""
     import logging
@@ -2102,8 +2049,6 @@ def main(argv: list[str] | None = None) -> None:
         _run_init_ensemble_config(args)
     elif args.command == "calibrate":
         _run_calibrate_ensemble(args)
-    elif args.command == "calibrate-history":
-        _run_calibrate_history(args)
     elif args.command == "activate-tuning":
         _run_activate_tuning(args)
     elif args.command == "tuning-status":

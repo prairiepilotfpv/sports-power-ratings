@@ -2693,9 +2693,8 @@ def build_schedule_excel_report(
         total_ensemble_id = ensemble_ids.get(Market.TOTAL.name, "ensemble_total_v1")
 
         # CRITICAL: Always use the ensemble source IDs for SPREAD and TOTAL markets.
-        # This ensures calibrate-history can find predictions by their canonical ensemble sources,
+        # These IDs are the canonical identifiers for where predictions came from,
         # even when individual market forecasts aren't applied to the BETS schedule.
-        # The ensemble IDs are canonical identifiers for where predictions came from.
         spread_source_id = spread_ensemble_id
         total_source_id = total_ensemble_id
         ml_source_id = (

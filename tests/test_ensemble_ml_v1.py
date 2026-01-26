@@ -10,7 +10,8 @@ from ensemble.io import load_ml_weights
 
 def test_ml_weighted_equal_weights(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    ens = MLWeightedAverageEnsemble("TESTSPORT", "2025")
+    # Provide explicit equal weights (Issue #2 fix: models default to 0.0 without weights)
+    ens = MLWeightedAverageEnsemble("TESTSPORT", "2025", weights={"a": 1.0, "b": 1.0})
     df = pd.DataFrame(
         [{"model_name": "a", "p_home_win": 0.6}, {"model_name": "b", "p_home_win": 0.4}]
     )

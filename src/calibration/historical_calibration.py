@@ -28,7 +28,11 @@ import sqlite3
 from calibration.distribution import MarginalDistributionCalibrator
 from markets.base import Market
 from markets.registry import get_market_spec
-from pipelines.calibration_utils import select_calibrator
+from calibration.selection import select_calibrator
+from ensemble.config import load_ensemble_config
+from ensemble.ml_v1 import MLWeightedAverageEnsemble
+from ensemble.spread_v1 import SpreadWeightedAverageEnsemble
+from ensemble.total_v1 import TotalWeightedAverageEnsemble
 
 _LOG = logging.getLogger(__name__)
 
@@ -86,97 +90,179 @@ def generate_model_predictions(
     sport: str,
     season: str,
     models: list[str],
-    market: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> pd.DataFrame:
-    """Generate ensemble predictions for games using specified models.
+    """Generate walk-forward backtest predictions for calibration.
 
-    This generates raw predictions (before calibration). For each game and model,
-    we get the model's forecast which includes both probability and distribution info.
+    This runs the backtest engine per model to avoid data leakage and returns
+    per-game predictions that can be calibrated across ML/SPREAD/TOTAL markets.
 
     Args:
-        db_path: Path to database (for loading model params)
-        games_df: DataFrame of games to predict for
+        db_path: Path to database (for context/logging only)
+        games_df: DataFrame of completed games to backtest
         sport: Sport code
         season: Season identifier
         models: List of model names to ensemble
-        market: Market to predict for ("ML", "spread", or "total")
+        start_date: Optional evaluation start date (YYYY-MM-DD)
+        end_date: Optional evaluation end date (YYYY-MM-DD)
 
     Returns:
-        DataFrame with predictions, aggregated across models
+        DataFrame with per-game predictions (one row per game, ensemble-averaged)
     """
-    from pipelines.model_params import resolve_effective_params
-    from models.registry import get_model
+    from backtest.runner import run_backtest
+    from models.registry import get_backtest_model
+    import tempfile
+
+    if games_df.empty:
+        return pd.DataFrame()
 
     _LOG.info(
-        f"[generate_model_predictions] Generating {market} predictions "
-        f"for {len(games_df)} games from {len(models)} models"
+        f"[generate_model_predictions] Running backtests for {len(models)} model(s) "
+        f"on {len(games_df)} games"
     )
 
-    all_predictions = []
+    # Ensure required columns are present for backtest models.
+    games = games_df.copy()
+    if "sport" not in games.columns:
+        games["sport"] = sport
+    if "season" not in games.columns:
+        games["season"] = season
+
+    if start_date is None and "date" in games.columns:
+        try:
+            start_date = pd.to_datetime(games["date"], errors="coerce").min().date().isoformat()
+        except Exception:
+            start_date = None
+    if end_date is None and "date" in games.columns:
+        try:
+            end_date = pd.to_datetime(games["date"], errors="coerce").max().date().isoformat()
+        except Exception:
+            end_date = None
+
+    all_frames: list[pd.DataFrame] = []
 
     for model_name in models:
-        _LOG.debug(f"[generate_model_predictions] Getting predictions from {model_name}")
         try:
-            # Get model and resolve active parameters
-            model_cls = get_model(model_name)
-            model_instance = model_cls(sport, season)
-
-            resolved = resolve_effective_params(
-                db_path=db_path,
-                sport=sport,
-                season=season,
-                model=model_name,
-                market=market.name,
-            )
-
-            if resolved.params:
-                model_instance.set_params(**resolved.params)
-
-            # Generate predictions for each game
-            for _, game_row in games_df.iterrows():
-                try:
-                    # Get model's GamePrediction for this market
-                    pred = model_instance.forecast_game(
-                        home_team=game_row["home_team"],
-                        away_team=game_row["away_team"],
-                        date=game_row["date"],
-                        game_id=game_row.get("game_id"),
-                    )
-
-                    if pred is None:
-                        continue
-
-                    # Extract market-specific prediction
-                    pred_dict = {
-                        "game_id": game_row["game_id"],
-                        "model": model_name,
-                        "market": market.name,
-                    }
-
-                    if market == Market.ML:
-                        pred_dict["p_home_win"] = pred.p_home_win
-                    elif market == Market.SPREAD:
-                        pred_dict["margin_mean"] = pred.margin_mean
-                        pred_dict["margin_sd"] = pred.margin_sd
-                    elif market == Market.TOTAL:
-                        pred_dict["total_mean"] = pred.total_mean
-                        pred_dict["total_sd"] = pred.total_sd
-
-                    all_predictions.append(pred_dict)
-
-                except Exception as e:
-                    _LOG.debug(
-                        f"[generate_model_predictions] Failed to predict {game_row['game_id']} "
-                        f"with {model_name}: {e}"
-                    )
-
+            model_cls = get_backtest_model(model_name)
         except Exception as e:
-            _LOG.warning(
-                f"[generate_model_predictions] Failed to load model {model_name}: {e}"
-            )
+            _LOG.warning(f"[generate_model_predictions] Unknown model {model_name}: {e}")
+            continue
 
-    _LOG.info(f"[generate_model_predictions] Generated {len(all_predictions)} predictions")
-    return pd.DataFrame(all_predictions) if all_predictions else pd.DataFrame()
+        _LOG.info(f"[generate_model_predictions] Backtesting {model_name}")
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                outputs = run_backtest(
+                    model_factory=lambda: model_cls(),
+                    games_df=games,
+                    start_date=start_date,
+                    end_date=end_date,
+                    output_dir=Path(tmpdir),
+                    model_name=model_name,
+                    db_path=None,
+                    sport=sport,
+                    season=season,
+                    calibrate=False,
+                )
+            preds = outputs.predictions.copy()
+        except Exception as e:
+            _LOG.warning(f"[generate_model_predictions] Backtest failed for {model_name}: {e}")
+            continue
+
+        if preds.empty:
+            _LOG.warning(f"[generate_model_predictions] No predictions for {model_name}")
+            continue
+
+        preds["model_name"] = model_name
+        for col in (
+            "p_home_win",
+            "margin_mean",
+            "margin_sd",
+            "total_mean",
+            "total_sd",
+            "game_id",
+        ):
+            if col not in preds.columns:
+                preds[col] = pd.NA
+        all_frames.append(
+            preds[
+                [
+                    "game_id",
+                    "model_name",
+                    "p_home_win",
+                    "margin_mean",
+                    "margin_sd",
+                    "total_mean",
+                    "total_sd",
+                ]
+            ]
+        )
+
+    if not all_frames:
+        _LOG.warning("[generate_model_predictions] No prediction frames produced")
+        return pd.DataFrame()
+
+    combined = pd.concat(all_frames, ignore_index=True)
+    _LOG.info(
+        "[generate_model_predictions] Generated per-model predictions for %d rows",
+        len(combined),
+    )
+    return combined
+
+
+def _ensemble_predictions_for_market(
+    preds_df: pd.DataFrame,
+    *,
+    market: Market,
+    sport: str,
+    season: str,
+    ensemble_id: str,
+    models: list[str],
+    weights: dict[str, float] | None,
+) -> pd.DataFrame:
+    if preds_df.empty or not models:
+        return pd.DataFrame()
+
+    df = preds_df.copy()
+    if "model_name" not in df.columns:
+        return pd.DataFrame()
+    df = df[df["model_name"].isin(set(models))]
+    if df.empty:
+        return pd.DataFrame()
+
+    rows: list[dict[str, float | str | None]] = []
+    if market == Market.ML:
+        ensemble = MLWeightedAverageEnsemble(
+            sport=sport, season=season, ensemble_id=ensemble_id, weights=weights
+        )
+        for game_id, group in df.groupby("game_id"):
+            p, _components = ensemble.combine(group[["model_name", "p_home_win"]])
+            rows.append({"game_id": game_id, "p_home_win": p})
+        return pd.DataFrame(rows)
+
+    if market == Market.SPREAD:
+        ensemble = SpreadWeightedAverageEnsemble(
+            sport=sport, season=season, ensemble_id=ensemble_id, weights=weights
+        )
+        for game_id, group in df.groupby("game_id"):
+            mean, sd, _components = ensemble.combine(
+                group[["model_name", "margin_mean", "margin_sd"]]
+            )
+            rows.append({"game_id": game_id, "margin_mean": mean, "margin_sd": sd})
+        return pd.DataFrame(rows)
+
+    if market == Market.TOTAL:
+        ensemble = TotalWeightedAverageEnsemble(
+            sport=sport, season=season, ensemble_id=ensemble_id, weights=weights
+        )
+        for game_id, group in df.groupby("game_id"):
+            mean, sd, _components = ensemble.combine(
+                group[["model_name", "total_mean", "total_sd"]]
+            )
+            rows.append({"game_id": game_id, "total_mean": mean, "total_sd": sd})
+        return pd.DataFrame(rows)
+
+    return pd.DataFrame()
 
 
 def build_ml_calibration_dataset(
@@ -374,16 +460,19 @@ def fit_calibrator_for_market(
     saved_path = None
     if sport and season and source_id:
         try:
+            from calibration.io import save_calibrator
+
             spec = get_market_spec(market)
             calib_dir = spec.calibrator_dir(sport, season, source_id)
             calib_dir.mkdir(parents=True, exist_ok=True)
-
-            from datetime import datetime, timezone
-
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            saved_path = calib_dir / f"{source_id}_{timestamp}.joblib"
-
-            calibrator.save(saved_path)
+            meta = dict(getattr(calibrator, "metadata", {}) or {})
+            meta.update({"sport": sport, "season": season, "source_id": source_id})
+            saved_path = save_calibrator(
+                calibrator,
+                calib_dir,
+                market=market.value,
+                metadata=meta,
+            )
             _LOG.info(f"[fit_calibrator_for_market] Saved calibrator to {saved_path}")
         except Exception as e:
             _LOG.warning(f"[fit_calibrator_for_market] Failed to save calibrator: {e}")
@@ -434,6 +523,41 @@ def calibrate_sport_season(
         f"models={models}, markets={[m.name for m in markets]}"
     )
 
+    # Resolve ensemble config (models + weights) and restrict to configured models.
+    requested_models = list(models or [])
+    ensemble_config = load_ensemble_config(
+        sport=sport,
+        season=season,
+        available_models=None,
+    )
+    market_configs = ensemble_config.get("markets", {})
+    market_model_map: dict[Market, list[str]] = {}
+    market_weight_map: dict[Market, dict[str, float] | None] = {}
+    market_ensemble_ids: dict[Market, str] = {}
+    for market in markets:
+        market_key = market.name
+        entry = market_configs.get(market_key, {})
+        market_models = list(entry.get("models") or [])
+        market_weights = entry.get("weights")
+        ensemble_id = str(entry.get("ensemble_id") or source_id).strip() or source_id
+        market_model_map[market] = market_models
+        market_weight_map[market] = market_weights
+        market_ensemble_ids[market] = ensemble_id
+
+    configured_models = sorted(
+        {m for models_for_market in market_model_map.values() for m in models_for_market}
+    )
+    if requested_models:
+        requested_set = {m.strip().lower() for m in requested_models if str(m).strip()}
+        missing_from_request = [m for m in configured_models if m not in requested_set]
+        if missing_from_request:
+            _LOG.info(
+                "[calibrate_sport_season] Using ensemble-config models not listed in --models: %s",
+                missing_from_request,
+            )
+    if not configured_models:
+        raise ValueError("No configured ensemble models available for calibration.")
+
     # Load completed games
     games_df = load_completed_games(
         db_path,
@@ -446,34 +570,56 @@ def calibrate_sport_season(
     if games_df.empty:
         raise ValueError(f"No completed games found for {sport}/{season}")
 
-    # Generate predictions for each market
+    # Generate predictions once (walk-forward backtest) and reuse across markets.
+    preds_df = generate_model_predictions(
+        db_path,
+        games_df,
+        sport=sport,
+        season=season,
+        models=configured_models,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    if preds_df.empty:
+        _LOG.warning("[calibrate_sport_season] No predictions generated; aborting")
+        return {}
+
     results = {}
 
     for market in markets:
         try:
             _LOG.info(f"[calibrate_sport_season] Processing {market.name}")
 
-            # Generate predictions for this market
-            preds_df = generate_model_predictions(
-                db_path,
-                games_df,
+            ensemble_id = market_ensemble_ids.get(market, source_id)
+            market_models = market_model_map.get(market, [])
+            market_weights = market_weight_map.get(market)
+            _LOG.info(
+                "[calibrate_sport_season] %s ensemble_id=%s models=%s",
+                market.name,
+                ensemble_id,
+                market_models,
+            )
+            market_preds_df = _ensemble_predictions_for_market(
+                preds_df,
+                market=market,
                 sport=sport,
                 season=season,
-                models=models,
-                market=market,
+                ensemble_id=ensemble_id,
+                models=market_models,
+                weights=market_weights,
             )
-
-            if preds_df.empty:
+            if market_preds_df.empty:
                 _LOG.warning(f"[calibrate_sport_season] No predictions for {market.name}, skipping")
                 continue
 
             # Build calibration dataset (format depends on market type)
             if market == Market.ML:
-                dataset_df = build_ml_calibration_dataset(games_df, preds_df)
+                dataset_df = build_ml_calibration_dataset(games_df, market_preds_df)
             elif market == Market.SPREAD:
-                dataset_df = build_spread_calibration_dataset(games_df, preds_df)
+                dataset_df = build_spread_calibration_dataset(games_df, market_preds_df)
             elif market == Market.TOTAL:
-                dataset_df = build_total_calibration_dataset(games_df, preds_df)
+                dataset_df = build_total_calibration_dataset(games_df, market_preds_df)
             else:
                 raise ValueError(f"Unknown market: {market}")
 
