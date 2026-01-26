@@ -464,6 +464,9 @@ def load_games(
     conference: str | None = None,
 ) -> List[GameResult]:
     """Load games from SQLite, filtered by optional sport/season/division/conference."""
+    # Ensure DB and tables exist so callers don't fail when the DB file
+    # exists but hasn't been initialized yet.
+    init_db(db_path)
     filters = []
     params: list[str] = []
 
