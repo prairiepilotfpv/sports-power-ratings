@@ -94,7 +94,8 @@ def test_total_between_variance_disagreement_increases_sd(tmp_path, monkeypatch)
 
 def test_total_between_variance_handles_missing_values(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    ens = TotalWeightedAverageEnsemble("TEST", "2025", weights={"a": 1.0, "b": 1.0}, include_between_model_variance=True)
+    # Provide weights for all 3 models (Issue #2 fix: models default to 0.0 without weights)
+    ens = TotalWeightedAverageEnsemble("TEST", "2025", weights={"a": 1.0, "b": 1.0, "c": 1.0}, include_between_model_variance=True)
     df = pd.DataFrame(
         [
             {"model_name": "a", "total_mean": 200.0, "total_sd": 10.0},
