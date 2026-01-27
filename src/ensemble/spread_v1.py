@@ -180,7 +180,7 @@ class SpreadWeightedAverageEnsemble:
                 if len(models_with_sd) == 1:
                     logger.debug(
                         "SPREAD ensemble: Between-model variance skipped (only 1 model with SD: %s). "
-                        "Need ≥2 models with both value and uncertainty.",
+                        "Need >=2 models with both value and uncertainty.",
                         models_with_sd[0]
                     )
 
