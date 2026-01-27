@@ -226,12 +226,13 @@ def apply_model_prob_formulas_for_bets_sheet(ws: Worksheet) -> None:
         total_formula = _wrap_with_cal_cell(total_cal_cell, total_base)
 
         ws[model_cell].value = (
-            f"=@IF({market_cell}=\"ML\","
+            f"IF({market_cell}=\"ML\","
             f"IF({selection_cell}={home_team_cell},{home_win_cell},"
             f"IF({selection_cell}={away_team_cell},{away_win_cell},\"\")),"
             f"IF({market_cell}=\"spread\",{spread_formula},"
             f"IF({market_cell}=\"total\",{total_formula},\"\")))"
         )
+        ws[model_cell].value = f"=@{ws[model_cell].value}"
 
 
 def validate_no_ellipsis_formulas(wb: Workbook) -> None:

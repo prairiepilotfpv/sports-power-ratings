@@ -11,13 +11,22 @@ distributions better match empirical outcomes.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 import pandas as pd
 from scipy import optimize
 
 from .base import BaseCalibrator
+
+
+def _find_first_column(df: pd.DataFrame, candidates: Sequence[str]) -> str | None:
+    # Human: Prefer canonical column names but fall back to aliases if necessary.
+    # AI agent: This helper keeps downstream transformers resilient to legacy dataframes.
+    for column in candidates:
+        if column in df.columns:
+            return column
+    return None
 
 
 class MarginalDistributionCalibrator(BaseCalibrator):
@@ -90,15 +99,13 @@ class MarginalDistributionCalibrator(BaseCalibrator):
         predicted_actual = self.mean_scale * valid_df["pred_mean"] + self.mean_shift
         residuals = np.abs(y_actual - predicted_actual)
 
-        # Empirical SD of residuals vs predicted SD
-        X_sd = np.array(valid_df["pred_sd"]).reshape(-1, 1)
-        sd_model = Ridge(alpha=0.1)
-        sd_model.fit(X_sd, residuals)
-
-        self.sd_scale = float(sd_model.coef_[0])
-        if self.sd_scale < 0:
-            # If fitted scale is negative, use empirical SD ratio
-            self.sd_scale = np.mean(residuals) / np.mean(valid_df["pred_sd"])
+        # Empirical SD calibration via regularized ratio rather than underfitting ridge
+        pred_sd = valid_df["pred_sd"].astype(float)
+        mean_pred_sd_sq = float(np.mean(pred_sd ** 2))
+        mean_pred_sd_resid = float(np.mean(pred_sd * residuals))
+        gamma = mean_pred_sd_sq * 0.1 + 1e-8
+        ratio = (mean_pred_sd_resid + gamma) / (mean_pred_sd_sq + gamma)
+        self.sd_scale = max(ratio, 1e-4)
 
         self.metadata = {
             "method": "marginal_distribution",
@@ -106,24 +113,38 @@ class MarginalDistributionCalibrator(BaseCalibrator):
             "mean_scale": self.mean_scale,
             "mean_shift": self.mean_shift,
             "sd_scale": self.sd_scale,
+            "sd_regularization": float(gamma),
         }
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         """Apply calibration to predicted distributions.
 
         Args:
-            df: DataFrame with columns pred_mean and pred_sd
+            df: DataFrame with columns pred_mean and pred_sd (or their aliases)
 
         Returns:
             DataFrame with calibrated_mean and calibrated_sd
         """
-        result = df[["pred_mean", "pred_sd"]].copy()
+        mean_col = _find_first_column(df, ["pred_mean", "margin_mean", "total_mean"])
+        sd_col = _find_first_column(df, ["pred_sd", "margin_sd", "total_sd"])
+        if mean_col is None or sd_col is None:
+            missing = [name for name in ("pred_mean", "pred_sd") if name not in df.columns]
+            raise KeyError(
+                f"DataFrame must contain distribution columns; missing {missing}"
+            )
+
+        # Human: Build a normalized view of the distribution parameters before applying the transform.
+        # AI agent: Keeps `calibrated_mean`/`calibrated_sd` logic independent of column names.
+        result = pd.DataFrame({
+            "pred_mean": df[mean_col],
+            "pred_sd": df[sd_col],
+        })
 
         result["calibrated_mean"] = (
-            self.mean_scale * df["pred_mean"] + self.mean_shift
+            self.mean_scale * result["pred_mean"] + self.mean_shift
         )
         result["calibrated_sd"] = np.maximum(
-            self.sd_clip_min, self.sd_scale * df["pred_sd"]
+            self.sd_clip_min, self.sd_scale * result["pred_sd"]
         )
 
         return result

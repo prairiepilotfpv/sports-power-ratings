@@ -27,8 +27,27 @@ pip install scikit-learn
 The test suite also includes a lightweight shim so tests will still run when
 `scikit-learn` is not installed; the shim provides minimal, deterministic
 behaviour for the calibration classes and is intended for CI environments
-where installing additional dependencies is undesirable.
+where installing additional dependencies are undesirable.
 
+### Calibration Provenance Tags Tests
+
+Tests for market-specific calibration provenance tags are in `tests/test_calibration_bets_integration.py`:
+
+```bash
+# Run all calibration provenance tests
+python -m pytest tests/test_calibration_bets_integration.py::test_calibration_provenance_tags_* -v
+
+# Run specific test
+python -m pytest tests/test_calibration_bets_integration.py::test_calibration_provenance_tags_multiple_markets -v
+```
+
+These tests verify that:
+- ML calibration appends `+calibrated_ml` to win_prob_source
+- SPREAD calibration appends `+calibrated_spread` to win_prob_source
+- TOTAL calibration appends `+calibrated_total` to win_prob_source
+- Multiple market calibrations append all relevant tags
+- Tags are idempotent (no duplicates)
+- Missing win_prob_source column is handled gracefully
 
 ## Run fast unit tests only
 

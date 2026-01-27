@@ -58,8 +58,7 @@ def _calculate_missing_model_prob(bets_df: pd.DataFrame) -> pd.DataFrame:
                 home = str(row.get("home_team", "")).strip()
                 if sel == home:
                     return row.get("home_win_prob")
-                else:
-                    return row.get("away_win_prob")
+                return row.get("away_win_prob")
             out_df.loc[ml_mask, "model_prob"] = out_df[ml_mask].apply(_ml_prob, axis=1)
     
     # SPREAD market: calculate CDF probability for cover

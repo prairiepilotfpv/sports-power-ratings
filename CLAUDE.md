@@ -188,6 +188,88 @@ pre-commit run --all-files
 ### Output Safety
 When `--output` exists and `--overwrite` is not provided, CLI appends numeric suffixes (`-1`, `-2`, etc.) via `_next_available_path`.
 
+## Calibration & Market-Specific Provenance Tags
+
+### Overview
+The `schedule` command applies market-specific probability calibrators (ML, SPREAD, TOTAL) to predicted values. When calibration succeeds, provenance tags are appended to the `win_prob_source` column to provide auditability.
+
+### Implementation Details
+- **Location**: `src/pipelines/schedule.py::_apply_calibration_to_schedule_df()` (lines 333-573)
+- **Tracking**: Maintains a `calibrated_markets` set that accumulates which markets had successful calibrations
+- **Tag Appending**: After all calibrations complete, tags are appended to `win_prob_source` with '+' separator
+- **Tag Format**: 
+  - ML market → appends `calibrated_ml`
+  - SPREAD market → appends `calibrated_spread`
+  - TOTAL market → appends `calibrated_total`
+  - Example: `"elo+calibrated_ml+calibrated_spread"`
+
+### Idempotency
+Tags are appended idempotently—calling the function multiple times on the same DataFrame won't create duplicates:
+- Uses case-insensitive checking: if tag already exists (anywhere in string), it's skipped
+- Sorts tags alphabetically for deterministic output
+- Safe to call multiple times on production data
+
+### Logging
+When tags are appended, an INFO-level log is emitted:
+```
+[_apply_calibration_to_schedule_df] Appended calibration provenance tags to win_prob_source: calibrated_ml, calibrated_spread
+```
+Enable with `--log-cli-level=INFO` in pytest or check application logs.
+
+### Testing
+Comprehensive test suite in `tests/test_calibration_bets_integration.py`:
+- **test_calibration_provenance_tags_ml_market**: Single market tag appending
+- **test_calibration_provenance_tags_spread_market**: Different market tag
+- **test_calibration_provenance_tags_total_market**: Third market type
+- **test_calibration_provenance_tags_multiple_markets**: Multiple markets simultaneously
+- **test_calibration_provenance_tags_idempotent**: Idempotency verification (no duplicates)
+- **test_calibration_provenance_tags_no_column**: Graceful handling when column is missing
+
+Run with: `pytest -q tests/test_calibration_bets_integration.py -k "provenance_tags" -v`
+
+### Design Rationale
+Provenance tags enable:
+1. **Auditability**: Downstream consumers can see which calibrators were applied
+2. **Filtering**: Group/analyze predictions by calibration status (e.g., "calibrated_ml" vs "uncalibrated")
+3. **Debugging**: Identify missing calibrations or mismatches
+4. **Reproducibility**: Track model configuration changes across seasons
+
+### Deprecated: BETS Sheet Secondary Calibration
+
+**Note (2025-01-27)**: The following functions in `src/pipelines/schedule.py` are deprecated and no longer called:
+- `_apply_spread_total_calibrators()` (lines ~1628-1718)
+- `_apply_market_calibrator()` (lines ~1721-1757)
+- `_load_market_calibrators()` (lines ~1760-1800)
+
+**Why deprecated**: These functions had a fundamental interface mismatch:
+1. `_load_market_calibrators()` loaded `MarginalDistributionCalibrator` objects (for SPREAD/TOTAL)
+2. `MarginalDistributionCalibrator.transform()` expects a DataFrame with `pred_mean` and `pred_sd` columns
+3. But `_apply_market_calibrator()` called `.transform(pd.Series([raw_prob]))` expecting a probability calibrator
+4. The silent `except Exception` block caused all calibration to return `pd.NA`
+
+**Current architecture**: Distribution parameters (margin_mean, margin_sd, total, total_sd) are calibrated upstream by `_apply_calibration_to_schedule_df()` before being passed to `_build_bets_dataframe()`. The probabilities computed by `_calculate_model_prob()` already use calibrated distribution parameters.
+
+### Testing Calibration: Proper Patching Pattern
+
+When mocking `load_latest_calibrator` in tests, patch it **where it's used** (in schedule.py), not where it's defined (in calibration/io.py):
+
+```python
+# CORRECT: Patch where the function is USED
+import src.pipelines.schedule as schedule_module
+orig_load = schedule_module.load_latest_calibrator
+schedule_module.load_latest_calibrator = mock_load
+try:
+    result = _apply_calibration_to_schedule_df(...)
+finally:
+    schedule_module.load_latest_calibrator = orig_load
+
+# INCORRECT: This won't work because schedule.py imports directly
+import src.calibration.io as cal_io
+cal_io.load_latest_calibrator = mock_load  # schedule.py still uses its own reference
+```
+
+See `tests/test_calibration_bets_integration.py` for working examples.
+
 ## CSV Input Requirements
 
 ### Game data (ingest/backtest)

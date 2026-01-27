@@ -7,11 +7,14 @@ import logging
 import math
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping
+from typing import Any, Dict, Iterable, List, Mapping, TypeAlias
 import re
 import sqlite3
 
+from config import MARGIN_SD_GUARDRAIL_MIN, TOTAL_SD_GUARDRAIL_MIN
+
 import pandas as pd
+from pandas._libs.missing import NAType
 from openpyxl import load_workbook
 from openpyxl.styles.numbers import FORMAT_CURRENCY_USD_SIMPLE
 
@@ -81,6 +84,8 @@ _rating_lookup = _forecast_rating_lookup
 
 EXPORT_MARKETS: List[Market] = [Market.ML, Market.SPREAD, Market.TOTAL]
 MARKET_ORDER: Dict[str, int] = {market.name: idx for idx, market in enumerate(EXPORT_MARKETS)}
+
+CalibratedProbability: TypeAlias = float | NAType
 
 _LOG = logging.getLogger(__name__)
 
@@ -340,16 +345,44 @@ def _apply_calibration_to_schedule_df(
     """Apply calibrators for all markets (ML, SPREAD, TOTAL) to schedule predictions.
     
     Loads the latest calibrator for each market and applies transformations:
-    - ML: Calibrates home_win_prob and away_win_prob
-    - SPREAD: Calibrates margin_mean and margin_sd
-    - TOTAL: Calibrates total_mean and total_sd
+    - ML: Calibrates home_win_prob and away_win_prob; appends "+calibrated_ml" to win_prob_source
+    - SPREAD: Calibrates margin_mean and margin_sd; appends "+calibrated_spread" to win_prob_source
+    - TOTAL: Calibrates total_mean and total_sd; appends "+calibrated_total" to win_prob_source
+    
+    Provenance tags are appended to win_prob_source to track which calibrators were applied.
+    Tags are idempotent: appending the same tag twice will not result in duplicates.
+    
+    Returns modified DataFrame with calibrated predictions and updated win_prob_source.
+    If calibrators are missing or calibration fails, original predictions are preserved.
+    
+    Args:
+        schedule_df: Input DataFrame with predictions from models
+        sport: Sport code (e.g., "nba", "nfl")
+        season: Season identifier (e.g., "2025-26")
+        model: Model name to look up calibrators for
+        
+    Returns:
+        DataFrame with calibrated predictions and provenance tags appended to win_prob_source
     """
     if schedule_df.empty:
         return schedule_df
 
     df = schedule_df.copy()
+
+    # Track pre-guardrail SD values for debugging/logging
+    if "margin_sd" in df.columns:
+        df["margin_sd_pre_guardrail"] = pd.NA
+    if "total_sd" in df.columns:
+        df["total_sd_pre_guardrail"] = pd.NA
+    
+    # Track which markets had calibration successfully applied.
+    # This set is used later to determine which provenance tags should be appended.
+    # Only markets in this set will have tags added to win_prob_source.
+    calibrated_markets = set()
     
     # ========== ML MARKET CALIBRATION ==========
+    # Calibrate moneyline (win probability) predictions using Platt scaling or similar method
+    # Only processes if home_win_prob column exists (indicates ML predictions are present)
     if "home_win_prob" in df.columns:
         ml_calibrator = load_latest_calibrator(
             sport=sport,
@@ -368,7 +401,9 @@ def _apply_calibration_to_schedule_df(
                 df["away_win_prob_raw"] = df["away_win_prob"]
                 
                 try:
-                    calibrated = pd.Series(pd.NA, index=df.index, dtype="float")
+                    # Use float('nan') (not pd.NA) for float-dtype Series to avoid NAType conversion errors
+                    # pd.NA is for nullable dtypes (Float64), NaN is for numpy float64
+                    calibrated = pd.Series(float("nan"), index=df.index, dtype="float")
                     calibrated_values = ml_calibrator.transform(raw_probs.loc[valid_mask].astype(float))
                     calibrated.loc[valid_mask] = pd.to_numeric(calibrated_values, errors="coerce")
                     df["home_win_prob_calibrated"] = calibrated
@@ -382,6 +417,8 @@ def _apply_calibration_to_schedule_df(
                     df.loc[calibrated_mask, "away_win_prob"] = df.loc[
                         calibrated_mask, "away_win_prob_calibrated"
                     ]
+                    
+                    calibrated_markets.add("ML")
                     
                     _LOG.info(
                         f"[_apply_calibration_to_schedule_df] Applied ML calibrator to "
@@ -416,10 +453,17 @@ def _apply_calibration_to_schedule_df(
                         
                         # Apply calibrator
                         calib_result = spread_calibrator.transform(calib_input)
-                        
+                        pre_guardrail_sd = calib_result["calibrated_sd"]
+                        df.loc[valid_mask, "margin_sd_pre_guardrail"] = pre_guardrail_sd.values
+                        calib_result["calibrated_sd"] = pre_guardrail_sd.clip(
+                            lower=MARGIN_SD_GUARDRAIL_MIN
+                        )
+
                         # Update values
                         df.loc[valid_mask, "margin_mean"] = calib_result["calibrated_mean"].values
                         df.loc[valid_mask, "margin_sd"] = calib_result["calibrated_sd"].values
+                        
+                        calibrated_markets.add("SPREAD")
                         
                         _LOG.info(
                             f"[_apply_calibration_to_schedule_df] Applied SPREAD distribution calibrator "
@@ -454,10 +498,17 @@ def _apply_calibration_to_schedule_df(
                         
                         # Apply calibrator
                         calib_result = total_calibrator.transform(calib_input)
-                        
+                        pre_guardrail_sd = calib_result["calibrated_sd"]
+                        df.loc[valid_mask, "total_sd_pre_guardrail"] = pre_guardrail_sd.values
+                        calib_result["calibrated_sd"] = pre_guardrail_sd.clip(
+                            lower=TOTAL_SD_GUARDRAIL_MIN
+                        )
+
                         # Update values
                         df.loc[valid_mask, "total_mean"] = calib_result["calibrated_mean"].values
                         df.loc[valid_mask, "total_sd"] = calib_result["calibrated_sd"].values
+                        
+                        calibrated_markets.add("TOTAL")
                         
                         _LOG.info(
                             f"[_apply_calibration_to_schedule_df] Applied TOTAL distribution calibrator "
@@ -467,24 +518,89 @@ def _apply_calibration_to_schedule_df(
                         _LOG.warning(f"[_apply_calibration_to_schedule_df] TOTAL calibration failed: {e}")
     
     # ========== UPDATE WINNER WIN PROB WITH CALIBRATED VALUES ==========
+    # After calibrating individual market probabilities, sync the aggregated winner_win_prob
+    # to use calibrated values. This ensures consistency across all probability fields.
     if "projected_winner" in df.columns:
         home_wins = df["projected_winner"] == df["home_team"]
         away_wins = df["projected_winner"] == df["away_team"]
         df.loc[home_wins, "winner_win_prob"] = df.loc[home_wins, "home_win_prob"]
         df.loc[away_wins, "winner_win_prob"] = df.loc[away_wins, "away_win_prob"]
 
-    if "win_prob_source" in df.columns:
-        def _append_calibrated(value: Any) -> str:
+    # ========== APPEND MARKET-SPECIFIC CALIBRATION TAGS TO win_prob_source ==========
+    # Append provenance tags to track which markets were calibrated.
+    # This is critical for auditability and reproducibility:
+    # - Allows downstream consumers to see exactly which calibrators were applied
+    # - Enables filtering/grouping by calibration status
+    # - Maintains audit trail for model performance analysis
+    if "win_prob_source" in df.columns and calibrated_markets:
+        # Map market names to their canonical provenance tags
+        # These tags are standardized across all sports and models for consistency
+        market_to_tag = {
+            "ML": "calibrated_ml",
+            "SPREAD": "calibrated_spread",
+            "TOTAL": "calibrated_total",
+        }
+        
+        def _append_calibration_tags(value: Any, tags: set[str]) -> str:
+            """Append market-specific calibration tags idempotently to win_prob_source.
+            
+            For each tag in the input set:
+            - Check if tag is already present (case-insensitive)
+            - If not present, append it with '+' separator
+            - Sort tags for deterministic output across runs
+            
+            Args:
+                value: Current win_prob_source value (may be None or empty string)
+                tags: Set of tag strings to append (e.g., {"calibrated_ml", "calibrated_spread"})
+                
+            Returns:
+                Updated win_prob_source string with tags appended
+                
+            Examples:
+                _append_calibration_tags("model_x", {"calibrated_ml"}) -> "model_x+calibrated_ml"
+                _append_calibration_tags("model_x+calibrated_ml", {"calibrated_ml"}) -> "model_x+calibrated_ml"
+                _append_calibration_tags(None, {"calibrated_spread"}) -> "calibrated_spread"
+            """
             if value is None:
-                return "calibrated"
-            text = str(value).strip()
-            if not text:
-                return "calibrated"
-            if "calibrated" in text.lower():
-                return text
-            return f"{text}+calibrated"
-
-        df["win_prob_source"] = df["win_prob_source"].apply(_append_calibrated)
+                text = ""
+            else:
+                text = str(value).strip()
+            
+            # Iterate through sorted tags for deterministic output regardless of set ordering
+            for tag in sorted(tags):
+                # Case-insensitive check: don't append if tag already exists
+                if text and tag not in text.lower():
+                    text = f"{text}+{tag}"
+                elif not text:
+                    text = tag
+            
+            return text
+        
+        # Build the set of tags from successfully applied calibrators.
+        # Only markets that actually ran calibration (added to calibrated_markets set)
+        # will have their tags included here.
+        # Example: if calibrated_markets = {"ML", "SPREAD"}, then tags_to_append will be
+        #          {"calibrated_ml", "calibrated_spread"}
+        tags_to_append = {market_to_tag[m] for m in calibrated_markets}
+        tags_list = ", ".join(sorted(tags_to_append))
+        
+        # Apply the tag-appending function to every row's win_prob_source value.
+        # The _append_calibration_tags function handles idempotency: if a tag is already
+        # present (case-insensitive), it won't be appended again. This ensures the function
+        # is safe to call multiple times on the same DataFrame without creating duplicates.
+        df["win_prob_source"] = df["win_prob_source"].apply(
+            lambda val: _append_calibration_tags(val, tags_to_append)
+        )
+        
+        # Log the tag appending operation for audit trail and debugging.
+        # This enables:
+        # 1. Monitoring which markets are being calibrated in production
+        # 2. Debugging issues with missing calibrations
+        # 3. Tracking calibration coverage over time
+        _LOG.info(
+            f"[_apply_calibration_to_schedule_df] Appended calibration provenance tags to "
+            f"win_prob_source: {tags_list}"
+        )
 
     return df
 
@@ -1471,12 +1587,15 @@ def _build_bets_dataframe(
                 f"BETS invariant violation: {len(invalid_counts)} game(s) do not have exactly 6 rows: {invalid_counts.to_dict()}"
             )
     
-    bets_df = _apply_spread_total_calibrators(
-        bets_df,
-        sport=sport,
-        season=season,
-    )
-    
+    # NOTE: _apply_spread_total_calibrators was removed because:
+    # 1. The distribution parameters (margin_mean, margin_sd, total, total_sd) are already
+    #    calibrated upstream by _apply_calibration_to_schedule_df before being passed here
+    # 2. The function had an interface mismatch: it loaded MarginalDistributionCalibrator
+    #    objects but called .transform(Series) expecting probability calibrators
+    # 3. The probabilities computed in _calculate_model_prob use the calibrated distribution
+    #    parameters, so additional calibration is redundant
+    # See: https://github.com/prairiepilotfpv/sports-power-ratings/issues/XXX
+
     # Calculate model_prob for each market type
     bets_df = _calculate_model_prob(bets_df)
     
@@ -1535,6 +1654,28 @@ def _apply_spread_total_calibrators(
     sport: str | None,
     season: str | None,
 ) -> pd.DataFrame:
+    """
+    DEPRECATED: This function is no longer called as of 2025-01-27.
+
+    This function was designed to apply probability calibration to SPREAD/TOTAL markets
+    in the BETS sheet. However, it had a fundamental interface mismatch:
+
+    1. It called _load_market_calibrators() which loads MarginalDistributionCalibrator objects
+    2. These calibrators expect a DataFrame with (pred_mean, pred_sd) columns
+    3. But _apply_market_calibrator() called .transform(pd.Series([raw_prob])) expecting
+       a probability calibrator interface
+
+    The distribution parameters (margin_mean, margin_sd, total, total_sd) are now
+    calibrated upstream by _apply_calibration_to_schedule_df() before being passed
+    to _build_bets_dataframe(). The probabilities computed by _calculate_model_prob()
+    already use these calibrated distribution parameters.
+
+    This function is kept for reference but should not be called. If per-row probability
+    calibration is needed in the future, implement using ProbabilityFromDistributionCalibrator
+    (defined in src/calibration/distribution.py) with proper interface handling.
+
+    See: test_calibration_bets_integration.py for examples of proper calibrator mocking.
+    """
     if bets_df.empty:
         return bets_df
     out_df = bets_df.copy()
@@ -1552,6 +1693,15 @@ def _apply_spread_total_calibrators(
     spread_cals = _load_market_calibrators(spread_sources, sport, season, Market.SPREAD)
     total_cals = _load_market_calibrators(total_sources, sport, season, Market.TOTAL)
 
+    if spread_sources and not spread_cals:
+        _LOG.info(
+            f"[_apply_spread_total_calibrators] No spread calibrators available for sources: {', '.join(sorted(spread_sources))}"
+        )
+    if total_sources and not total_cals:
+        _LOG.info(
+            f"[_apply_spread_total_calibrators] No total calibrators available for sources: {', '.join(sorted(total_sources))}"
+        )
+
     if spread_cals and "spread_prob_calibrated" in out_df.columns:
         mask = out_df["market_type"] == "spread"
         if mask.any():
@@ -1562,6 +1712,12 @@ def _apply_spread_total_calibrators(
                     _spread_raw_probability(row),
                 ),
                 axis=1,
+            )
+            spread_rows = int(mask.sum())
+            spread_calibrated = int(out_df.loc[mask, "spread_prob_calibrated"].notna().sum())
+            spread_calibrators_label = ", ".join(sorted(spread_cals.keys()))
+            _LOG.info(
+                f"[_apply_spread_total_calibrators] Applied spread calibrator(s) {spread_calibrators_label} to {spread_calibrated}/{spread_rows} rows"
             )
 
     if total_cals and "total_prob_calibrated" in out_df.columns:
@@ -1575,6 +1731,12 @@ def _apply_spread_total_calibrators(
                 ),
                 axis=1,
             )
+            total_rows = int(mask.sum())
+            total_calibrated = int(out_df.loc[mask, "total_prob_calibrated"].notna().sum())
+            total_calibrators_label = ", ".join(sorted(total_cals.keys()))
+            _LOG.info(
+                f"[_apply_spread_total_calibrators] Applied total calibrator(s) {total_calibrators_label} to {total_calibrated}/{total_rows} rows"
+            )
 
     return out_df
 
@@ -1583,7 +1745,24 @@ def _apply_market_calibrator(
     calibrators: dict[str, object],
     source: str | None,
     raw_prob: float | None,
-) -> float | pd.NA:
+) -> CalibratedProbability:
+    """
+    DEPRECATED: This function is no longer called as of 2025-01-27.
+
+    This helper was designed to apply a probability calibrator to a single raw probability.
+    It assumes the calibrator has a .transform(pd.Series) method that accepts a Series of
+    probabilities and returns calibrated probabilities.
+
+    Interface mismatch issue:
+    - MarginalDistributionCalibrator.transform() expects DataFrame with (pred_mean, pred_sd)
+    - This function calls .transform(pd.Series([raw_prob])) which is incompatible
+
+    The silent try/except block at line 1733 catches the interface mismatch, causing
+    all calibration attempts to return pd.NA instead of calibrated values.
+
+    If probability calibration is needed in the future, use ProbabilityFromDistributionCalibrator
+    or implement proper interface detection to handle different calibrator types.
+    """
     if not source or raw_prob is None:
         return pd.NA
     calibrator = calibrators.get(source)
@@ -1607,6 +1786,20 @@ def _load_market_calibrators(
     season: str | None,
     market: Market,
 ) -> dict[str, object]:
+    """
+    DEPRECATED: This function is only called by _apply_spread_total_calibrators,
+    which is no longer used as of 2025-01-27.
+
+    This helper loads calibrators for multiple source models for a given market.
+    It was designed to support per-source calibration in the BETS sheet, where
+    different rows might use different model sources.
+
+    The loaded calibrators are MarginalDistributionCalibrator objects (for SPREAD/TOTAL),
+    which have a different interface than what _apply_market_calibrator expects.
+
+    For proper calibration, use _apply_calibration_to_schedule_df() which handles
+    the calibrator interfaces correctly.
+    """
     cals: dict[str, object] = {}
     if not sport or not season:
         return cals
@@ -1627,22 +1820,104 @@ def _load_market_calibrators(
     return cals
 
 
+def _log_bets_probability(
+    *,
+    market: str,
+    selection: str | None,
+    line: float | None,
+    mean: float | None,
+    sd_used: float | None,
+    raw_sd: float | None,
+    raw_p: float | None,
+    clamped_p: float | None,
+) -> None:
+    if not _LOG.isEnabledFor(logging.DEBUG):
+        return
+
+    def _z_for(sd_value: float | None) -> float | None:
+        if line is None or mean is None or sd_value is None or sd_value == 0.0:
+            return None
+        return (line - mean) / sd_value
+
+    z_used = _z_for(sd_used)
+    raw_z = _z_for(raw_sd)
+    _LOG.debug(
+        "[bets-prob] market=%s selection=%s line=%s mean=%s sd_used=%s z=%s raw_sd=%s raw_z=%s raw_p=%s clamped_p=%s",
+        market,
+        selection or "",
+        line,
+        mean,
+        sd_used,
+        z_used,
+        raw_sd,
+        raw_z,
+        raw_p,
+        clamped_p,
+    )
+
+
+def _spread_probability_from_sd(
+    line: float | None,
+    mean: float | None,
+    sd_value: float | None,
+    selection: str,
+    home_team: str,
+    away_team: str,
+) -> float | None:
+    if line is None or mean is None or sd_value is None or sd_value <= 0:
+        return None
+    sel = selection.strip()
+    if sel and home_team and sel == home_team:
+        return cover_prob(line, mean, sd_value, sign_convention="away_minus_home")
+    if sel and away_team and sel == away_team:
+        base = cover_prob(-line, mean, sd_value, sign_convention="away_minus_home")
+        if base is None:
+            return None
+        return 1.0 - base
+    return None
+
+
 def _spread_raw_probability(row: Mapping[str, Any]) -> float | None:
     line = _coerce_float(row.get("line"))
     mean = _coerce_float(row.get("margin_mean"))
     sd = _coerce_float(row.get("margin_sd"))
+    raw_sd = _coerce_float(row.get("margin_sd_pre_guardrail"))
     if line is None or mean is None or sd is None:
         return None
     selection = str(row.get("selection") or "").strip()
     home_team = str(row.get("home_team") or "").strip()
     away_team = str(row.get("away_team") or "").strip()
-    if selection and home_team and selection == home_team:
-        return cover_prob(line, mean, sd, sign_convention="away_minus_home")
-    if selection and away_team and selection == away_team:
-        base = cover_prob(-line, mean, sd, sign_convention="away_minus_home")
-        if base is None:
-            return None
-        return 1.0 - base
+    clamped_p = _spread_probability_from_sd(line, mean, sd, selection, home_team, away_team)
+    raw_p = _spread_probability_from_sd(line, mean, raw_sd, selection, home_team, away_team)
+    _log_bets_probability(
+        market="spread",
+        selection=selection,
+        line=line,
+        mean=mean,
+        sd_used=sd,
+        raw_sd=raw_sd,
+        raw_p=raw_p,
+        clamped_p=clamped_p,
+    )
+    return clamped_p
+
+
+def _total_probability_from_sd(
+    line: float | None,
+    mean: float | None,
+    sd_value: float | None,
+    selection: str | None,
+) -> float | None:
+    if line is None or mean is None or sd_value is None or sd_value <= 0:
+        return None
+    sel = str(selection or "").strip().lower()
+    over_p = over_prob(line, mean, sd_value)
+    if over_p is None:
+        return None
+    if sel == "over":
+        return over_p
+    if sel == "under":
+        return 1.0 - over_p
     return None
 
 
@@ -1650,17 +1925,25 @@ def _total_raw_probability(row: Mapping[str, Any]) -> float | None:
     line = _coerce_float(row.get("line"))
     mean = _coerce_float(row.get("total"))
     sd = _coerce_float(row.get("total_sd"))
+    raw_sd = _coerce_float(row.get("total_sd_pre_guardrail"))
     if line is None or mean is None or sd is None:
         return None
     selection = str(row.get("selection") or "").strip().lower()
-    over_p = over_prob(line, mean, sd)
-    if over_p is None:
+    if selection not in {"over", "under"}:
         return None
-    if selection == "over":
-        return over_p
-    if selection == "under":
-        return 1.0 - over_p
-    return None
+    raw_p = _total_probability_from_sd(line, mean, raw_sd, selection)
+    clamped_p = _total_probability_from_sd(line, mean, sd, selection)
+    _log_bets_probability(
+        market="total",
+        selection=selection,
+        line=line,
+        mean=mean,
+        sd_used=sd,
+        raw_sd=raw_sd,
+        raw_p=raw_p,
+        clamped_p=clamped_p,
+    )
+    return clamped_p
 
 
 def _coerce_float(value: Any) -> float | None:

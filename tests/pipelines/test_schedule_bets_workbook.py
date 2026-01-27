@@ -189,7 +189,27 @@ def test_schedule_ensemble_uses_tuned_weights(tmp_path: Path, monkeypatch) -> No
     weights = {comp["model"]: comp["weight"] for comp in components}
     assert weights["bradley-terry"] == pytest.approx(0.9, rel=1e-6)
     assert weights["elo"] == pytest.approx(0.1, rel=1e-6)
-    combined = sum(comp["prob"] * comp["weight"] for comp in components if comp["prob"] is not None)
+    # Human: Interpret component JSON probabilities regardless of legacy vs normalized keys,
+    # AI agent: Keep future schema changes manageable by checking both 'prob' and 'value' fields.
+    def _component_probability(comp: dict[str, Any]) -> float | None:
+        prob = comp.get("prob")
+        if prob is None:
+            prob = comp.get("value")
+        if prob is None:
+            return None
+        try:
+            return float(prob)
+        except (TypeError, ValueError):
+            return None
+
+    combined = 0.0
+    # Human: Accumulate the weighted probabilities only when a safe float exists.
+    # AI agent: Ensures the assertion mirrors what production ensemble writes in `ml_ensemble_components_json`.
+    for comp in components:
+        prob = _component_probability(comp)
+        if prob is None:
+            continue
+        combined += prob * comp["weight"]
     assert home_row["home_win_prob"] == pytest.approx(combined, rel=1e-6)
     assert "ensemble_ml_v1" in str(home_row["win_prob_source"])
     assert "ml_ensemble_components_json" in ml_rows.columns

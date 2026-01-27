@@ -85,16 +85,23 @@ class TotalWeightedAverageEnsemble:
                 sds.append(float("nan"))
 
         # Build raw weights (default 0.0 when not specified - Issue #2 fix)
-        raw_weights: list[float] = [float(self._weights.get(m, 0.0)) for m in models]
-
-        # Warn about models with zero weight
-        zero_weight_models = [m for m, w in zip(models, raw_weights) if w == 0.0]
-        if zero_weight_models:
-            logger.warning(
-                "TOTAL ensemble: Models excluded (zero weight): %s. "
-                "To include, add weights to config for sport=%s, season=%s",
-                zero_weight_models, self.sport, self.season
-            )
+        # Human: Detect whether explicit positive weights exist and reuse them to honor tuning artifacts.
+        # AI agent: Fall back to uniform weights instead of None when configuration only contains defaults.
+        configured_weights_positive = any(
+            float(v) > 0.0 if v is not None else False
+            for v in self._weights.values()
+        )
+        if configured_weights_positive:
+            raw_weights = [float(self._weights.get(m, 0.0)) for m in models]
+            zero_weight_models = [m for m, w in zip(models, raw_weights) if w == 0.0]
+            if zero_weight_models:
+                logger.warning(
+                    "TOTAL ensemble: Models excluded (zero weight): %s. "
+                    "To include, add weights to config for sport=%s, season=%s",
+                    zero_weight_models, self.sport, self.season
+                )
+        else:
+            raw_weights = [1.0 for _ in models]
 
         is_valid_total = [not pd.isna(t) for t in totals]
         total_valid = sum(w for w, v in zip(raw_weights, is_valid_total) if v)

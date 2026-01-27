@@ -73,7 +73,13 @@ Summary: concise reference to help an AI code agent be productive in this reposi
 - Don't assume model names are interchangeable between ranking and backtest contexts — consult `models.registry`.
 - Don't change DB schema without updating the validation functions and backtest persistence logic.
 - Don't commit large OCR screenshots or generated reports; keep them in ignored `outputs/` / `tmp-` folders.
-
+## Calibration & Market-Specific Provenance Tags
+- **Feature**: Market-specific calibration provenance tags are appended to `win_prob_source` after calibration runs.
+- **Implementation**: `src/pipelines/schedule.py::_apply_calibration_to_schedule_df()` tracks which markets are successfully calibrated using a `calibrated_markets` set (ML, SPREAD, TOTAL) and appends corresponding tags (e.g., "calibrated_ml", "calibrated_spread").
+- **Tag Format**: Tags are appended with '+' separator and are idempotent (safe to call multiple times). Example: "model_x+calibrated_ml+calibrated_spread".
+- **Logging**: INFO-level logging emitted when tags are appended; enable with `--log-cli-level=INFO` in pytest or check logs for audit trail.
+- **Testing**: See `tests/test_calibration_bets_integration.py` for 6 comprehensive tests covering single/multiple markets, idempotency, edge cases.
+- **Design Rationale**: Provides auditability for which markets were calibrated and enables filtering/grouping by calibration status in downstream consumers.
 ---
 If anything here looks incomplete or unclear (model naming, a missing example, or a workflow you want covered), tell me which section to expand and I’ll iterate.  
 (Author: GitHub Copilot — using Raptor mini (Preview))
