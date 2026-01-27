@@ -369,6 +369,19 @@ def _apply_calibration_to_schedule_df(
 
     df = schedule_df.copy()
 
+    def _win_prob_tag_present(tag: str) -> bool:
+        if "win_prob_source" not in df.columns:
+            return False
+        tag_lower = tag.lower()
+        return (
+            df["win_prob_source"]
+            .fillna("")
+            .astype(str)
+            .str.lower()
+            .str.contains(tag_lower)
+            .any()
+        )
+
     # Track pre-guardrail SD values for debugging/logging
     if "margin_sd" in df.columns:
         df["margin_sd_pre_guardrail"] = pd.NA
@@ -383,7 +396,7 @@ def _apply_calibration_to_schedule_df(
     # ========== ML MARKET CALIBRATION ==========
     # Calibrate moneyline (win probability) predictions using Platt scaling or similar method
     # Only processes if home_win_prob column exists (indicates ML predictions are present)
-    if "home_win_prob" in df.columns:
+    if "home_win_prob" in df.columns and not _win_prob_tag_present("calibrated_ml"):
         ml_calibrator = load_latest_calibrator(
             sport=sport,
             season=season,
@@ -428,7 +441,11 @@ def _apply_calibration_to_schedule_df(
                     _LOG.warning(f"[_apply_calibration_to_schedule_df] ML calibration failed: {e}")
     
     # ========== SPREAD MARKET CALIBRATION ==========
-    if "margin_mean" in df.columns and "margin_sd" in df.columns:
+    if (
+        "margin_mean" in df.columns
+        and "margin_sd" in df.columns
+        and not _win_prob_tag_present("calibrated_spread")
+    ):
         spread_calibrator = load_latest_calibrator(
             sport=sport,
             season=season,
@@ -455,25 +472,50 @@ def _apply_calibration_to_schedule_df(
                         calib_result = spread_calibrator.transform(calib_input)
                         pre_guardrail_sd = calib_result["calibrated_sd"]
                         df.loc[valid_mask, "margin_sd_pre_guardrail"] = pre_guardrail_sd.values
-                        calib_result["calibrated_sd"] = pre_guardrail_sd.clip(
-                            lower=MARGIN_SD_GUARDRAIL_MIN
-                        )
+                        clipped_sd = pre_guardrail_sd.clip(lower=MARGIN_SD_GUARDRAIL_MIN)
+                        calib_result["calibrated_sd"] = clipped_sd
 
                         # Update values
                         df.loc[valid_mask, "margin_mean"] = calib_result["calibrated_mean"].values
                         df.loc[valid_mask, "margin_sd"] = calib_result["calibrated_sd"].values
-                        
+
                         calibrated_markets.add("SPREAD")
-                        
+
                         _LOG.info(
                             f"[_apply_calibration_to_schedule_df] Applied SPREAD distribution calibrator "
                             f"to {valid_mask.sum()} rows"
                         )
+
+                        guardrail_mask = pre_guardrail_sd.notna()
+                        guardrail_count = int(guardrail_mask.sum())
+                        if guardrail_count:
+                            clipped_mask = guardrail_mask & (
+                                pre_guardrail_sd < MARGIN_SD_GUARDRAIL_MIN
+                            )
+                            clipped_count = int(clipped_mask.sum())
+                            pct_clipped = float(clipped_count / guardrail_count * 100)
+                            raw_p50 = float(pre_guardrail_sd[guardrail_mask].median())
+                            used_p50 = float(clipped_sd[guardrail_mask].median())
+                            _LOG.info(
+                                "[_apply_calibration_to_schedule_df] SPREAD guardrail summary: "
+                                "threshold=%.2f, clipped=%.1f%% (%d/%d), "
+                                "p50 raw=%.3f, p50 used=%.3f",
+                                MARGIN_SD_GUARDRAIL_MIN,
+                                pct_clipped,
+                                clipped_count,
+                                guardrail_count,
+                                raw_p50,
+                                used_p50,
+                            )
                     except Exception as e:
                         _LOG.warning(f"[_apply_calibration_to_schedule_df] SPREAD calibration failed: {e}")
     
     # ========== TOTAL MARKET CALIBRATION ==========
-    if "total_mean" in df.columns and "total_sd" in df.columns:
+    if (
+        "total_mean" in df.columns
+        and "total_sd" in df.columns
+        and not _win_prob_tag_present("calibrated_total")
+    ):
         total_calibrator = load_latest_calibrator(
             sport=sport,
             season=season,
@@ -500,20 +542,41 @@ def _apply_calibration_to_schedule_df(
                         calib_result = total_calibrator.transform(calib_input)
                         pre_guardrail_sd = calib_result["calibrated_sd"]
                         df.loc[valid_mask, "total_sd_pre_guardrail"] = pre_guardrail_sd.values
-                        calib_result["calibrated_sd"] = pre_guardrail_sd.clip(
-                            lower=TOTAL_SD_GUARDRAIL_MIN
-                        )
+                        clipped_sd = pre_guardrail_sd.clip(lower=TOTAL_SD_GUARDRAIL_MIN)
+                        calib_result["calibrated_sd"] = clipped_sd
 
                         # Update values
                         df.loc[valid_mask, "total_mean"] = calib_result["calibrated_mean"].values
                         df.loc[valid_mask, "total_sd"] = calib_result["calibrated_sd"].values
-                        
+
                         calibrated_markets.add("TOTAL")
-                        
+
                         _LOG.info(
                             f"[_apply_calibration_to_schedule_df] Applied TOTAL distribution calibrator "
                             f"to {valid_mask.sum()} rows"
                         )
+
+                        guardrail_mask = pre_guardrail_sd.notna()
+                        guardrail_count = int(guardrail_mask.sum())
+                        if guardrail_count:
+                            clipped_mask = guardrail_mask & (
+                                pre_guardrail_sd < TOTAL_SD_GUARDRAIL_MIN
+                            )
+                            clipped_count = int(clipped_mask.sum())
+                            pct_clipped = float(clipped_count / guardrail_count * 100)
+                            raw_p50 = float(pre_guardrail_sd[guardrail_mask].median())
+                            used_p50 = float(clipped_sd[guardrail_mask].median())
+                            _LOG.info(
+                                "[_apply_calibration_to_schedule_df] TOTAL guardrail summary: "
+                                "threshold=%.2f, clipped=%.1f%% (%d/%d), "
+                                "p50 raw=%.3f, p50 used=%.3f",
+                                TOTAL_SD_GUARDRAIL_MIN,
+                                pct_clipped,
+                                clipped_count,
+                                guardrail_count,
+                                raw_p50,
+                                used_p50,
+                            )
                     except Exception as e:
                         _LOG.warning(f"[_apply_calibration_to_schedule_df] TOTAL calibration failed: {e}")
     
@@ -1073,6 +1136,129 @@ def _resolve_ensemble_weights(
     if weights is not None:
         return weights, None, "file", None, None
     return None, None, None, None, None
+
+
+def _market_required_columns(market: str | Market) -> tuple[str, ...]:
+    market_name = market if isinstance(market, str) else market.name
+    market_key = market_name.upper()
+    if market_key == Market.ML.name:
+        return ("p_home_win",)
+    if market_key == Market.SPREAD.name:
+        return ("margin_mean", "margin_sd")
+    if market_key == Market.TOTAL.name:
+        return ("total_mean", "total_sd")
+    return ()
+
+
+def _filter_market_weights_for_forecast(
+    *,
+    weights: dict[str, float] | None,
+    forecast_df: pd.DataFrame,
+    market: str | Market,
+) -> tuple[dict[str, float], set[str]]:
+    market_name = market if isinstance(market, str) else market.name
+    market_key = market_name.upper()
+    required_columns = _market_required_columns(market_key)
+
+    forecast_models: set[str] = set()
+    model_validity: dict[str, bool] = {}
+    invalid_reasons: dict[str, str] = {}
+
+    for model_name, group in forecast_df.groupby("model_name"):
+        if pd.isna(model_name):
+            continue
+        normalized = normalize_model_name(str(model_name))
+        if not normalized:
+            continue
+        forecast_models.add(normalized)
+        missing: list[str] = []
+        for column in required_columns:
+            if column not in group.columns or not group[column].notna().any():
+                missing.append(column)
+        if missing:
+            model_validity[normalized] = False
+            invalid_reasons[normalized] = f"missing {', '.join(missing)}"
+        else:
+            model_validity[normalized] = True
+
+    candidate_weights: dict[str, float] = {}
+    if weights is not None:
+        for model_name, value in weights.items():
+            normalized = normalize_model_name(model_name)
+            if not normalized:
+                continue
+            try:
+                weight_value = float(value)
+            except Exception:
+                weight_value = 0.0
+            candidate_weights[normalized] = weight_value
+    else:
+        for model in forecast_models:
+            candidate_weights[model] = 1.0
+
+    for model in forecast_models:
+        candidate_weights.setdefault(model, 0.0)
+
+    filtered_weights: dict[str, float] = {}
+    drop_reasons: dict[str, str] = {}
+    for model, weight in candidate_weights.items():
+        if weight <= 0:
+            drop_reasons[model] = f"weight={weight}"
+            continue
+        if model not in forecast_models:
+            drop_reasons[model] = "missing forecast rows"
+            continue
+        if required_columns and not model_validity.get(model, True):
+            reason = invalid_reasons.get(model, "missing required fields")
+            drop_reasons[model] = reason
+            continue
+        filtered_weights[model] = weight
+
+    valid_models = {m for m, valid in model_validity.items() if valid}
+
+    def _format_drop_info(source: dict[str, str]) -> str:
+        if not source:
+            return "none"
+        entries = "; ".join(f"{m}: {source[m]}" for m in sorted(source))
+        return entries
+
+    if not filtered_weights:
+        if not valid_models:
+            _LOG.error(
+                "[_filter_market_weights_for_forecast] No valid %s ensemble members after filtering "
+                "(candidates=%s, drops=%s). No fallback available.",
+                market_key,
+                json.dumps(candidate_weights, sort_keys=True),
+                _format_drop_info(drop_reasons),
+            )
+            raise ValueError(
+                f"No market-valid models available for {market_key}; cannot run ensemble."
+            )
+        fallback_weights = {
+            model: 1.0 / len(valid_models) for model in sorted(valid_models)
+        }
+        _LOG.error(
+            "[_filter_market_weights_for_forecast] No positive weights for %s after filtering "
+            "(candidates=%s, drops=%s). Falling back to uniform weights over %s.",
+            market_key,
+            json.dumps(candidate_weights, sort_keys=True),
+            _format_drop_info(drop_reasons),
+            sorted(valid_models),
+        )
+        filtered_weights = fallback_weights
+    total_weight = sum(filtered_weights.values())
+    normalized_weights = {
+        model: weight / total_weight for model, weight in filtered_weights.items()
+    }
+
+    if drop_reasons and normalized_weights:
+        _LOG.info(
+            "[_filter_market_weights_for_forecast] Dropped models for %s: %s",
+            market_key,
+            _format_drop_info(drop_reasons),
+        )
+
+    return normalized_weights, set(normalized_weights.keys())
 
 
 def _load_active_selection_context(
@@ -2080,12 +2266,6 @@ def _build_schedule_for_model(
         params_run_id=params_run_id,
         params_market=resolution.market,
     )
-    schedule_df = _apply_calibration_to_schedule_df(
-        schedule_df,
-        sport=sport,
-        season=season,
-        model=model,
-    )
     schedule_df = _order_schedule_export(schedule_df)
     default_path = processed_path_for(sport, season, "schedule_with_projections.csv")
     resolved_output = resolve_output_path(
@@ -2312,12 +2492,6 @@ def build_schedule_excel_report(
                     params_market=market.name,
                     fit_end_date=fit_end_date,
                 )
-                schedule_df = _apply_calibration_to_schedule_df(
-                    schedule_df,
-                    sport=sport,
-                    season=season,
-                    model=model_name,
-                )
                 schedule_df = _order_schedule_export(schedule_df)
                 market_frames.append(schedule_df)
 
@@ -2538,6 +2712,23 @@ def build_schedule_excel_report(
                                 f"No ML forecasts matched ensemble models {ensemble_models}; ensemble skipped"
                             )
                             raise Exception("No ML forecasts after ensemble model filter")
+                    filtered_weights, final_models = _filter_market_weights_for_forecast(
+                        weights=weights,
+                        forecast_df=forecast_df,
+                        market=Market.ML.name,
+                    )
+                    if not final_models:
+                        config_warnings.append(
+                            "No ML forecasts remained after weight filtering; ensemble skipped"
+                        )
+                        raise Exception("No ML forecasts after weight filtering")
+                    forecast_df = forecast_df[forecast_df["model_name"].isin(final_models)]
+                    if forecast_df.empty:
+                        config_warnings.append(
+                            "No ML forecasts remained after weight filtering; ensemble skipped"
+                        )
+                        raise Exception("No ML forecasts after weight filtering")
+                    weights = filtered_weights
                     unique_ml_models = set(forecast_df["model_name"].dropna().unique())
                     use_ensemble = len(unique_ml_models) > 1
 
@@ -2723,6 +2914,23 @@ def build_schedule_excel_report(
                                 f"No SPREAD forecasts matched ensemble models {ensemble_models}; ensemble skipped"
                             )
                             raise Exception("No SPREAD forecasts after ensemble model filter")
+                    filtered_weights, final_models = _filter_market_weights_for_forecast(
+                        weights=weights,
+                        forecast_df=forecast_df,
+                        market=Market.SPREAD.name,
+                    )
+                    if not final_models:
+                        config_warnings.append(
+                            "No SPREAD forecasts remained after weight filtering; ensemble skipped"
+                        )
+                        raise Exception("No SPREAD forecasts after weight filtering")
+                    forecast_df = forecast_df[forecast_df["model_name"].isin(final_models)]
+                    if forecast_df.empty:
+                        config_warnings.append(
+                            "No SPREAD forecasts remained after weight filtering; ensemble skipped"
+                        )
+                        raise Exception("No SPREAD forecasts after weight filtering")
+                    weights = filtered_weights
 
                     # Check if we have multiple models contributing SPREAD forecasts
                     unique_spread_models = set(forecast_df["model_name"].dropna().unique())
@@ -2843,6 +3051,23 @@ def build_schedule_excel_report(
                                 f"No TOTAL forecasts matched ensemble models {ensemble_models}; ensemble skipped"
                             )
                             raise Exception("No TOTAL forecasts after ensemble model filter")
+                    filtered_weights, final_models = _filter_market_weights_for_forecast(
+                        weights=weights,
+                        forecast_df=forecast_df,
+                        market=Market.TOTAL.name,
+                    )
+                    if not final_models:
+                        config_warnings.append(
+                            "No TOTAL forecasts remained after weight filtering; ensemble skipped"
+                        )
+                        raise Exception("No TOTAL forecasts after weight filtering")
+                    forecast_df = forecast_df[forecast_df["model_name"].isin(final_models)]
+                    if forecast_df.empty:
+                        config_warnings.append(
+                            "No TOTAL forecasts remained after weight filtering; ensemble skipped"
+                        )
+                        raise Exception("No TOTAL forecasts after weight filtering")
+                    weights = filtered_weights
 
                     # Check if we have multiple models contributing TOTAL forecasts
                     unique_total_models = set(forecast_df["model_name"].dropna().unique())
