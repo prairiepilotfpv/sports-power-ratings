@@ -7,7 +7,7 @@ import logging
 import pandas as pd
 import pytest
 
-from calibration.distribution import MarginalDistributionCalibrator
+from calibration.distribution import VarianceCalibrator
 from data.repository import save_games
 from ingest.schema import GameResult
 from markets.base import Market
@@ -46,8 +46,8 @@ class _IdentityMLCalibrator:
         return pd.Series(values, dtype=float)
 
 
-def _build_distribution_calibrator() -> MarginalDistributionCalibrator:
-    calibrator = MarginalDistributionCalibrator()
+def _build_distribution_calibrator() -> VarianceCalibrator:
+    calibrator = VarianceCalibrator()
     data = pd.DataFrame(
         {
             "pred_mean": [1.0, 2.0, 3.0],
@@ -89,7 +89,7 @@ def test_calibration_applied_once_per_export_path(monkeypatch):
     class _CountingDistributionCalibrator:
         def __init__(self) -> None:
             self.calls = 0
-            self.metadata = {"method": "marginal_distribution"}
+            self.metadata = {"method": "variance_distribution"}
 
         def transform(self, df: pd.DataFrame) -> pd.DataFrame:
             self.calls += 1
@@ -190,3 +190,119 @@ def test_spread_weights_filter_out_models_without_spread_outputs(caplog):
     log_text = " ".join(record.message for record in caplog.records)
     assert "poisson" in log_text and "margin_mean" in log_text
     assert "elo" in log_text
+
+
+# ========== MULTI-MEMBER ENSEMBLE TESTS ==========
+
+
+def test_multi_member_ensemble_components_json_ml(tmp_path, monkeypatch):
+    """Verify ml_ensemble_components_json lists multiple members when available."""
+    import json
+    from ensemble.ml_v1 import MLWeightedAverageEnsemble
+
+    monkeypatch.chdir(tmp_path)
+
+    # Create weights config with 3 models
+    weights = {"model_a": 0.4, "model_b": 0.35, "model_c": 0.25}
+
+    ens = MLWeightedAverageEnsemble(
+        "testsport",
+        "2025",
+        weights=weights,
+    )
+
+    # Create forecast DataFrame with predictions from all 3 models
+    forecast_df = pd.DataFrame([
+        {"model_name": "model_a", "p_home_win": 0.65},
+        {"model_name": "model_b", "p_home_win": 0.55},
+        {"model_name": "model_c", "p_home_win": 0.60},
+    ])
+
+    combined_prob, components_json = ens.combine(forecast_df)
+
+    # Parse and verify components
+    components = json.loads(components_json)
+
+    # Must have all 3 members
+    assert len(components) == 3, f"Expected 3 components, got {len(components)}"
+
+    # Verify structure of each component
+    models_in_output = {c["model"] for c in components}
+    assert models_in_output == {"model_a", "model_b", "model_c"}
+
+    # Verify weights sum to 1.0
+    weight_sum = sum(c["weight"] for c in components)
+    assert weight_sum == pytest.approx(1.0, rel=1e-6)
+
+    # Verify each component has required fields
+    for comp in components:
+        assert "model" in comp
+        assert "weight" in comp
+        assert "value" in comp
+        assert comp["value"] is not None  # All models had valid probs
+
+
+def test_multi_member_ensemble_components_json_spread(tmp_path, monkeypatch):
+    """Verify spread_ensemble_components_json lists multiple members when available."""
+    import json
+    from ensemble.spread_v1 import SpreadWeightedAverageEnsemble
+
+    monkeypatch.chdir(tmp_path)
+
+    # Create weights config with 3 models
+    weights = {"gssd": 0.5, "toor": 0.3, "elo": 0.2}
+
+    ens = SpreadWeightedAverageEnsemble(
+        "nba",
+        "2025-26",
+        weights=weights,
+    )
+
+    # Create forecast DataFrame with predictions from all 3 models
+    forecast_df = pd.DataFrame([
+        {"model_name": "gssd", "margin_mean": 5.0, "margin_sd": 10.0},
+        {"model_name": "toor", "margin_mean": 3.0, "margin_sd": 11.0},
+        {"model_name": "elo", "margin_mean": 4.0, "margin_sd": 12.0},
+    ])
+
+    result = ens.combine(forecast_df)
+    assert result is not None
+
+    margin_mean, margin_sd, components_json = result
+
+    # Parse and verify components
+    components = json.loads(components_json)
+
+    # Must have all 3 members
+    assert len(components) >= 2, f"Expected at least 2 components, got {len(components)}"
+
+    # Verify weights sum to 1.0
+    weight_sum = sum(c["weight"] for c in components)
+    assert weight_sum == pytest.approx(1.0, rel=1e-6)
+
+
+def test_ensemble_components_sorted_by_model(tmp_path, monkeypatch):
+    """Components should be sorted by model name for determinism."""
+    import json
+    from ensemble.ml_v1 import MLWeightedAverageEnsemble
+
+    monkeypatch.chdir(tmp_path)
+
+    ens = MLWeightedAverageEnsemble(
+        "testsport",
+        "2025",
+        weights={"zebra": 1.0, "alpha": 1.0, "middle": 1.0},
+    )
+
+    forecast_df = pd.DataFrame([
+        {"model_name": "zebra", "p_home_win": 0.5},
+        {"model_name": "alpha", "p_home_win": 0.5},
+        {"model_name": "middle", "p_home_win": 0.5},
+    ])
+
+    _, components_json = ens.combine(forecast_df)
+    components = json.loads(components_json)
+
+    model_order = [c["model"] for c in components]
+    assert model_order == ["alpha", "middle", "zebra"], \
+        f"Expected alphabetical order, got {model_order}"

@@ -1,74 +1,88 @@
-"""Distribution-based calibrators for SPREAD and TOTAL markets.
+"""Variance-based calibrators for SPREAD and TOTAL markets.
 
-These calibrators work with continuous distribution parameters (mean, std dev)
-rather than binary probabilities. They're used for markets where predictions
-are given as normal distributions (e.g., "margin will be 5.2 ± 3.1 points").
+Modern SPREAD/TOTAL pipelines model predictions as Normal distributions
+with a mean and standard deviation. This calibrator adjusts the variance
+term directly while keeping the location term untouched:
+σ' = sqrt((c · σ)^2 + τ^2).
 
-Key insight: For SPREAD/TOTAL, we don't calibrate a single probability,
-we calibrate the distribution parameters themselves so that predicted
-distributions better match empirical outcomes.
+The variances are fit by minimizing the Gaussian negative log likelihood
+with simple quadratic regularization on c/τ and hard bounds to prevent
+collapse. Health checks guard against over-clipping and extreme parameters
+so downstream betting pipelines stay conservative.
 """
 
 from __future__ import annotations
 
+import logging
+import warnings
 from typing import Optional, Sequence
 
 import numpy as np
 import pandas as pd
-from scipy import optimize
+from scipy.optimize import minimize
 
+from config import (
+    VARIANCE_CALIBRATION_C_MIN,
+    VARIANCE_CALIBRATION_C_MAX,
+    VARIANCE_CALIBRATION_TAU_MAX,
+    VARIANCE_CALIBRATION_LAMBDA_C,
+    VARIANCE_CALIBRATION_LAMBDA_TAU,
+    VARIANCE_CALIBRATION_CLIP_RATE_THRESHOLD,
+)
 from .base import BaseCalibrator
+
+_LOG = logging.getLogger(__name__)
 
 
 def _find_first_column(df: pd.DataFrame, candidates: Sequence[str]) -> str | None:
-    # Human: Prefer canonical column names but fall back to aliases if necessary.
-    # AI agent: This helper keeps downstream transformers resilient to legacy dataframes.
     for column in candidates:
         if column in df.columns:
             return column
     return None
 
 
-class MarginalDistributionCalibrator(BaseCalibrator):
-    """Calibrate margin/total distribution parameters to empirical outcomes.
+def _ensure_float_series(series: pd.Series) -> pd.Series:
+    return pd.to_numeric(series, errors="coerce").astype(float)
 
-    Instead of calibrating a binary probability, this class fits the predicted
-    distribution (mean and SD) to better match actual outcomes.
 
-    For a margin prediction with mean μ and SD σ, we want P(actual_margin) to be
-    well-calibrated. This is achieved by adjusting μ and σ.
+class VarianceCalibrator:
+    """Calibrate the SD of a distribution prediction via variance scaling."""
 
-    Approach:
-    - Store pairs of (predicted_mean, predicted_sd, actual_value)
-    - Fit a transformation that improves alignment
-    - Simple linear adjustment: actual ≈ α * predicted_mean + β
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.mean_scale: float = 1.0
-        self.mean_shift: float = 0.0
-        self.sd_scale: float = 1.0
-        self.sd_clip_min: float = 0.1  # Prevent SD from collapsing to 0
+    def __init__(
+        self,
+        *,
+        guardrail_min: float | None = None,
+        guardrail_max: float | None = None,
+        c_min: float = VARIANCE_CALIBRATION_C_MIN,
+        c_max: float = VARIANCE_CALIBRATION_C_MAX,
+        tau_max: float = VARIANCE_CALIBRATION_TAU_MAX,
+        lambda_c: float = VARIANCE_CALIBRATION_LAMBDA_C,
+        lambda_tau: float = VARIANCE_CALIBRATION_LAMBDA_TAU,
+        clip_rate_threshold: float = VARIANCE_CALIBRATION_CLIP_RATE_THRESHOLD,
+    ) -> None:
+        if c_min <= 0 or c_max <= 0 or c_min >= c_max:
+            raise ValueError("c_min/c_max must be positive with c_min < c_max")
+        if tau_max < 0:
+            raise ValueError("tau_max must be non-negative")
+        self.guardrail_min = guardrail_min
+        self.guardrail_max = guardrail_max
+        self.c_min = c_min
+        self.c_max = c_max
+        self.tau_max = tau_max
+        self.lambda_c = lambda_c
+        self.lambda_tau = lambda_tau
+        self.clip_rate_threshold = clip_rate_threshold
+        self.c = 1.0
+        self.tau = 0.0
+        self.clip_rate = 0.0
+        self.median_raw_sd: float | None = None
+        self.median_calibrated_sd: float | None = None
+        self.healthy = True
+        self.metadata: dict[str, object] = {}
+        self._fitted = False
 
     def fit(self, df: pd.DataFrame) -> None:
-        """Fit calibrator from DataFrame with columns: pred_mean, pred_sd, actual_value.
-
-        Args:
-            df: DataFrame with:
-                - pred_mean: predicted distribution mean
-                - pred_sd: predicted distribution standard deviation
-                - actual_value: actual realized value (margin or total)
-        """
-        if df.empty:
-            raise ValueError("Cannot fit calibrator on empty DataFrame")
-
-        if not all(col in df.columns for col in ["pred_mean", "pred_sd", "actual_value"]):
-            raise ValueError(
-                "DataFrame must contain columns: pred_mean, pred_sd, actual_value"
-            )
-
-        # Remove rows with invalid predictions
+        """Fit c/τ to minimize the Gaussian NLL on (pred_mean, pred_sd)."""
         valid_df = df[
             (df["pred_mean"].notna())
             & (df["pred_sd"].notna())
@@ -81,50 +95,54 @@ class MarginalDistributionCalibrator(BaseCalibrator):
                 f"Not enough valid samples to fit calibrator (need 2+, got {len(valid_df)})"
             )
 
-        # Fit mean calibration: predict actual_value from pred_mean
-        X_mean = np.array(valid_df["pred_mean"]).reshape(-1, 1)
-        y_actual = np.array(valid_df["actual_value"])
+        pred_sd = _ensure_float_series(valid_df["pred_sd"]).to_numpy()
+        residuals = _ensure_float_series(valid_df["actual_value"] - valid_df["pred_mean"]).to_numpy()
+        samples = len(pred_sd)
 
-        # Simple linear regression: actual = α * pred_mean + β
-        # Add regularization to prevent extreme values
-        from sklearn.linear_model import Ridge
+        def objective(params: np.ndarray) -> float:
+            c_val, tau_val = params
+            variance = (c_val * pred_sd) ** 2 + tau_val ** 2
+            nll = 0.5 * np.sum(np.log(variance) + (residuals ** 2) / variance)
+            penalty = self.lambda_c * (c_val - 1.0) ** 2 + self.lambda_tau * (tau_val ** 2)
+            return float(nll + penalty)
 
-        mean_model = Ridge(alpha=0.1)
-        mean_model.fit(X_mean, y_actual)
+        bounds = [(self.c_min, self.c_max), (0.0, self.tau_max)]
+        initial_tau = min(self.tau_max / 2.0 if self.tau_max > 0 else 0.0, 1.0)
+        initial = np.array([1.0, initial_tau], dtype=float)
 
-        self.mean_scale = float(mean_model.coef_[0])
-        self.mean_shift = float(mean_model.intercept_)
+        try:
+            result = minimize(
+                objective,
+                initial,
+                method="L-BFGS-B",
+                bounds=bounds,
+            )
+        except Exception as exc:
+            _LOG.warning(
+                "[VarianceCalibrator] Optimization failed (exception): %s. Falling back to identity.",
+                exc,
+            )
+            self._apply_identity(samples, reason="optimization_exception")
+            return
 
-        # Fit SD calibration: predict residual SD from predicted SD
-        predicted_actual = self.mean_scale * valid_df["pred_mean"] + self.mean_shift
-        residuals = np.abs(y_actual - predicted_actual)
+        if not result.success or len(result.x) != 2:
+            _LOG.warning(
+                "[VarianceCalibrator] Optimization failed (%s). Falling back to identity.",
+                result.message if result is not None else "unknown",
+            )
+            self._apply_identity(samples, reason="optimization_failure")
+            return
 
-        # Empirical SD calibration via regularized ratio rather than underfitting ridge
-        pred_sd = valid_df["pred_sd"].astype(float)
-        mean_pred_sd_sq = float(np.mean(pred_sd ** 2))
-        mean_pred_sd_resid = float(np.mean(pred_sd * residuals))
-        gamma = mean_pred_sd_sq * 0.1 + 1e-8
-        ratio = (mean_pred_sd_resid + gamma) / (mean_pred_sd_sq + gamma)
-        self.sd_scale = max(ratio, 1e-4)
-
-        self.metadata = {
-            "method": "marginal_distribution",
-            "n": int(len(valid_df)),
-            "mean_scale": self.mean_scale,
-            "mean_shift": self.mean_shift,
-            "sd_scale": self.sd_scale,
-            "sd_regularization": float(gamma),
-        }
+        self.c = float(np.clip(result.x[0], self.c_min, self.c_max))
+        self.tau = float(min(max(result.x[1], 0.0), self.tau_max))
+        self._fitted = True
+        self._finalize_stats(pred_sd, samples)
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Apply calibration to predicted distributions.
+        """Apply the variance calibration to predictions (means remain untouched)."""
+        if not self._fitted:
+            raise RuntimeError("VarianceCalibrator must be fitted before calling transform.")
 
-        Args:
-            df: DataFrame with columns pred_mean and pred_sd (or their aliases)
-
-        Returns:
-            DataFrame with calibrated_mean and calibrated_sd
-        """
         mean_col = _find_first_column(df, ["pred_mean", "margin_mean", "total_mean"])
         sd_col = _find_first_column(df, ["pred_sd", "margin_sd", "total_sd"])
         if mean_col is None or sd_col is None:
@@ -133,21 +151,95 @@ class MarginalDistributionCalibrator(BaseCalibrator):
                 f"DataFrame must contain distribution columns; missing {missing}"
             )
 
-        # Human: Build a normalized view of the distribution parameters before applying the transform.
-        # AI agent: Keeps `calibrated_mean`/`calibrated_sd` logic independent of column names.
-        result = pd.DataFrame({
-            "pred_mean": df[mean_col],
-            "pred_sd": df[sd_col],
-        })
+        preds = df[[mean_col, sd_col]].copy()
+        preds["pred_mean"] = _ensure_float_series(preds[mean_col])
+        preds["pred_sd"] = _ensure_float_series(preds[sd_col])
+        sd_values = preds["pred_sd"].to_numpy()
+        calibrated_raw = np.sqrt((self.c * sd_values) ** 2 + self.tau ** 2)
+        calibrated_used = self._apply_guardrail(calibrated_raw)
 
-        result["calibrated_mean"] = (
-            self.mean_scale * result["pred_mean"] + self.mean_shift
+        result = pd.DataFrame(
+            {
+                "calibrated_mean": preds["pred_mean"],
+                "calibrated_sd": calibrated_used,
+            },
+            index=df.index,
         )
-        result["calibrated_sd"] = np.maximum(
-            self.sd_clip_min, self.sd_scale * result["pred_sd"]
-        )
-
         return result
+
+    def _apply_guardrail(self, values: np.ndarray) -> np.ndarray:
+        clipped = np.array(values, copy=True)
+        if self.guardrail_min is not None:
+            clipped = np.maximum(clipped, self.guardrail_min)
+        if self.guardrail_max is not None:
+            clipped = np.minimum(clipped, self.guardrail_max)
+        return clipped
+
+    def _finalize_stats(self, raw_sd: np.ndarray, samples: int) -> None:
+        pre_guardrail = np.sqrt((self.c * raw_sd) ** 2 + self.tau ** 2)
+        used_sd = self._apply_guardrail(pre_guardrail)
+        self.median_raw_sd = float(np.nanmedian(raw_sd))
+        self.median_calibrated_sd = float(np.nanmedian(used_sd))
+        mask_clip = (
+            (pre_guardrail < self.guardrail_min)
+            if (self.guardrail_min is not None)
+            else np.zeros_like(pre_guardrail, dtype=bool)
+        )
+        self.clip_rate = float(np.count_nonzero(mask_clip)) / samples if samples else 0.0
+        boundary_hit = (
+            abs(self.c - self.c_min) < 1e-3
+            or abs(self.c - self.c_max) < 1e-3
+            or (self.tau_max > 0 and abs(self.tau - self.tau_max) < 1e-3)
+        )
+        self.healthy = (self.clip_rate <= self.clip_rate_threshold) and not boundary_hit
+        self.metadata = {
+            "method": "variance_distribution",
+            "samples": samples,
+            "c": self.c,
+            "tau": self.tau,
+            "clip_rate": self.clip_rate,
+            "healthy": self.healthy,
+            "guardrail_min": self.guardrail_min,
+            "guardrail_max": self.guardrail_max,
+            "lambda_c": self.lambda_c,
+            "lambda_tau": self.lambda_tau,
+            "c_bounds": (self.c_min, self.c_max),
+            "tau_max": self.tau_max,
+        }
+        if not self.healthy:
+            _LOG.warning(
+                "[VarianceCalibrator] Marked unhealthy (clip_rate=%.3f, guardrail=%s, c=%.3f, tau=%.3f)",
+                self.clip_rate,
+                self.guardrail_min,
+                self.c,
+                self.tau,
+            )
+
+    def _apply_identity(self, samples: int, reason: str) -> None:
+        self.c = 1.0
+        self.tau = 0.0
+        self.clip_rate = 0.0
+        self.median_raw_sd = None
+        self.median_calibrated_sd = None
+        self.healthy = False
+        self._fitted = True
+        self.metadata = {
+            "method": "variance_identity",
+            "samples": samples,
+            "healthy": False,
+            "reason": reason,
+        }
+
+
+class MarginalDistributionCalibrator(VarianceCalibrator):
+    """Legacy alias remaining for backwards compatibility."""
+
+    def __init__(self, *args, **kwargs):
+        warnings.warn(
+            "MarginalDistributionCalibrator is deprecated; use VarianceCalibrator instead.",
+            DeprecationWarning,
+        )
+        super().__init__(*args, **kwargs)
 
 
 class ProbabilityFromDistributionCalibrator(BaseCalibrator):
@@ -170,15 +262,7 @@ class ProbabilityFromDistributionCalibrator(BaseCalibrator):
         self.calibrator: Optional[BaseCalibrator] = None
 
     def fit(self, df: pd.DataFrame) -> None:
-        """Fit calibrator from DataFrame with distribution + outcome info.
-
-        Args:
-            df: DataFrame with columns:
-                - pred_mean: predicted mean
-                - pred_sd: predicted std dev
-                - line: threshold for computing probability (can be pred_mean if not given)
-                - outcome: actual binary outcome (0 or 1)
-        """
+        """Fit calibrator from DataFrame with distribution + outcome info."""
         if df.empty:
             raise ValueError("Cannot fit calibrator on empty DataFrame")
 
@@ -186,7 +270,6 @@ class ProbabilityFromDistributionCalibrator(BaseCalibrator):
         if not required.issubset(set(df.columns)):
             raise ValueError(f"DataFrame must contain columns: {required}")
 
-        # Compute implied probabilities from distributions
         valid_df = df[
             (df["pred_mean"].notna())
             & (df["pred_sd"].notna())
@@ -199,22 +282,18 @@ class ProbabilityFromDistributionCalibrator(BaseCalibrator):
                 f"Not enough valid samples to fit calibrator (need 2+, got {len(valid_df)})"
             )
 
-        # Compute probability that actual > line using normal CDF
-        def _prob_over_line(row):
-            mean = row["pred_mean"]
-            sd = row["pred_sd"]
-            line = row.get("line", mean)  # Default to mean if line not provided
+        def _prob_over_line(row: pd.Series) -> float:
+            sd = float(row["pred_sd"])
             if sd <= 0:
                 return 0.5
+            mean = float(row["pred_mean"])
+            line = float(row.get("line", mean))
             z = (line - mean) / sd
-            # Normal CDF: P(X > line) where X ~ N(mean, sd)
             from scipy.stats import norm
-            return float(norm.sf(z))  # survival function = 1 - CDF
+            return float(norm.sf(z))
 
         valid_df["p_outcome"] = valid_df.apply(_prob_over_line, axis=1)
 
-        # Now fit a probability calibrator on these derived probabilities
-        # Use appropriate calibrator based on sample size
         if self.method == "isotonic" or len(valid_df) >= 500:
             from .isotonic import IsotonicCalibrator
             self.calibrator = IsotonicCalibrator()
@@ -222,7 +301,6 @@ class ProbabilityFromDistributionCalibrator(BaseCalibrator):
             from .platt import PlattScalingCalibrator
             self.calibrator = PlattScalingCalibrator()
 
-        # Fit on (implied_probability, actual_outcome)
         calib_df = pd.DataFrame({
             "p_home_win": valid_df["p_outcome"],
             "home_win": valid_df["outcome"].astype(int),
@@ -236,29 +314,18 @@ class ProbabilityFromDistributionCalibrator(BaseCalibrator):
         }
 
     def transform(self, df: pd.DataFrame) -> pd.Series:
-        """Calibrate probabilities derived from distributions.
-
-        Args:
-            df: DataFrame with pred_mean, pred_sd, and optional line
-
-        Returns:
-            Series of calibrated probabilities
-        """
         if self.calibrator is None:
             raise RuntimeError("Calibrator not fitted")
 
-        # Recompute probabilities from distributions
-        def _prob_over_line(row):
-            mean = row.get("pred_mean", 0)
-            sd = row.get("pred_sd", 1)
-            line = row.get("line", mean)
+        def _prob_over_line(row: pd.Series) -> float:
+            mean = float(row.get("pred_mean", 0))
+            sd = float(row.get("pred_sd", 1))
             if sd <= 0:
                 return 0.5
+            line = float(row.get("line", mean))
             z = (line - mean) / sd
             from scipy.stats import norm
             return float(norm.sf(z))
 
         derived_probs = df.apply(_prob_over_line, axis=1)
-
-        # Now calibrate these probabilities
         return self.calibrator.transform(derived_probs)

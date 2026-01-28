@@ -273,6 +273,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--db",
         help=f"Optional SQLite DB path override (default: {db_dir()}/<sport>/<season>.db)",
     )
+    schedule_parser.add_argument(
+        "--fail-on-health-check",
+        action="store_true",
+        default=False,
+        help="Exit with error if health gate fails (FAIL_UNCERTAINTY_CLIP status).",
+    )
 
     market_review_parser = subparsers.add_parser(
         "market-review",
@@ -1346,6 +1352,7 @@ def _run_schedule(args: argparse.Namespace) -> None:
         as_of_date=getattr(args, "as_of_date", None),
         bets_model=getattr(args, "bets_model", None),
         strict=bool(getattr(args, "strict", False)),
+        fail_on_health_check=bool(getattr(args, "fail_on_health_check", False)),
     )
     print(f"Saved schedule workbook -> {result_path}")
     

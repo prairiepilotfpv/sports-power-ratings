@@ -3,13 +3,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from math import erf, isnan, log, sqrt
 from typing import Any, Iterable, Mapping
 
 import numpy as np
+from scipy.stats import skellam
 
-from config import DEFAULT_MARGIN_SD_FALLBACK, DEFAULT_TOTAL_SD_FALLBACK
-from models.base import BaseModel, GamePrediction, ModelMetadata, require_columns
+from config import (
+    DEFAULT_MARGIN_SD_FALLBACK,
+    DEFAULT_POISSON_OVERDISPERSION,
+    DEFAULT_TOTAL_SD_FALLBACK,
+)
+from models.base import (
+    BaseModel,
+    GamePrediction,
+    ModelMetadata,
+    require_columns,
+    _home_win_prob_from_margin,
+)
 
 
 @dataclass
@@ -35,15 +47,25 @@ def _guard_sd(value: float, fallback: float) -> float:
         return float(fallback)
     return sd
 
+_LOG = logging.getLogger(__name__)
+
 
 def poisson_canonical_from_samples(
-    home_samples: np.ndarray, away_samples: np.ndarray
+    home_samples: np.ndarray,
+    away_samples: np.ndarray,
+    tie_split_home: float = 0.5,
 ) -> dict[str, float | str]:
     """Convert simulation samples to canonical prediction format.
-    
+
     Note: This function emits margin_sd and total_sd as required by the model
     contract, using fallback values when the computed standard deviations are
     invalid (NaN, inf, or <= 0).
+
+    Args:
+        home_samples: Array of simulated home scores
+        away_samples: Array of simulated away scores
+        tie_split_home: Fraction of tie probability assigned to home team.
+            Use empirical OT home-win share for NHL (default 0.5).
     """
     total_samples = home_samples + away_samples
     margin_samples = home_samples - away_samples
@@ -60,7 +82,7 @@ def poisson_canonical_from_samples(
 
     p_home_win_emp = float(
         np.mean(margin_samples > 0)
-        + 0.5 * np.mean(margin_samples == 0)
+        + tie_split_home * np.mean(margin_samples == 0)
     )
     p_home_win = p_home_win_emp
 
@@ -78,15 +100,102 @@ def poisson_canonical_from_samples(
     return {
         "margin_mean": float(margin_mean),
         "margin_sd": float(margin_sd),
+        "margin_sd_raw": float(margin_sd_raw),
+        "margin_sd_used": float(margin_sd),
         "total_mean": float(total_mean),
         "total_sd": float(total_sd),
+        "total_sd_raw": float(total_sd_raw),
+        "total_sd_used": float(total_sd),
         "p_home_win": p_home_win,
         "projected_home_score": projected_home_score,
         "projected_away_score": projected_away_score,
         "win_prob_source": "sample",
         "margin_dist_assumption": "empirical",
+        "sigma_source": "poisson_mc",
+        "projected_total": float(total_mean),
+        "projected_win_prob": p_home_win,
+        "tie_split_home": float(tie_split_home),
     }
 
+
+def _skellam_home_win_prob(
+    lambda_home: float,
+    lambda_away: float,
+    *,
+    fallback_sd: float,
+    tie_split_home: float = 0.5,
+) -> float:
+    """Compute home win probability using Skellam distribution.
+
+    Args:
+        lambda_home: Expected home goals (Poisson rate)
+        lambda_away: Expected away goals (Poisson rate)
+        fallback_sd: Fallback standard deviation for normal approximation
+        tie_split_home: Fraction of tie probability assigned to home team.
+            Use empirical OT home-win share for NHL (default 0.5).
+
+    Returns:
+        Home win probability (clipped to avoid extreme values)
+    """
+    try:
+        pmf_zero = float(skellam.pmf(0, lambda_home, lambda_away))
+        sf_zero = float(skellam.sf(0, lambda_home, lambda_away))
+        prob = sf_zero + tie_split_home * pmf_zero
+    except Exception:
+        prob = _home_win_prob_from_margin(
+            lambda_home - lambda_away,
+            fallback_sd if fallback_sd > 0 else DEFAULT_MARGIN_SD_FALLBACK,
+        )
+    return _clip_prob(prob)
+
+
+def poisson_canonical_from_rates(
+    lambda_home: float,
+    lambda_away: float,
+    *,
+    kappa: float = DEFAULT_POISSON_OVERDISPERSION,
+    tie_split_home: float = 0.5,
+) -> dict[str, float | str]:
+    """Convert expected goal rates to canonical prediction format.
+
+    Args:
+        lambda_home: Expected home goals (Poisson rate)
+        lambda_away: Expected away goals (Poisson rate)
+        kappa: Overdispersion parameter for variance calculation
+        tie_split_home: Fraction of tie probability assigned to home team.
+            Use empirical OT home-win share for NHL (default 0.5).
+    """
+    total_mean = float(max(lambda_home + lambda_away, 0.0))
+    margin_mean = float(lambda_home - lambda_away)
+    variance = float(max(kappa * total_mean, 0.0))
+    raw_sd = float(sqrt(variance)) if variance >= 0 else 0.0
+    margin_sd_used = _guard_sd(raw_sd, DEFAULT_MARGIN_SD_FALLBACK)
+    total_sd_used = _guard_sd(raw_sd, DEFAULT_TOTAL_SD_FALLBACK)
+    p_home_win = _skellam_home_win_prob(
+        lambda_home, lambda_away, fallback_sd=margin_sd_used, tie_split_home=tie_split_home
+    )
+    projected_home_score = 0.5 * (total_mean + margin_mean)
+    projected_away_score = 0.5 * (total_mean - margin_mean)
+    return {
+        "margin_mean": margin_mean,
+        "margin_sd": margin_sd_used,
+        "margin_sd_raw": raw_sd,
+        "margin_sd_used": margin_sd_used,
+        "total_mean": total_mean,
+        "total_sd": total_sd_used,
+        "total_sd_raw": raw_sd,
+        "total_sd_used": total_sd_used,
+        "p_home_win": p_home_win,
+        "projected_home_score": projected_home_score,
+        "projected_away_score": projected_away_score,
+        "win_prob_source": "poisson_skellam",
+        "margin_dist_assumption": "skellam",
+        "projected_total": total_mean,
+        "projected_win_prob": p_home_win,
+        "sigma_source": "poisson_skellam",
+        "kappa": float(kappa),
+        "tie_split_home": float(tie_split_home),
+    }
 
 class PoissonPowerRating:
     """Estimate attack/defense ratings with a log-link Poisson model."""
@@ -119,6 +228,7 @@ class PoissonPowerRating:
         self.random_seed = random_seed
         self._rng = np.random.default_rng(random_seed)
         self._state: _PoissonState | None = None
+        self.kappa = 1.0
 
     def metadata(self) -> ModelMetadata:
         return ModelMetadata(
@@ -334,7 +444,22 @@ class PoissonModel(BaseModel):
         reg_strength: float = 0.5,
         n_simulations: int = 5000,
         random_seed: int | None = None,
+        kappa: float = DEFAULT_POISSON_OVERDISPERSION,
+        tie_split_home: float | None = None,
     ) -> None:
+        """Initialize Poisson model.
+
+        Args:
+            max_iter: Maximum iterations for parameter fitting
+            learning_rate: Gradient descent learning rate
+            tol: Convergence tolerance
+            reg_strength: L2 regularization strength
+            n_simulations: Number of Monte Carlo simulations for fallback
+            random_seed: Random seed for reproducibility
+            kappa: Overdispersion parameter for variance calculation
+            tie_split_home: Fraction of tie probability assigned to home team.
+                Use empirical OT home-win share for NHL. If None, uses 0.5.
+        """
         self._rating_model = PoissonPowerRating(
             max_iter=max_iter,
             learning_rate=learning_rate,
@@ -345,12 +470,17 @@ class PoissonModel(BaseModel):
         )
         self._n_simulations = int(n_simulations)
         self._random_seed = random_seed
+        self._kappa = float(kappa)
+        self._tie_split_home = tie_split_home if tie_split_home is not None else 0.5
+        self._rating_model.kappa = self._kappa
 
     def metadata(self) -> ModelMetadata:
+        params = dict(self._rating_model.params)
+        params["kappa"] = self._kappa
         return ModelMetadata(
             model_id="poisson",
             model_version="1.0",
-            params=self._rating_model.params,
+            params=params,
             supports_margin=True,
             supports_total=True,
             supports_win_prob=True,
@@ -381,13 +511,38 @@ class PoissonModel(BaseModel):
                 if isinstance(neutral_raw, float) and isnan(neutral_raw)
                 else bool(neutral_raw)
             )
-            samples = self._rating_model.simulate_matchup(
-                home, away, neutral=neutral, n_simulations=self._n_simulations
+            canonical = None
+            expected = self._rating_model.expected_goals(
+                home, away, neutral=neutral
             )
-            if samples is None:
-                continue
-            home_samples, away_samples = samples
-            canonical = poisson_canonical_from_samples(home_samples, away_samples)
+            if expected is not None:
+                lambda_home, lambda_away = expected
+                try:
+                    canonical = poisson_canonical_from_rates(
+                        lambda_home,
+                        lambda_away,
+                        kappa=self._kappa,
+                        tie_split_home=self._tie_split_home,
+                    )
+                except Exception as exc:  # pragma: no cover - guard against numerical issues
+                    _LOG.warning(
+                        "Poisson analytic heads failed for %s vs %s (κ=%.3f): %s",
+                        home,
+                        away,
+                        self._kappa,
+                        exc,
+                    )
+                    canonical = None
+            if canonical is None:
+                samples = self._rating_model.simulate_matchup(
+                    home, away, neutral=neutral, n_simulations=self._n_simulations
+                )
+                if samples is None:
+                    continue
+                home_samples, away_samples = samples
+                canonical = poisson_canonical_from_samples(
+                    home_samples, away_samples, tie_split_home=self._tie_split_home
+                )
 
             margin_mean = canonical["margin_mean"]
             total_mean = canonical["total_mean"]
@@ -419,6 +574,11 @@ class PoissonModel(BaseModel):
                     total_mean=total_mean,
                     margin_sd=canonical["margin_sd"],
                     total_sd=canonical["total_sd"],
+                    margin_sd_raw=canonical.get("margin_sd_raw"),
+                    margin_sd_used=canonical.get("margin_sd_used"),
+                    total_sd_raw=canonical.get("total_sd_raw"),
+                    total_sd_used=canonical.get("total_sd_used"),
+                    sigma_source=canonical.get("sigma_source"),
                     win_prob_source=canonical["win_prob_source"],
                     margin_dist_assumption=canonical["margin_dist_assumption"],
                     win_prob_samples=None,

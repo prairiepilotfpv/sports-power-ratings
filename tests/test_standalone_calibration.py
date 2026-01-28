@@ -161,9 +161,9 @@ def test_calibration_system():
         
         # Test 4: Distribution calibrator specifics
         print("\n[Test 4] Testing distribution calibrator...")
-        from calibration.distribution import MarginalDistributionCalibrator
+        from calibration.distribution import VarianceCalibrator
         
-        calib = MarginalDistributionCalibrator()
+        calib = VarianceCalibrator()
         calib.fit(spread_dataset)
         
         # Transform predictions

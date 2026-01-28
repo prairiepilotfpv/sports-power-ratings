@@ -53,6 +53,11 @@ class GamePrediction:
     margin_sd: float | None = None
     total_mean: float | None = None
     total_sd: float | None = None
+    margin_sd_raw: float | None = None
+    margin_sd_used: float | None = None
+    total_sd_raw: float | None = None
+    total_sd_used: float | None = None
+    sigma_source: str | None = None
     win_prob_source: str | None = None
     margin_dist_assumption: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -76,6 +81,12 @@ class GamePrediction:
         )
         self.margin_sd = _normalize_sd(self.margin_sd)
         self.total_sd = _normalize_sd(self.total_sd)
+        self.margin_sd_raw = normalize_optional_float(self.margin_sd_raw)
+        self.margin_sd_used = normalize_optional_float(self.margin_sd_used)
+        self.total_sd_raw = normalize_optional_float(self.total_sd_raw)
+        self.total_sd_used = normalize_optional_float(self.total_sd_used)
+        if self.sigma_source is not None:
+            self.sigma_source = str(self.sigma_source)
         if not isinstance(self.metadata, dict):
             raise ValueError("metadata must be a dict.")
         missing = [

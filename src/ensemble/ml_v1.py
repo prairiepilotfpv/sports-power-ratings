@@ -1,12 +1,39 @@
-"""ML ensemble implementation: weighted-average of model probabilities."""
+"""ML ensemble implementation: weighted-average of model probabilities via logit pooling."""
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 from typing import Any
 
 import pandas as pd
+
+
+def _logit_pool(probs: list[float], weights: list[float], eps: float = 1e-6) -> float:
+    """Combine probabilities via logit (log-odds) pooling.
+
+    Clip each p to [eps, 1-eps], compute z_i = log(p/(1-p)),
+    weighted sum z = sum(w_i * z_i), return p = 1/(1+exp(-z)).
+
+    This approach is more robust than simple probability averaging because it
+    operates in log-odds space, which better preserves calibration properties
+    and handles extreme probabilities more gracefully.
+
+    Args:
+        probs: List of probabilities to combine (each in [0, 1])
+        weights: List of weights (must sum to 1.0 for normalized pooling)
+        eps: Clipping epsilon to prevent log(0) or log(inf)
+
+    Returns:
+        Combined probability via logit pooling
+    """
+    z_sum = 0.0
+    for p, w in zip(probs, weights):
+        p_clipped = max(eps, min(1.0 - eps, p))
+        z_i = math.log(p_clipped / (1.0 - p_clipped))
+        z_sum += w * z_i
+    return 1.0 / (1.0 + math.exp(-z_sum))
 
 from .io import load_ml_weights
 from .base import BaseEnsemble
@@ -18,7 +45,11 @@ logger = logging.getLogger(__name__)
 
 
 class MLWeightedAverageEnsemble:
-    """Combine multiple model ML probabilities using weighted average.
+    """Combine multiple model ML probabilities using logit (log-odds) pooling.
+
+    Logit pooling operates in log-odds space rather than probability space,
+    which better preserves calibration properties and handles extreme
+    probabilities more gracefully than simple weighted averaging.
 
     Weights are loaded from `outputs/ensembles/<sport>/<season>/ML/ensemble_ml_v1.json`
     (with legacy fallback to the pre-market path).
@@ -129,11 +160,17 @@ class MLWeightedAverageEnsemble:
             return None, json.dumps(components, sort_keys=True)
 
         # Compute adjusted weights for valid models; invalid models get weight 0.
+        # Track valid probs and weights separately for logit pooling.
+        valid_probs: list[float] = []
+        valid_weights: list[float] = []
+
         for m, p, w in zip(models, probs, raw_weights):
             if pd.isna(p):
                 adj_w = 0.0
             else:
                 adj_w = float(w) / float(total_valid)
+                valid_probs.append(float(p))
+                valid_weights.append(adj_w)
             comp = create_component(
                 model=m,
                 weight=float(adj_w),
@@ -142,13 +179,15 @@ class MLWeightedAverageEnsemble:
             )
             components.append(comp)
             if comp["value"] is not None:
-                combined += comp["value"] * comp["weight"]
                 valid_any = True
 
-        if not valid_any:
+        if not valid_any or not valid_probs:
             # Sort for deterministic ordering (Issue #11 fix)
             components = sort_components(components)
             return None, json.dumps(components, sort_keys=True)
+
+        # Use logit pooling instead of simple weighted average for better calibration
+        combined = _logit_pool(valid_probs, valid_weights)
 
         # Sort for deterministic ordering (Issue #11 fix)
         components = sort_components(components)

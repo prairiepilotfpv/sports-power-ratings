@@ -6,7 +6,8 @@ EV and betting calculations. Implementations included:
 
 - `PlattScalingCalibrator` - logistic (sigmoid) scaling using sklearn.
 - `IsotonicCalibrator` - monotonic isotonic regression mapping.
-- `MarginalDistributionCalibrator` - Ridge regression for distribution calibration.
+- `VarianceCalibrator` - variance scaling for SPREAD/TOTAL distributions.
+- `MarginalDistributionCalibrator` - legacy alias for variance calibrator.
 
 Calibrators are intentionally simple and focus only on model outputs vs
 observed outcomes; they must not access sportsbook data or change model
@@ -19,7 +20,8 @@ __all__ = [
     "PlattScalingCalibrator",
     "IsotonicCalibrator",
     "CalibratorRegistry",
-    # New distribution calibrator
+    # Distribution calibrators
+    "VarianceCalibrator",
     "MarginalDistributionCalibrator",
 ]
 
@@ -27,7 +29,7 @@ __all__ = [
 from .platt import PlattScalingCalibrator
 from .isotonic import IsotonicCalibrator
 from .registry import register_calibrator
-from .distribution import MarginalDistributionCalibrator
+from .distribution import MarginalDistributionCalibrator, VarianceCalibrator
 
 # Use isotonic calibration for high-data professional leagues by default.
 try:

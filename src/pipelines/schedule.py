@@ -11,7 +11,12 @@ from typing import Any, Dict, Iterable, List, Mapping, TypeAlias
 import re
 import sqlite3
 
-from config import MARGIN_SD_GUARDRAIL_MIN, TOTAL_SD_GUARDRAIL_MIN
+from config import (
+    MARGIN_SD_GUARDRAIL_MIN,
+    TOTAL_SD_GUARDRAIL_MIN,
+    CLIP_RATE_WARN_THRESHOLD,
+    CLIP_RATE_ERROR_THRESHOLD,
+)
 
 import pandas as pd
 from pandas._libs.missing import NAType
@@ -88,6 +93,59 @@ MARKET_ORDER: Dict[str, int] = {market.name: idx for idx, market in enumerate(EX
 CalibratedProbability: TypeAlias = float | NAType
 
 _LOG = logging.getLogger(__name__)
+
+
+class HealthCheckError(Exception):
+    """Raised when health gate fails and fail_on_health_check is enabled."""
+
+    def __init__(self, status: str, details: dict[str, Any]):
+        self.status = status
+        self.details = details
+        super().__init__(
+            f"Health check failed: {status}. "
+            f"spread_clip_rate={details.get('spread_clip_rate')}, "
+            f"total_clip_rate={details.get('total_clip_rate')}"
+        )
+
+
+def _compute_health_status(
+    spread_clip_rate: float | None,
+    total_clip_rate: float | None,
+) -> tuple[str, dict[str, Any]]:
+    """Compute health status from uncertainty clip rates.
+
+    Evaluates whether the proportion of predictions hitting SD guardrail floors
+    exceeds warning or error thresholds.
+
+    Args:
+        spread_clip_rate: Fraction of SPREAD rows where margin_sd was clipped to floor
+        total_clip_rate: Fraction of TOTAL rows where total_sd was clipped to floor
+
+    Returns:
+        Tuple of (status_label, details_dict) where status_label is one of:
+        - "OK": Clip rates are within acceptable bounds
+        - "WARN_UNCERTAINTY_CLIP": Clip rates exceed warning threshold
+        - "FAIL_UNCERTAINTY_CLIP": Clip rates exceed error threshold
+    """
+    details = {
+        "spread_clip_rate": spread_clip_rate,
+        "total_clip_rate": total_clip_rate,
+        "warn_threshold": CLIP_RATE_WARN_THRESHOLD,
+        "error_threshold": CLIP_RATE_ERROR_THRESHOLD,
+    }
+
+    max_rate = max(
+        spread_clip_rate or 0.0,
+        total_clip_rate or 0.0,
+    )
+
+    if max_rate >= CLIP_RATE_ERROR_THRESHOLD:
+        return ("FAIL_UNCERTAINTY_CLIP", details)
+    elif max_rate >= CLIP_RATE_WARN_THRESHOLD:
+        return ("WARN_UNCERTAINTY_CLIP", details)
+    else:
+        return ("OK", details)
+
 
 DASHBOARD_COLUMNS: List[str] = [
     "model",
@@ -220,6 +278,7 @@ def _build_schedule_dataframe(
     params_run_id: str | None = None,
     params_market: str | None = None,
     fit_end_date: str | date | None = None,
+    fail_on_health_check: bool = False,
 ) -> pd.DataFrame:
     schedule_df = build_forecasts_df(
         db_path=db_path,
@@ -247,6 +306,7 @@ def _build_schedule_dataframe(
         sport=sport,
         season=season,
         model=model,
+        fail_on_health_check=fail_on_health_check,
     )
     for col in (
         "home_win_prob_raw",
@@ -341,16 +401,20 @@ def _apply_calibration_to_schedule_df(
     sport: str,
     season: str,
     model: str,
+    fail_on_health_check: bool = False,
 ) -> pd.DataFrame:
     """Apply calibrators for all markets (ML, SPREAD, TOTAL) to schedule predictions.
-    
+
     Loads the latest calibrator for each market and applies transformations:
     - ML: Calibrates home_win_prob and away_win_prob; appends "+calibrated_ml" to win_prob_source
     - SPREAD: Calibrates margin_mean and margin_sd; appends "+calibrated_spread" to win_prob_source
     - TOTAL: Calibrates total_mean and total_sd; appends "+calibrated_total" to win_prob_source
-    
+
     Provenance tags are appended to win_prob_source to track which calibrators were applied.
     Tags are idempotent: appending the same tag twice will not result in duplicates.
+
+    Args:
+        fail_on_health_check: If True, raises HealthCheckError when health gate fails.
     
     Returns modified DataFrame with calibrated predictions and updated win_prob_source.
     If calibrators are missing or calibration fails, original predictions are preserved.
@@ -455,7 +519,7 @@ def _apply_calibration_to_schedule_df(
         
         if spread_calibrator is not None:
             # Check if it's a distribution calibrator
-            if hasattr(spread_calibrator, "metadata") and "marginal_distribution" in str(spread_calibrator.metadata.get("method", "")):
+            if hasattr(spread_calibrator, "metadata") and "variance" in str(spread_calibrator.metadata.get("method", "")):
                 margin_mean = pd.to_numeric(df["margin_mean"], errors="coerce")
                 margin_sd = pd.to_numeric(df["margin_sd"], errors="coerce")
                 valid_mask = (margin_mean.notna()) & (margin_sd.notna()) & (margin_sd > 0)
@@ -525,7 +589,7 @@ def _apply_calibration_to_schedule_df(
         
         if total_calibrator is not None:
             # Check if it's a distribution calibrator
-            if hasattr(total_calibrator, "metadata") and "marginal_distribution" in str(total_calibrator.metadata.get("method", "")):
+            if hasattr(total_calibrator, "metadata") and "variance" in str(total_calibrator.metadata.get("method", "")):
                 total_mean = pd.to_numeric(df["total_mean"], errors="coerce")
                 total_sd = pd.to_numeric(df["total_sd"], errors="coerce")
                 valid_mask = (total_mean.notna()) & (total_sd.notna()) & (total_sd > 0)
@@ -664,6 +728,62 @@ def _apply_calibration_to_schedule_df(
             f"[_apply_calibration_to_schedule_df] Appended calibration provenance tags to "
             f"win_prob_source: {tags_list}"
         )
+
+    # ========== COMPUTE HEALTH STATUS FROM CLIP RATES ==========
+    # Compute the proportion of predictions that hit SD guardrail floors.
+    # High clip rates indicate potential uncertainty collapse issues.
+    spread_clip_rate = None
+    total_clip_rate = None
+    spread_clip_count = 0
+    spread_total_count = 0
+    total_clip_count = 0
+    total_total_count = 0
+
+    if "margin_sd_pre_guardrail" in df.columns:
+        pre = df["margin_sd_pre_guardrail"].dropna()
+        spread_total_count = len(pre)
+        if spread_total_count > 0:
+            spread_clip_count = int((pre < MARGIN_SD_GUARDRAIL_MIN).sum())
+            spread_clip_rate = spread_clip_count / spread_total_count
+
+    if "total_sd_pre_guardrail" in df.columns:
+        pre = df["total_sd_pre_guardrail"].dropna()
+        total_total_count = len(pre)
+        if total_total_count > 0:
+            total_clip_count = int((pre < TOTAL_SD_GUARDRAIL_MIN).sum())
+            total_clip_rate = total_clip_count / total_total_count
+
+    # Compute health status and log warnings/errors based on clip rates
+    health_status, health_details = _compute_health_status(spread_clip_rate, total_clip_rate)
+
+    if health_status == "FAIL_UNCERTAINTY_CLIP":
+        _LOG.error(
+            "[_apply_calibration_to_schedule_df] Health gate FAIL: uncertainty collapse detected. "
+            "spread_clip_rate=%.1f%% (%d/%d), total_clip_rate=%.1f%% (%d/%d)",
+            (spread_clip_rate or 0) * 100,
+            spread_clip_count,
+            spread_total_count,
+            (total_clip_rate or 0) * 100,
+            total_clip_count,
+            total_total_count,
+        )
+        if fail_on_health_check:
+            raise HealthCheckError(health_status, health_details)
+    elif health_status == "WARN_UNCERTAINTY_CLIP":
+        _LOG.warning(
+            "[_apply_calibration_to_schedule_df] Health gate WARN: elevated uncertainty clipping. "
+            "spread_clip_rate=%.1f%% (%d/%d), total_clip_rate=%.1f%% (%d/%d)",
+            (spread_clip_rate or 0) * 100,
+            spread_clip_count,
+            spread_total_count,
+            (total_clip_rate or 0) * 100,
+            total_clip_count,
+            total_total_count,
+        )
+
+    # Store health metadata on DataFrame for later retrieval by metadata builder
+    df.attrs["_health_status"] = health_status
+    df.attrs["_health_details"] = health_details
 
     return df
 
@@ -1215,6 +1335,18 @@ def _filter_market_weights_for_forecast(
         filtered_weights[model] = weight
 
     valid_models = {m for m, valid in model_validity.items() if valid}
+    if len(filtered_weights) <= 1 and len(valid_models) > 1:
+        fallback_models = sorted(valid_models)
+        uniform_weights = {model: 1.0 / len(fallback_models) for model in fallback_models}
+        _LOG.info(
+            "[_filter_market_weights_for_forecast] Tuned weights for %s collapsed to %d model(s) "
+            "after filtering (candidates=%s); falling back to uniform weights over %s.",
+            market_key,
+            len(filtered_weights),
+            json.dumps(candidate_weights, sort_keys=True),
+            fallback_models,
+        )
+        filtered_weights = uniform_weights
 
     def _format_drop_info(source: dict[str, str]) -> str:
         if not source:
@@ -1776,7 +1908,7 @@ def _build_bets_dataframe(
     # NOTE: _apply_spread_total_calibrators was removed because:
     # 1. The distribution parameters (margin_mean, margin_sd, total, total_sd) are already
     #    calibrated upstream by _apply_calibration_to_schedule_df before being passed here
-    # 2. The function had an interface mismatch: it loaded MarginalDistributionCalibrator
+      # 2. The function had an interface mismatch: it loaded VarianceCalibrator
     #    objects but called .transform(Series) expecting probability calibrators
     # 3. The probabilities computed in _calculate_model_prob use the calibrated distribution
     #    parameters, so additional calibration is redundant
@@ -1846,7 +1978,7 @@ def _apply_spread_total_calibrators(
     This function was designed to apply probability calibration to SPREAD/TOTAL markets
     in the BETS sheet. However, it had a fundamental interface mismatch:
 
-    1. It called _load_market_calibrators() which loads MarginalDistributionCalibrator objects
+     1. It called _load_market_calibrators() which loads VarianceCalibrator objects
     2. These calibrators expect a DataFrame with (pred_mean, pred_sd) columns
     3. But _apply_market_calibrator() called .transform(pd.Series([raw_prob])) expecting
        a probability calibrator interface
@@ -1940,7 +2072,7 @@ def _apply_market_calibrator(
     probabilities and returns calibrated probabilities.
 
     Interface mismatch issue:
-    - MarginalDistributionCalibrator.transform() expects DataFrame with (pred_mean, pred_sd)
+     - VarianceCalibrator.transform() expects DataFrame with (pred_mean, pred_sd)
     - This function calls .transform(pd.Series([raw_prob])) which is incompatible
 
     The silent try/except block at line 1733 catches the interface mismatch, causing
@@ -1980,7 +2112,7 @@ def _load_market_calibrators(
     It was designed to support per-source calibration in the BETS sheet, where
     different rows might use different model sources.
 
-    The loaded calibrators are MarginalDistributionCalibrator objects (for SPREAD/TOTAL),
+     The loaded calibrators are VarianceCalibrator objects (for SPREAD/TOTAL),
     which have a different interface than what _apply_market_calibrator expects.
 
     For proper calibration, use _apply_calibration_to_schedule_df() which handles
@@ -2175,6 +2307,8 @@ def _build_model_metadata(
     params_nonempty: bool | None,
     params_run_id: str | None,
     params_market: str | None = None,
+    health_status: str | None = None,
+    health_details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     model_instance = get_model(model_name)()
     identity = resolve_model_identity(model_instance)
@@ -2196,6 +2330,8 @@ def _build_model_metadata(
         "trained_on_date_range": _training_date_range(played),
         "n_games_train": int(len(played)),
         "run_timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "health_status": health_status or "UNKNOWN",
+        "health_details_json": json.dumps(health_details) if health_details else None,
     }
     return metadata
 
@@ -2342,6 +2478,7 @@ def build_schedule_excel_report(
     as_of_date: str | date | None = None,
     bets_model: str | None = None,
     strict: bool = False,
+    fail_on_health_check: bool = False,
 ) -> Path:
     """Build an Excel workbook with schedule projections (one sheet per model)."""
     rows = load_games(
@@ -2491,9 +2628,14 @@ def build_schedule_excel_report(
                     params_run_id=resolution.source_run_id,
                     params_market=market.name,
                     fit_end_date=fit_end_date,
+                    fail_on_health_check=fail_on_health_check,
                 )
                 schedule_df = _order_schedule_export(schedule_df)
                 market_frames.append(schedule_df)
+
+                # Extract health status for metadata
+                health_status = schedule_df.attrs.get("_health_status")
+                health_details = schedule_df.attrs.get("_health_details")
 
                 played_for_metadata = _filter_games_through(
                     _completed_games(model_df), fit_end_date
@@ -2508,6 +2650,8 @@ def build_schedule_excel_report(
                     tuned_metric_used=tuned_metric_used,
                     params_metric_optimized=params_metric_optimized,
                     params_best_score=params_best_score,
+                    health_status=health_status,
+                    health_details=health_details,
                     params_fingerprint=params_fingerprint,
                     params_nonempty=params_nonempty,
                     params_run_id=resolution.source_run_id,

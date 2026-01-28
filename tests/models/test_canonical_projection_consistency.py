@@ -90,9 +90,31 @@ def test_gssd_projection_helper_matches_backtest_output() -> None:
     _assert_projection_matches_prediction(canonical, prediction)
 
 
-def test_poisson_projection_engine_and_prediction_share_samples(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_poisson_projection_engine_matches_prediction() -> None:
     model = PoissonModel(random_seed=42, n_simulations=10)
     model.fit(_training_games())
+    prediction = model.predict(_upcoming_game())[0]
+    projection = _poisson_projection_engine(
+        prediction.home_team,
+        prediction.away_team,
+        model._rating_model,
+        {"neutral": False, "n_simulations": 4},
+    )
+
+    assert projection["model_p_home_win"] == pytest.approx(prediction.p_home_win)
+    assert projection["margin_mean"] == pytest.approx(prediction.pred_margin)
+    assert projection["total_mean"] == pytest.approx(prediction.pred_total)
+    assert projection["win_prob_source"] == prediction.win_prob_source
+
+
+def test_poisson_projection_engine_falls_back_to_samples(monkeypatch: pytest.MonkeyPatch) -> None:
+    model = PoissonModel(random_seed=42, n_simulations=10)
+    model.fit(_training_games())
+
+    def _expected_none(*_args: Any, **_kwargs: Any):
+        return None
+
+    monkeypatch.setattr(model._rating_model, "expected_goals", _expected_none)
     samples = (
         np.array([2.0, 2.0, 3.0, 1.0], dtype=float),
         np.array([1.0, 1.0, 0.0, 2.0], dtype=float),
@@ -111,6 +133,4 @@ def test_poisson_projection_engine_and_prediction_share_samples(monkeypatch: pyt
     )
 
     assert projection["model_p_home_win"] == pytest.approx(prediction.p_home_win)
-    assert projection["margin_mean"] == pytest.approx(prediction.pred_margin)
-    assert projection["total_mean"] == pytest.approx(prediction.pred_total)
     assert projection["win_prob_source"] == "sample"

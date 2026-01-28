@@ -8,6 +8,17 @@ DEFAULT_WIN_PROB_K = 6.566641127986305
 CALIBRATION_RESIDUAL_GAMES = 300
 MIN_CALIBRATION_SAMPLES = 25
 
+# Poisson overdispersion (κ) default for analytic head variance.
+DEFAULT_POISSON_OVERDISPERSION = 1.0
+
+# Variance calibrator constraints and regularization defaults
+VARIANCE_CALIBRATION_C_MIN = 0.6
+VARIANCE_CALIBRATION_C_MAX = 1.6
+VARIANCE_CALIBRATION_TAU_MAX = 10.0
+VARIANCE_CALIBRATION_LAMBDA_C = 0.1
+VARIANCE_CALIBRATION_LAMBDA_TAU = 0.01
+VARIANCE_CALIBRATION_CLIP_RATE_THRESHOLD = 0.05
+
 # Safe global fallbacks when residual samples are insufficient to estimate spread/total variance.
 DEFAULT_MARGIN_SD_FALLBACK = 12.0
 DEFAULT_TOTAL_SD_FALLBACK = 22.0  # Increased from 20.0 to reduce over-confidence in BETS by flattening normal dist
@@ -28,3 +39,12 @@ TOTAL_SD_GUARDRAIL_MAX = 35.0
 PROJECTED_SCORE_MIN = 50.0
 PROJECTED_SCORE_MAX = 170.0
 PROJECTED_TOTAL_TOLERANCE = 2.0
+
+# NHL tie-mass defaults for Poisson model
+# When insufficient OT data exists, fall back to these values
+NHL_OT_HOME_WIN_FALLBACK = 0.5
+NHL_OT_MIN_SAMPLES = 20  # Minimum OT games required for empirical estimate
+
+# Health gate thresholds for uncertainty calibration
+CLIP_RATE_WARN_THRESHOLD = 0.20
+CLIP_RATE_ERROR_THRESHOLD = 0.50

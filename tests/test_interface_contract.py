@@ -87,9 +87,12 @@ def test_poisson_predictions_skip_normal_consistency_check(
     predictions = model.predict(upcoming_df)
 
     assert predictions, "Expected predictions for the fixture dataset."
+    # Poisson uses either "empirical" (sample-based) or "skellam" (analytical) distribution
+    # but NOT the normal approximation
+    valid_poisson_assumptions = {"empirical", "skellam"}
     assert all(
-        pred.margin_dist_assumption == "empirical" for pred in predictions
-    )
+        pred.margin_dist_assumption in valid_poisson_assumptions for pred in predictions
+    ), f"Expected Poisson assumptions, got: {set(p.margin_dist_assumption for p in predictions)}"
     assert any(
         pred.margin_mean is not None and abs(pred.margin_mean) < 0.5
         for pred in predictions

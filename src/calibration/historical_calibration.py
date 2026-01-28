@@ -25,7 +25,7 @@ from typing import Any
 import pandas as pd
 import sqlite3
 
-from calibration.distribution import MarginalDistributionCalibrator
+from calibration.distribution import VarianceCalibrator
 from markets.base import Market
 from markets.registry import get_market_spec
 from calibration.selection import select_calibrator
@@ -33,8 +33,22 @@ from ensemble.config import load_ensemble_config
 from ensemble.ml_v1 import MLWeightedAverageEnsemble
 from ensemble.spread_v1 import SpreadWeightedAverageEnsemble
 from ensemble.total_v1 import TotalWeightedAverageEnsemble
+from config import (
+    MARGIN_SD_GUARDRAIL_MIN,
+    MARGIN_SD_GUARDRAIL_MAX,
+    TOTAL_SD_GUARDRAIL_MIN,
+    TOTAL_SD_GUARDRAIL_MAX,
+)
 
 _LOG = logging.getLogger(__name__)
+
+
+def _market_guardrails(market: Market) -> tuple[float | None, float | None]:
+    if market == Market.SPREAD:
+        return MARGIN_SD_GUARDRAIL_MIN, MARGIN_SD_GUARDRAIL_MAX
+    if market == Market.TOTAL:
+        return TOTAL_SD_GUARDRAIL_MIN, TOTAL_SD_GUARDRAIL_MAX
+    return None, None
 
 
 def load_completed_games(
@@ -445,8 +459,12 @@ def fit_calibrator_for_market(
         calibrator = select_calibrator(method, len(dataset_df))
         calibrator.fit(dataset_df)
     elif market in {Market.SPREAD, Market.TOTAL}:
-        # SPREAD/TOTAL use distribution calibrators
-        calibrator = MarginalDistributionCalibrator()
+        # SPREAD/TOTAL use variance-based distribution calibrators
+        guardrail_min, guardrail_max = _market_guardrails(market)
+        calibrator = VarianceCalibrator(
+            guardrail_min=guardrail_min,
+            guardrail_max=guardrail_max,
+        )
         calibrator.fit(dataset_df)
     else:
         raise ValueError(f"Unknown market: {market}")

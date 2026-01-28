@@ -10,6 +10,7 @@ import numpy as np
 
 from config import (
     DEFAULT_MARGIN_SD_FALLBACK,
+    DEFAULT_POISSON_OVERDISPERSION,
     DEFAULT_TOTAL_SD_FALLBACK,
     DEFAULT_WIN_PROB_K,
     LEAGUE_MARGIN_SD_DEFAULT,
@@ -19,7 +20,10 @@ from config import (
 from models.calibration import ConditionalSDModel, guardrail_margin_sd
 from eval.validation import get_validation_config
 from models.base import _home_win_prob_from_margin
-from models.poisson import poisson_canonical_from_samples
+from models.poisson import (
+    poisson_canonical_from_rates,
+    poisson_canonical_from_samples,
+)
 from pipelines.projections import (
     matchup_total_from_averages,
     logistic_win_prob,
@@ -485,33 +489,45 @@ def _poisson_projection_engine(
     neutral = bool(context.get("neutral", False))
     n_simulations = context.get("n_simulations")
 
-    samples = model.simulate_matchup(
-        home_team,
-        away_team,
-        neutral=neutral,
-        n_simulations=n_simulations,
-    )
-    if samples is None:
-        return {
-            "projected_home_score": None,
-            "projected_away_score": None,
-            "projected_total": None,
-            "projected_win_prob": None,
-            "margin_mean": None,
-            "margin_sd": None,
-            "total_mean": None,
-            "total_sd": None,
-            "logistic_home_win_prob": None,
-        }
+    canonical = None
+    kappa = getattr(model, "kappa", DEFAULT_POISSON_OVERDISPERSION)
+    if hasattr(model, "expected_goals"):
+        expected = model.expected_goals(home_team, away_team, neutral=neutral)
+        if expected is not None:
+            canonical = poisson_canonical_from_rates(
+                expected[0], expected[1], kappa=kappa
+            )
 
-    home_samples, away_samples = samples
-    canonical = poisson_canonical_from_samples(home_samples, away_samples)
+    if canonical is None:
+        samples = model.simulate_matchup(
+            home_team,
+            away_team,
+            neutral=neutral,
+            n_simulations=n_simulations,
+        )
+        if samples is None:
+            return {
+                "projected_home_score": None,
+                "projected_away_score": None,
+                "projected_total": None,
+                "projected_win_prob": None,
+                "margin_mean": None,
+                "margin_sd": None,
+                "total_mean": None,
+                "total_sd": None,
+                "logistic_home_win_prob": None,
+            }
+
+        home_samples, away_samples = samples
+        canonical = poisson_canonical_from_samples(home_samples, away_samples)
 
     return {
         "projected_home_score": canonical["projected_home_score"],
         "projected_away_score": canonical["projected_away_score"],
-        "projected_total": canonical["total_mean"],
-        "projected_win_prob": canonical["p_home_win"],
+        "projected_total": canonical["projected_total"]
+        if canonical.get("projected_total") is not None
+        else canonical["total_mean"],
+        "projected_win_prob": canonical.get("projected_win_prob", canonical["p_home_win"]),
         "model_p_home_win": canonical["p_home_win"],
         "normal_p_home_win": None,
         "win_prob_source": canonical["win_prob_source"],
@@ -520,6 +536,7 @@ def _poisson_projection_engine(
         "margin_sd": canonical["margin_sd"],
         "total_mean": canonical["total_mean"],
         "total_sd": canonical["total_sd"],
+        "sigma_source": canonical.get("sigma_source"),
         "logistic_home_win_prob": canonical["p_home_win"],
     }
 

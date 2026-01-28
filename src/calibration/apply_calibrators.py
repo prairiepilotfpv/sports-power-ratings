@@ -24,7 +24,7 @@ from markets.base import Market
 from markets.registry import get_market_spec
 from calibration.base import BaseCalibrator
 from calibration.io import load_latest_calibrator
-from calibration.distribution import MarginalDistributionCalibrator
+from calibration.distribution import VarianceCalibrator
 
 _LOG = logging.getLogger(__name__)
 
@@ -107,7 +107,7 @@ def apply_ml_calibrator_to_predictions(
 
 def apply_distribution_calibrator_to_predictions(
     predictions_df: pd.DataFrame,
-    calibrator: MarginalDistributionCalibrator,
+    calibrator: VarianceCalibrator,
     pred_mean_col: str,
     pred_sd_col: str,
 ) -> pd.DataFrame:
@@ -115,7 +115,7 @@ def apply_distribution_calibrator_to_predictions(
 
     Args:
         predictions_df: DataFrame with distribution predictions
-        calibrator: Fitted MarginalDistributionCalibrator
+    calibrator: Fitted VarianceCalibrator
         pred_mean_col: Column name for predicted mean
         pred_sd_col: Column name for predicted SD
 

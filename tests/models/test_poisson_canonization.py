@@ -72,20 +72,60 @@ def test_poisson_predictions_populate_all_heads() -> None:
     assert pytest.approx(pred.pred_total) == pred.total_mean
     assert pred.margin_sd is not None and pred.margin_sd > 0
     assert pred.total_sd is not None and pred.total_sd > 0
-    assert pred.win_prob_source == "sample"
-    assert pred.margin_dist_assumption == "empirical"
+    assert pred.margin_sd_raw is not None and pred.margin_sd_raw >= pred.margin_sd_used
+    assert pred.total_sd_raw is not None and pred.total_sd_raw >= pred.total_sd_used
+    assert pred.win_prob_source == "poisson_skellam"
+    assert pred.sigma_source == "poisson_skellam"
+    assert pred.margin_dist_assumption == "skellam"
 
 
-def test_poisson_schedule_and_backtest_share_probability(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_poisson_projection_engine_matches_prediction() -> None:
     games = _training_games_df()
     model = PoissonModel(n_simulations=4, random_seed=11)
     model.fit(games)
 
-    fixed_home = np.array([3.0, 3.0, 2.0, 4.0])
-    fixed_away = np.array([1.0, 2.0, 2.0, 3.0])
+    upcoming = pd.DataFrame(
+        [
+            {
+                "date": date(2024, 1, 4),
+                "home_team": "Alpha",
+                "away_team": "Gamma",
+                "neutral": False,
+            }
+        ]
+    )
+    pred = model.predict(upcoming)[0]
+
+    engine = get_projection_engine(model._rating_model)
+    projection = engine(
+        "Alpha",
+        "Gamma",
+        model._rating_model,
+        {"neutral": False, "n_simulations": 4},
+    )
+
+    assert projection["model_p_home_win"] == pytest.approx(pred.p_home_win)
+    assert projection["projected_win_prob"] == pytest.approx(pred.p_home_win)
+    assert projection["win_prob_source"] == pred.win_prob_source
+    assert projection["normal_p_home_win"] is None
+
+
+def test_poisson_projection_engine_falls_back_to_samples(monkeypatch: pytest.MonkeyPatch) -> None:
+    games = _training_games_df()
+    model = PoissonModel(n_simulations=4, random_seed=11)
+    model.fit(games)
+
+    def _expected_none(*_args: object, **_kwargs: object):
+        return None
+
+    monkeypatch.setattr(model._rating_model, "expected_goals", _expected_none)
+    samples = (
+        np.array([2.0, 2.0, 3.0, 1.0], dtype=float),
+        np.array([1.0, 1.0, 0.0, 2.0], dtype=float),
+    )
 
     def _fixed_samples(*_args: object, **_kwargs: object):
-        return fixed_home, fixed_away
+        return samples
 
     monkeypatch.setattr(model._rating_model, "simulate_matchup", _fixed_samples)
 
@@ -106,14 +146,69 @@ def test_poisson_schedule_and_backtest_share_probability(monkeypatch: pytest.Mon
         "Alpha",
         "Gamma",
         model._rating_model,
-        {"neutral": False},
+        {"neutral": False, "n_simulations": 4},
     )
 
-    assert projection["model_p_home_win"] is not None
-    assert projection["model_p_home_win"] == pytest.approx(pred.p_home_win)
-    assert projection["projected_win_prob"] == pytest.approx(pred.p_home_win)
+    assert pred.win_prob_source == "sample"
     assert projection["win_prob_source"] == "sample"
-    assert projection["normal_p_home_win"] is None
+
+
+def test_poisson_mc_fallback_sets_sigma_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force MC path by blocking analytical path, verify sigma_source == 'poisson_mc'.
+
+    This test ensures that when the analytical (Skellam) path is unavailable,
+    the model correctly falls back to Monte Carlo simulation and sets the
+    appropriate sigma_source indicator.
+    """
+    games = _training_games_df()
+    model = PoissonModel(n_simulations=100, random_seed=42)
+    model.fit(games)
+
+    # Block analytical path by making expected_goals return None
+    def _expected_none(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(model._rating_model, "expected_goals", _expected_none)
+
+    # Use fixed deterministic samples for reproducibility
+    fixed_home_samples = np.array([3, 2, 4, 3, 2, 3, 3, 2, 4, 3] * 10, dtype=float)
+    fixed_away_samples = np.array([1, 2, 1, 2, 3, 1, 2, 2, 2, 1] * 10, dtype=float)
+
+    def _fixed_samples(*_args, **_kwargs):
+        return (fixed_home_samples, fixed_away_samples)
+
+    monkeypatch.setattr(model._rating_model, "simulate_matchup", _fixed_samples)
+
+    upcoming = pd.DataFrame([{
+        "date": date(2024, 1, 4),
+        "home_team": "Alpha",
+        "away_team": "Gamma",
+        "neutral": False,
+    }])
+
+    predictions = model.predict(upcoming)
+    assert len(predictions) == 1
+    pred = predictions[0]
+
+    # Key assertion: sigma_source must be poisson_mc when using MC fallback
+    assert pred.sigma_source == "poisson_mc", \
+        f"Expected sigma_source='poisson_mc', got '{pred.sigma_source}'"
+
+    # Also verify win_prob_source indicates sample-based path
+    assert pred.win_prob_source == "sample", \
+        f"Expected win_prob_source='sample', got '{pred.win_prob_source}'"
+
+    # Verify margin_dist_assumption is empirical
+    assert pred.margin_dist_assumption == "empirical", \
+        f"Expected margin_dist_assumption='empirical', got '{pred.margin_dist_assumption}'"
+
+    # Verify SD values are computed from samples
+    assert pred.margin_sd is not None and pred.margin_sd > 0
+    assert pred.total_sd is not None and pred.total_sd > 0
+
+    # Verify raw vs used SD tracking
+    assert pred.margin_sd_raw is not None
+    assert pred.total_sd_raw is not None
 
 
 def _create_fixture_csv(path: Path) -> None:

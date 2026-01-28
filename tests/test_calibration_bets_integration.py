@@ -27,7 +27,7 @@ import pandas as pd
 import pytest
 
 from config import MARGIN_SD_GUARDRAIL_MIN, TOTAL_SD_GUARDRAIL_MIN
-from src.calibration.distribution import MarginalDistributionCalibrator
+from src.calibration.distribution import VarianceCalibrator
 from src.pipelines.schedule import _apply_calibration_to_schedule_df
 
 
@@ -147,7 +147,7 @@ def test_apply_spread_distribution_calibration_to_schedule_df():
     })
 
     # Create a simple distribution calibrator
-    calibrator = MarginalDistributionCalibrator()
+    calibrator = VarianceCalibrator()
 
     # Fit on mock data
     fit_data = pd.DataFrame({
@@ -199,7 +199,7 @@ def test_apply_total_distribution_calibration_to_schedule_df():
     })
 
     # Create a simple distribution calibrator
-    calibrator = MarginalDistributionCalibrator()
+    calibrator = VarianceCalibrator()
 
     # Fit on mock data
     fit_data = pd.DataFrame({
@@ -261,7 +261,7 @@ def test_apply_all_three_markets_calibration():
             result = np.clip(np.asarray(probs) + 0.05, 0, 1)
             return pd.Series(result, index=probs.index)
 
-    dist_calibrator = MarginalDistributionCalibrator()
+    dist_calibrator = VarianceCalibrator()
     fit_data = pd.DataFrame({
         "pred_mean": [2.0, 210.0],
         "pred_sd": [1.0, 5.0],
@@ -318,7 +318,7 @@ def test_calibration_respects_sd_guardrails():
     )
 
     class MockDistributionCalibrator:
-        metadata = {"method": "marginal_distribution"}
+        metadata = {"method": "variance_distribution"}
 
         def transform(self, df):
             return pd.DataFrame(
@@ -408,7 +408,7 @@ def test_calibration_provenance_tags_ml_market():
         "win_prob_source": ["model_x", "model_x"],
     })
 
-    dist_calibrator = MarginalDistributionCalibrator()
+    dist_calibrator = VarianceCalibrator()
     fit_data = pd.DataFrame({
         "pred_mean": [2.0, 3.0],
         "pred_sd": [1.0, 1.0],
@@ -452,7 +452,7 @@ def test_calibration_provenance_tags_spread_market():
         "win_prob_source": ["model_y", "model_y"],
     })
 
-    calibrator = MarginalDistributionCalibrator()
+    calibrator = VarianceCalibrator()
     fit_data = pd.DataFrame({
         "pred_mean": [2.0, 3.0],
         "pred_sd": [1.0, 1.0],
@@ -495,7 +495,7 @@ def test_calibration_provenance_tags_total_market():
         "win_prob_source": ["model_z", "model_z"],
     })
 
-    calibrator = MarginalDistributionCalibrator()
+    calibrator = VarianceCalibrator()
     fit_data = pd.DataFrame({
         "pred_mean": [210.0, 215.0],
         "pred_sd": [5.0, 6.0],
@@ -544,7 +544,7 @@ def test_calibration_provenance_tags_multiple_markets():
     })
 
     # Create distribution calibrators (for SPREAD and TOTAL)
-    dist_calibrator_spread = MarginalDistributionCalibrator()
+    dist_calibrator_spread = VarianceCalibrator()
     fit_data_spread = pd.DataFrame({
         "pred_mean": [2.0, 3.0],
         "pred_sd": [1.0, 1.0],
@@ -552,7 +552,7 @@ def test_calibration_provenance_tags_multiple_markets():
     })
     dist_calibrator_spread.fit(fit_data_spread)
 
-    dist_calibrator_total = MarginalDistributionCalibrator()
+    dist_calibrator_total = VarianceCalibrator()
     fit_data_total = pd.DataFrame({
         "pred_mean": [210.0, 215.0],
         "pred_sd": [5.0, 6.0],
@@ -646,7 +646,7 @@ def test_calibration_provenance_tags_no_column():
         # No win_prob_source column
     })
 
-    dist_calibrator = MarginalDistributionCalibrator()
+    dist_calibrator = VarianceCalibrator()
     fit_data = pd.DataFrame({
         "pred_mean": [2.0, 3.0],
         "pred_sd": [1.0, 1.0],
@@ -678,6 +678,157 @@ def test_calibration_provenance_tags_no_column():
         # win_prob_source should still not exist (calibration ran but no column to tag)
         assert "win_prob_source" not in result_df.columns
 
+    finally:
+        schedule_module.load_latest_calibrator = orig_load
+
+
+# ========== HEALTH GATE TESTS ==========
+
+
+def test_health_gate_ok_status():
+    """Test that low clip rates produce OK status."""
+    from src.pipelines.schedule import _compute_health_status
+
+    status, details = _compute_health_status(0.05, 0.08)
+    assert status == "OK"
+    assert details["spread_clip_rate"] == 0.05
+    assert details["total_clip_rate"] == 0.08
+
+
+def test_health_gate_warn_status():
+    """Test that moderate clip rates produce WARN status."""
+    from src.pipelines.schedule import _compute_health_status
+
+    # 25% spread clip rate exceeds WARN threshold (0.20)
+    status, details = _compute_health_status(0.25, 0.15)
+    assert status == "WARN_UNCERTAINTY_CLIP"
+    assert details["spread_clip_rate"] == 0.25
+
+
+def test_health_gate_fail_status():
+    """Test that high clip rates produce FAIL status."""
+    from src.pipelines.schedule import _compute_health_status
+
+    # 55% clip rate exceeds ERROR threshold (0.50)
+    status, details = _compute_health_status(0.55, 0.45)
+    assert status == "FAIL_UNCERTAINTY_CLIP"
+
+
+def test_health_gate_none_values():
+    """Test health gate handles None clip rates gracefully."""
+    from src.pipelines.schedule import _compute_health_status
+
+    # Both None should result in OK
+    status, details = _compute_health_status(None, None)
+    assert status == "OK"
+    assert details["spread_clip_rate"] is None
+    assert details["total_clip_rate"] is None
+
+
+def test_health_gate_mixed_values():
+    """Test health gate with one None and one high value."""
+    from src.pipelines.schedule import _compute_health_status
+
+    # None + 0.55 should fail
+    status, details = _compute_health_status(None, 0.55)
+    assert status == "FAIL_UNCERTAINTY_CLIP"
+
+
+def test_health_check_error_raised_on_fail():
+    """Test that HealthCheckError is raised when fail_on_health_check is True."""
+    from src.pipelines.schedule import (
+        _apply_calibration_to_schedule_df,
+        HealthCheckError,
+    )
+    import src.pipelines.schedule as schedule_module
+
+    # Create a schedule DataFrame with SDs that will all be clipped
+    df = pd.DataFrame({
+        "date": ["2025-01-01"],
+        "home_team": ["TeamA"],
+        "away_team": ["TeamB"],
+        "home_score": [100],
+        "away_score": [95],
+        "home_win_prob": [0.6],
+        "away_win_prob": [0.4],
+        "margin_mean": [5.0],
+        "margin_sd": [1.0],  # Will be clipped to MARGIN_SD_GUARDRAIL_MIN
+        "total_mean": [200.0],
+        "total_sd": [1.0],  # Will be clipped to TOTAL_SD_GUARDRAIL_MIN
+        "win_prob_source": ["test_model"],
+    })
+
+    # Mock calibrator that returns very low SDs (to trigger 100% clip rate)
+    class MockVarianceCalibrator:
+        def __init__(self):
+            self.metadata = {"method": "variance_distribution"}
+
+        def transform(self, input_df):
+            return {
+                "calibrated_mean": input_df["pred_mean"],
+                "calibrated_sd": pd.Series([1.0] * len(input_df)),  # Very low SD
+            }
+
+    orig_load = schedule_module.load_latest_calibrator
+
+    def mock_load(*, sport, season, model, market):
+        return MockVarianceCalibrator()
+
+    schedule_module.load_latest_calibrator = mock_load
+
+    try:
+        # Should raise HealthCheckError when fail_on_health_check is True
+        with pytest.raises(HealthCheckError) as exc_info:
+            _apply_calibration_to_schedule_df(
+                df,
+                sport="test",
+                season="2025",
+                model="test_model",
+                fail_on_health_check=True,
+            )
+        assert exc_info.value.status == "FAIL_UNCERTAINTY_CLIP"
+    finally:
+        schedule_module.load_latest_calibrator = orig_load
+
+
+def test_health_status_stored_in_df_attrs():
+    """Test that health status is stored in DataFrame attrs after calibration."""
+    import src.pipelines.schedule as schedule_module
+
+    df = pd.DataFrame({
+        "date": ["2025-01-01"],
+        "home_team": ["TeamA"],
+        "away_team": ["TeamB"],
+        "home_score": [100],
+        "away_score": [95],
+        "home_win_prob": [0.6],
+        "away_win_prob": [0.4],
+        "margin_mean": [5.0],
+        "margin_sd": [10.0],  # Normal SD
+        "total_mean": [200.0],
+        "total_sd": [15.0],  # Normal SD
+        "win_prob_source": ["test_model"],
+    })
+
+    orig_load = schedule_module.load_latest_calibrator
+
+    def mock_load(*, sport, season, model, market):
+        return None  # No calibrator
+
+    schedule_module.load_latest_calibrator = mock_load
+
+    try:
+        result_df = _apply_calibration_to_schedule_df(
+            df,
+            sport="test",
+            season="2025",
+            model="test_model",
+        )
+        # Health status should be stored in attrs
+        assert "_health_status" in result_df.attrs
+        assert "_health_details" in result_df.attrs
+        # With no calibration, should be OK
+        assert result_df.attrs["_health_status"] == "OK"
     finally:
         schedule_module.load_latest_calibrator = orig_load
 

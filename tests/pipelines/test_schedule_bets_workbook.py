@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import date
 from pathlib import Path
 import sqlite3
@@ -13,6 +14,15 @@ import pytest
 
 from ingest.schema import GameResult
 from pipelines import schedule as schedule_pipeline
+
+
+def _logit_pool_expected(probs: list[float], weights: list[float], eps: float = 1e-6) -> float:
+    """Compute expected logit-pooled probability for test assertions."""
+    z_sum = 0.0
+    for p, w in zip(probs, weights):
+        p_clipped = max(eps, min(1.0 - eps, p))
+        z_sum += w * math.log(p_clipped / (1.0 - p_clipped))
+    return 1.0 / (1.0 + math.exp(-z_sum))
 from src.data import repository as repo
 from src.data import betting_repository as br
 from src.pipelines import bets as bets_pipeline
@@ -202,14 +212,19 @@ def test_schedule_ensemble_uses_tuned_weights(tmp_path: Path, monkeypatch) -> No
         except (TypeError, ValueError):
             return None
 
-    combined = 0.0
+    # Collect valid probabilities and weights for logit pooling
+    valid_probs = []
+    valid_weights = []
     # Human: Accumulate the weighted probabilities only when a safe float exists.
     # AI agent: Ensures the assertion mirrors what production ensemble writes in `ml_ensemble_components_json`.
     for comp in components:
         prob = _component_probability(comp)
         if prob is None:
             continue
-        combined += prob * comp["weight"]
+        valid_probs.append(prob)
+        valid_weights.append(comp["weight"])
+    # ML ensemble uses logit pooling (not simple averaging) since durability upgrade
+    combined = _logit_pool_expected(valid_probs, valid_weights)
     assert home_row["home_win_prob"] == pytest.approx(combined, rel=1e-6)
     assert "ensemble_ml_v1" in str(home_row["win_prob_source"])
     assert "ml_ensemble_components_json" in ml_rows.columns
