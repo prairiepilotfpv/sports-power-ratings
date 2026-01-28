@@ -2,13 +2,26 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
+import inspect
+import json
+import logging
+import sqlite3
 from typing import Any, Dict, List
 
 import pandas as pd
 
 from config import CALIBRATION_RESIDUAL_GAMES, DEFAULT_WIN_PROB_K
-from data.repository import load_games, load_model_metrics
+from data.repository import (
+    load_games,
+    load_model_metrics,
+    load_latest_forecast_params,
+    load_latest_total_recency_adjustment,
+    save_forecast_params,
+    save_total_recency_adjustment,
+)
+from models.registry import get_model
 from pipelines.common import normalize_games
 from pipelines.matchups import team_home_advantages
 from pipelines.projection_engines import BT_NATIVE_PROJECTION_KEY, get_projection_engine
@@ -18,6 +31,8 @@ from markets.base import Market
 from models.adapters.bt_forecast_adapter import BTForecastAdapter
 from models.base import resolve_model_identity
 from models.forecast_contract import ForecastContract
+
+_LOG = logging.getLogger(__name__)
 
 
 def _completed_games(df: pd.DataFrame) -> pd.DataFrame:
@@ -45,6 +60,113 @@ def _filter_games_as_of(
     cutoff = parsed.date()
     dates = pd.to_datetime(df["date"], errors="coerce").dt.date
     return df[dates <= cutoff]
+
+
+@dataclass(frozen=True)
+class ForecastParams:
+    ratings: dict[str, float]
+    home_advantages: dict[str, float]
+    scoring_averages: dict[str, tuple[float, float]]
+    total_intercept: float
+    total_slope: float
+    sd_sample_size: int
+    sd_residual_min: float | None
+    sd_residual_max: float | None
+    winprob_bias: float
+    as_of_date: str | None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "ratings": self.ratings,
+            "home_advantages": self.home_advantages,
+            "scoring_averages": {
+                team: [values[0], values[1]] for team, values in self.scoring_averages.items()
+            },
+            "total_intercept": self.total_intercept,
+            "total_slope": self.total_slope,
+            "sd_sample_size": self.sd_sample_size,
+            "sd_residual_min": self.sd_residual_min,
+            "sd_residual_max": self.sd_residual_max,
+            "winprob_bias": self.winprob_bias,
+            "as_of_date": self.as_of_date,
+        }
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> "ForecastParams":
+        scoring_raw = data.get("scoring_averages", {}) or {}
+        scoring_averages: dict[str, tuple[float, float]] = {}
+        for team, values in scoring_raw.items():
+            if isinstance(values, (list, tuple)) and len(values) >= 2:
+                try:
+                    scoring_averages[str(team)] = (float(values[0]), float(values[1]))
+                except Exception:
+                    continue
+        return ForecastParams(
+            ratings={str(team): float(val) for team, val in (data.get("ratings") or {}).items()},
+            home_advantages={
+                str(team): float(val)
+                for team, val in (data.get("home_advantages") or {}).items()
+                if val is not None
+            },
+            scoring_averages=scoring_averages,
+            total_intercept=float(data.get("total_intercept") or 0.0),
+            total_slope=float(data.get("total_slope") or 0.0),
+            sd_sample_size=int(data.get("sd_sample_size") or 0),
+            sd_residual_min=data.get("sd_residual_min"),
+            sd_residual_max=data.get("sd_residual_max"),
+            winprob_bias=float(data.get("winprob_bias") or 0.0),
+            as_of_date=data.get("as_of_date"),
+        )
+
+
+def load_forecast_params(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+) -> ForecastParams | None:
+    record = load_latest_forecast_params(
+        db_path,
+        sport=sport,
+        season=season,
+        model=model,
+    )
+    if not record:
+        return None
+    params = ForecastParams.from_dict(record["params"])
+    _LOG.info(
+        "Loaded forecast params: model=%s as_of_date=%s source=db",
+        model,
+        params.as_of_date or "unknown",
+    )
+    return params
+
+
+def _filter_kwargs_for_callable(fn: Any, params: dict[str, Any]) -> dict[str, Any]:
+    if not params:
+        return {}
+    sig = inspect.signature(fn)
+    allowed: set[str] = set()
+    for name, param in sig.parameters.items():
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            return dict(params)
+        if name in {"self", "cls"}:
+            continue
+        if param.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            allowed.add(name)
+    return {k: v for k, v in params.items() if k in allowed}
+
+
+def _instantiate_projection_model(
+    model: str, model_params: dict[str, float] | None
+) -> Any:
+    cls = get_model(model)
+    init_params = _filter_kwargs_for_callable(cls, dict(model_params or {}))
+    return cls(**init_params)
 
 
 def _margin_sd_fit_stats(
@@ -93,6 +215,166 @@ def _rating_lookup(rankings: pd.DataFrame) -> Dict[str, float]:
         str(row["team"]).strip(): float(row["implied_points"])
         for _, row in rankings.iterrows()
     }
+
+
+def refresh_forecast_params(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+    as_of_date: str | date | None = None,
+    model_params: dict[str, float] | None = None,
+) -> ForecastParams:
+    rows = load_games(db_path, sport=sport, season=season)
+    games = normalize_games(rows)
+    if games.empty:
+        raise ValueError(f"No games found for sport={sport!r}, season={season!r}")
+    played = _filter_games_as_of(_completed_games(games), as_of_date)
+    if played.empty:
+        raise ValueError("No completed games available for forecast refresh.")
+
+    metrics = load_model_metrics(db_path, sport=sport, season=season, model=model) or {}
+    rankings, model_instance = build_rankings(
+        played,
+        model=model,
+        model_params=model_params,
+        include_implied_points=True,
+        return_model=True,
+    )
+    ratings = _rating_lookup(rankings)
+    fallback_home_advantage = float(metrics.get("home_advantage", 0.0))
+    scoring_averages = team_scoring_averages(played.to_dict(orient="records"))
+    total_intercept, total_slope = fit_total_model(
+        played.to_dict(orient="records"), ratings
+    )
+    sd_sample_size, sd_residual_min, sd_residual_max = _margin_sd_fit_stats(
+        played, ratings, home_advantage=fallback_home_advantage
+    )
+
+    try:
+        winprob_bias = float(
+            metrics.get("winprob_bias")
+            if metrics.get("winprob_bias") is not None
+            else getattr(
+                getattr(model_instance, "metadata", lambda: None)(), "params", {}
+            ).get("winprob_bias", 0.0)
+        )
+    except Exception:
+        winprob_bias = 0.0
+
+    home_advantages = team_home_advantages(played, ratings)
+    as_of_text = _safe_date(as_of_date) if as_of_date else None
+    if as_of_text == "":
+        as_of_text = None
+
+    forecast_params = ForecastParams(
+        ratings=ratings,
+        home_advantages=home_advantages,
+        scoring_averages=scoring_averages,
+        total_intercept=total_intercept,
+        total_slope=total_slope,
+        sd_sample_size=sd_sample_size,
+        sd_residual_min=sd_residual_min,
+        sd_residual_max=sd_residual_max,
+        winprob_bias=winprob_bias,
+        as_of_date=as_of_text,
+    )
+    save_forecast_params(
+        db_path,
+        sport=sport,
+        season=season,
+        model=model,
+        as_of_date=as_of_text,
+        params=forecast_params.as_dict(),
+    )
+    return forecast_params
+
+
+def _calculate_total_recency_adjustment(
+    db_path: str | Path,
+    *,
+    sport: str,
+    as_of_date: str | date | None = None,
+    lookback_games: int = 100,
+) -> dict[str, Any] | None:
+    try:
+        conn = sqlite3.connect(db_path)
+        query = """
+            SELECT date, home_score, away_score,
+                   home_score + away_score as total_score
+            FROM games
+            WHERE home_score IS NOT NULL AND away_score IS NOT NULL
+        """
+        params: list[object] = []
+        as_of = None
+        if as_of_date:
+            as_of = pd.to_datetime(as_of_date)
+            query += " AND date <= ?"
+            params.append(as_of.strftime("%Y-%m-%d"))
+        query += " ORDER BY date DESC LIMIT ?"
+        params.append(lookback_games)
+
+        recent_games = pd.read_sql(query, conn, params=params)
+        conn.close()
+
+        if recent_games.empty or len(recent_games) < 20:
+            return None
+
+        conn = sqlite3.connect(db_path)
+        all_query = "SELECT home_score + away_score as total FROM games WHERE home_score IS NOT NULL"
+        all_params: list[object] = []
+        if as_of is not None:
+            all_query += " AND date <= ?"
+            all_params.append(as_of.strftime("%Y-%m-%d"))
+        all_games = pd.read_sql(all_query, conn, params=all_params or None)
+        conn.close()
+
+        if all_games.empty:
+            return None
+
+        recent_avg = recent_games["total_score"].mean()
+        season_avg = all_games["total"].mean()
+        if pd.isna(recent_avg) or pd.isna(season_avg):
+            return None
+
+        adjustment = recent_avg - season_avg
+        return {
+            "delta": float(adjustment),
+            "sample_size": len(recent_games),
+            "lookback_games": lookback_games,
+            "as_of_date": _safe_date(as_of_date) if as_of_date else None,
+        }
+    except Exception:
+        raise
+
+
+def refresh_total_recency_adjustment(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    as_of_date: str | date | None = None,
+    lookback_games: int = 100,
+) -> dict[str, Any] | None:
+    adjustment = _calculate_total_recency_adjustment(
+        db_path,
+        sport=sport,
+        as_of_date=as_of_date,
+        lookback_games=lookback_games,
+    )
+    if adjustment is None:
+        return None
+    save_total_recency_adjustment(
+        db_path,
+        sport=sport,
+        season=season,
+        as_of_date=adjustment.get("as_of_date"),
+        lookback_games=adjustment.get("lookback_games", lookback_games),
+        delta=adjustment["delta"],
+        sample_size=adjustment["sample_size"],
+    )
+    return adjustment
 
 
 def _safe_date(value: Any) -> str:
@@ -398,6 +680,164 @@ def _project_row(
     return base
 
 
+def _build_forecasts_df_from_params(
+    df: pd.DataFrame,
+    *,
+    db_path: str | Path,
+    sport: str,
+    season: str,
+    model: str,
+    upcoming_only: bool,
+    model_params: dict[str, float] | None,
+    forecast_params: ForecastParams,
+    params_source: str,
+    params_source_label: str | None = None,
+    params_source_run_id: str | None = None,
+    tuned_metric_used: str | None = None,
+    params_metric_optimized: str | None = None,
+    params_best_score: float | None = None,
+    params_fingerprint: str | None = None,
+    params_nonempty: bool | None = None,
+    params_run_id: str | None = None,
+    params_market: str | None = None,
+    fit_end_date: str | date | None = None,
+    metrics: dict[str, float | None] | None = None,
+) -> pd.DataFrame:
+    if metrics is None:
+        metrics = {}
+    played = _filter_games_as_of(_completed_games(df), fit_end_date)
+    upcoming = _upcoming_games(df)
+    base_total = float(metrics.get("base_total", 0.0))
+    if not base_total:
+        base_total = average_total_points(played.to_dict(orient="records"))
+    margin_std = metrics.get("margin_std")
+    total_std = metrics.get("total_std")
+    conditional_sd_intercept = metrics.get("conditional_sd_intercept")
+    conditional_sd_slope = metrics.get("conditional_sd_slope")
+    fallback_home_advantage = float(metrics.get("home_advantage", 0.0))
+    backtest_k = metrics.get("backtest_win_prob_k")
+    win_prob_k = float(
+        backtest_k if backtest_k is not None else metrics.get("win_prob_k", DEFAULT_WIN_PROB_K)
+    )
+    if win_prob_k <= 0:
+        win_prob_k = DEFAULT_WIN_PROB_K
+
+    projection_context = {
+        "ratings": forecast_params.ratings,
+        "base_total": base_total,
+        "scoring_averages": forecast_params.scoring_averages,
+        "total_intercept": forecast_params.total_intercept,
+        "total_slope": forecast_params.total_slope,
+        "margin_std": margin_std,
+        "total_std": total_std,
+        "conditional_sd_intercept": conditional_sd_intercept,
+        "conditional_sd_slope": conditional_sd_slope,
+        "win_prob_k": win_prob_k,
+        "winprob_bias": forecast_params.winprob_bias,
+        "sport": sport,
+        "sd_sample_size": forecast_params.sd_sample_size,
+        "sd_residual_min": forecast_params.sd_residual_min,
+        "sd_residual_max": forecast_params.sd_residual_max,
+        "rating_units": "points",
+    }
+    model_instance = _instantiate_projection_model(model, model_params)
+    projection_engine = get_projection_engine(model_instance)
+    schedule_rows: list[Dict[str, Any]] = []
+    home_advantages = forecast_params.home_advantages
+    for _, row in played.iterrows():
+        home = str(row.get("home_team", "")).strip()
+    schedule_rows.append(
+        _project_row(
+            row,
+            ratings=forecast_params.ratings,
+            status="final",
+            home_advantage=home_advantages.get(home, fallback_home_advantage),
+            params_source=params_source,
+            params_source_label=params_source_label,
+            params_source_run_id=params_source_run_id,
+            tuned_metric_used=tuned_metric_used,
+            params_metric_optimized=params_metric_optimized,
+            params_best_score=params_best_score,
+            params_fingerprint=params_fingerprint,
+            params_nonempty=params_nonempty,
+            params_run_id=params_run_id,
+            params_market=params_market,
+            model_instance=model_instance,
+            projection_engine=projection_engine,
+            projection_context=projection_context,
+            base_total=base_total,
+            scoring_averages=forecast_params.scoring_averages,
+            win_prob_k=win_prob_k,
+            total_intercept=forecast_params.total_intercept,
+            total_slope=forecast_params.total_slope,
+            margin_std=margin_std,
+            total_std=total_std,
+            conditional_sd_intercept=conditional_sd_intercept,
+            conditional_sd_slope=conditional_sd_slope,
+        )
+    )
+
+    for _, row in upcoming.iterrows():
+        home = str(row.get("home_team", "")).strip()
+        schedule_rows.append(
+            _project_row(
+                row,
+                ratings=forecast_params.ratings,
+                status="scheduled",
+                home_advantage=home_advantages.get(home, fallback_home_advantage),
+                params_source=params_source,
+                params_source_label=params_source_label,
+                params_source_run_id=params_source_run_id,
+                tuned_metric_used=tuned_metric_used,
+                params_metric_optimized=params_metric_optimized,
+                params_best_score=params_best_score,
+                params_fingerprint=params_fingerprint,
+                params_nonempty=params_nonempty,
+                params_run_id=params_run_id,
+                params_market=params_market,
+                model_instance=model_instance,
+                projection_engine=projection_engine,
+                projection_context=projection_context,
+                base_total=base_total,
+                scoring_averages=forecast_params.scoring_averages,
+                win_prob_k=win_prob_k,
+                total_intercept=forecast_params.total_intercept,
+                total_slope=forecast_params.total_slope,
+                margin_std=margin_std,
+                total_std=total_std,
+                conditional_sd_intercept=conditional_sd_intercept,
+                conditional_sd_slope=conditional_sd_slope,
+            )
+        )
+
+    schedule_df = pd.DataFrame(schedule_rows)
+    if not schedule_df.empty and "date" in schedule_df.columns:
+        if "_sort_dt" in schedule_df.columns:
+            schedule_df = (
+                schedule_df.sort_values(
+                    ["_sort_dt", "game_id", "away_team", "home_team"]
+                )
+                .drop(columns=["_sort_dt"], errors="ignore")
+            )
+        else:
+            schedule_df = (
+                schedule_df.assign(
+                    _dt=pd.to_datetime(schedule_df["date"], errors="coerce")
+                )
+                .sort_values(["_dt", "game_id", "away_team", "home_team"])
+                .drop(columns=["_dt"], errors="ignore")
+            )
+    for col in (
+        "home_win_prob_raw",
+        "away_win_prob_raw",
+        "home_win_prob_calibrated",
+        "away_win_prob_calibrated",
+    ):
+        if col not in schedule_df.columns:
+            schedule_df[col] = pd.NA
+    return schedule_df
+
+
 def _build_forecasts_df_legacy(
     df: pd.DataFrame,
     *,
@@ -418,24 +858,86 @@ def _build_forecasts_df_legacy(
     params_run_id: str | None = None,
     params_market: str | None = None,
     fit_end_date: str | date | None = None,
+    mode: str = "dev",
 ) -> pd.DataFrame:
     played = _filter_games_as_of(_completed_games(df), fit_end_date)
     upcoming = _upcoming_games(df)
 
-    rankings, model_instance = build_rankings(
-        played,
+    # Try to load pre-computed forecast params (includes all fitting results computed during refresh)
+    # This avoids ALL fitting operations during schedule (production mode) and respects
+    # the no_fit_guard which prevents fitting operations in production
+    forecast_params = load_forecast_params(
+        db_path,
+        sport=sport,
+        season=season,
         model=model,
-        require_scores=False,
-        model_params=model_params,
-        include_implied_points=True,
-        return_model=True,
     )
-    ratings = _rating_lookup(rankings)
+    
+    # Load pre-computed forecast params (computed during refresh pipeline)
+    # In production mode, these MUST exist and will be used. In dev mode, we fall back to computing if missing.
+    forecast_params = load_forecast_params(
+        db_path,
+        sport=sport,
+        season=season,
+        model=model,
+    )
+    
+    metrics = load_model_metrics(db_path, sport=sport, season=season, model=model) or {}
+    model_instance = None
+    
+    if forecast_params is not None:
+        # Use pre-computed values from refresh pipeline
+        ratings = forecast_params.ratings
+        home_advantages = forecast_params.home_advantages
+        scoring_averages = forecast_params.scoring_averages
+        total_intercept = forecast_params.total_intercept
+        total_slope = forecast_params.total_slope
+        sd_sample_size = forecast_params.sd_sample_size
+        sd_residual_min = forecast_params.sd_residual_min
+        sd_residual_max = forecast_params.sd_residual_max
+        fallback_home_advantage = float(metrics.get("home_advantage", 0.0))
+        _LOG.info(f"[_build_forecasts_df_legacy] Loaded pre-computed params for {model}")
+    elif mode == "production":
+        # Production mode requires pre-computed params - don't attempt to fit
+        _LOG.warning(
+            f"[_build_forecasts_df_legacy] No forecast params for {model} in production mode. "
+            "Cannot build forecasts without refresh. Returning empty DataFrame."
+        )
+        return pd.DataFrame()
+    else:
+        # Dev mode: compute params from games (requires fitting)
+        _LOG.info(f"[_build_forecasts_df_legacy] Computing forecast params for {model} from games (dev mode)")
+        rankings, model_instance = build_rankings(
+            played,
+            model=model,
+            require_scores=False,
+            model_params=model_params,
+            include_implied_points=True,
+            return_model=True,
+        )
+        ratings = _rating_lookup(rankings)
+        fallback_home_advantage = float(metrics.get("home_advantage", 0.0))
+        home_advantages = team_home_advantages(played, ratings)
+        played_records = played.to_dict(orient="records")
+        scoring_averages = team_scoring_averages(played_records)
+        total_intercept, total_slope = fit_total_model(played_records, ratings)
+        sd_sample_size, sd_residual_min, sd_residual_max = _margin_sd_fit_stats(
+            played, ratings, home_advantage=fallback_home_advantage
+        )
+    
+    # Always ensure we have model_instance for the projection engine
+    if model_instance is None:
+        rankings, model_instance = build_rankings(
+            played,
+            model=model,
+            require_scores=False,
+            model_params=model_params,
+            include_implied_points=True,
+            return_model=True,
+        )
+    
     projection_engine = get_projection_engine(model_instance)
     fallback_total = average_total_points(played.to_dict(orient="records"))
-    metrics = load_model_metrics(db_path, sport=sport, season=season, model=model) or {}
-    home_advantages = team_home_advantages(played, ratings)
-    fallback_home_advantage = float(metrics.get("home_advantage", 0.0))
     backtest_win_prob_k = metrics.get("backtest_win_prob_k")
     win_prob_k = float(
         backtest_win_prob_k
@@ -445,24 +947,29 @@ def _build_forecasts_df_legacy(
     if win_prob_k <= 0:
         win_prob_k = DEFAULT_WIN_PROB_K
     try:
+        winprob_bias_from_model = 0.0
+        if model_instance is not None:
+            winprob_bias_from_model = float(
+                getattr(getattr(model_instance, "metadata", lambda: None)(), "params", {}).get("winprob_bias", 0.0)
+            )
+    except Exception:
+        winprob_bias_from_model = 0.0
+    
+    # Use pre-computed winprob_bias from forecast_params if available, otherwise from model or metrics
+    if forecast_params is not None and hasattr(forecast_params, 'winprob_bias'):
+        winprob_bias = float(forecast_params.winprob_bias)
+    else:
         winprob_bias = float(
             metrics.get("winprob_bias")
             if metrics.get("winprob_bias") is not None
-            else getattr(getattr(model_instance, "metadata", lambda: None)(), "params", {}).get("winprob_bias", 0.0)
+            else winprob_bias_from_model
         )
-    except Exception:
-        winprob_bias = 0.0
+    
     base_total = float(metrics.get("base_total", 0.0)) or fallback_total
     margin_std = metrics.get("margin_std")
     total_std = metrics.get("total_std")
     conditional_sd_intercept = metrics.get("conditional_sd_intercept")
     conditional_sd_slope = metrics.get("conditional_sd_slope")
-    played_records = played.to_dict(orient="records")
-    total_intercept, total_slope = fit_total_model(played_records, ratings)
-    scoring_averages = team_scoring_averages(played_records)
-    sd_sample_size, sd_residual_min, sd_residual_max = _margin_sd_fit_stats(
-        played, ratings, home_advantage=fallback_home_advantage
-    )
     projection_context = {
         "ratings": ratings,
         "base_total": base_total,
@@ -586,6 +1093,8 @@ def build_forecasts_df(
     params_run_id: str | None = None,
     params_market: str | None = None,
     fit_end_date: str | date | None = None,
+    forecast_params: ForecastParams | None = None,
+    mode: str = "dev",
 ) -> pd.DataFrame:
     if games_df is None:
         rows = load_games(db_path, sport=sport, season=season)
@@ -596,32 +1105,66 @@ def build_forecasts_df(
     if games.empty:
         return pd.DataFrame()
 
-    legacy_df = _build_forecasts_df_legacy(
-        games,
-        db_path=db_path,
-        sport=sport,
-        season=season,
-        model=model,
-        upcoming_only=not include_played,
-        model_params=model_params,
-        params_source=params_source,
-        params_source_label=params_source_label,
-        params_source_run_id=params_source_run_id,
-        tuned_metric_used=tuned_metric_used,
-        params_metric_optimized=params_metric_optimized,
-        params_best_score=params_best_score,
-        params_fingerprint=params_fingerprint,
-        params_nonempty=params_nonempty,
-        params_run_id=params_run_id,
-        params_market=params_market,
-        fit_end_date=fit_end_date,
+    metrics = (
+        load_model_metrics(db_path, sport=sport, season=season, model=model)
+        if forecast_params is not None
+        else None
+    )
+
+    legacy_df = (
+        _build_forecasts_df_from_params(
+            games,
+            db_path=db_path,
+            sport=sport,
+            season=season,
+            model=model,
+            upcoming_only=not include_played,
+            model_params=model_params,
+            forecast_params=forecast_params,
+            params_source=params_source,
+            params_source_label=params_source_label,
+            params_source_run_id=params_source_run_id,
+            tuned_metric_used=tuned_metric_used,
+            params_metric_optimized=params_metric_optimized,
+            params_best_score=params_best_score,
+            params_fingerprint=params_fingerprint,
+            params_nonempty=params_nonempty,
+            params_run_id=params_run_id,
+            params_market=params_market,
+            fit_end_date=fit_end_date,
+            metrics=metrics,
+        )
+        if forecast_params is not None
+        else _build_forecasts_df_legacy(
+            games,
+            db_path=db_path,
+            sport=sport,
+            season=season,
+            model=model,
+            upcoming_only=not include_played,
+            model_params=model_params,
+            params_source=params_source,
+            params_source_label=params_source_label,
+            params_source_run_id=params_source_run_id,
+            tuned_metric_used=tuned_metric_used,
+            params_metric_optimized=params_metric_optimized,
+            params_best_score=params_best_score,
+            params_fingerprint=params_fingerprint,
+            params_nonempty=params_nonempty,
+            params_run_id=params_run_id,
+            params_market=params_market,
+            fit_end_date=fit_end_date,
+            mode=mode,
+        )
     )
 
     filtered = legacy_df
-    if not include_played:
-        filtered = filtered[filtered.get("status") != "final"]
-    if not include_upcoming:
-        filtered = filtered[filtered.get("status") != "scheduled"]
+    status_series = filtered.get("status")
+    if status_series is not None:
+        if not include_played:
+            filtered = filtered[status_series != "final"]
+        if not include_upcoming:
+            filtered = filtered[status_series != "scheduled"]
     if date is not None and not filtered.empty:
         parsed = pd.to_datetime(date, errors="coerce")
         if not pd.isna(parsed):

@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import math
 from pathlib import Path
 import re
 import sys
 
 import pandas as pd
+
+_LOG = logging.getLogger(__name__)
 
 
 def _ensure_src_on_path() -> None:
@@ -140,6 +144,64 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Allow overwriting existing output file.",
     )
 
+    refresh_parser = subparsers.add_parser(
+        "refresh",
+        help="Run the refresh lane: update rankings, forecast params, and optional recency drift.",
+    )
+    refresh_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
+    refresh_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
+    refresh_parser.add_argument("--division", help="Optional division identifier (e.g., ncaa-d1).")
+    refresh_parser.add_argument("--conference", help="Optional conference identifier (e.g., big-12).")
+    refresh_parser.add_argument("--model", help="Ranking model to refresh (default: all available).")
+    refresh_parser.add_argument("--model-params", help="JSON string of model parameters override.")
+    refresh_parser.add_argument("--model-params-file", help="JSON file of model parameters.")
+    refresh_parser.add_argument("--tuned-metric", help="Use tuned params for a specific metric if available.")
+    refresh_parser.add_argument(
+        "--output",
+        help="Optional output CSV path for rankings (same as rank command).",
+    )
+    refresh_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite ranking output if it exists (matches --overwrite for rank).",
+    )
+    refresh_parser.add_argument(
+        "--as-of-date",
+        dest="as_of_date",
+        help="Optional target date for forecast params (YYYY-MM-DD).",
+    )
+    refresh_parser.add_argument(
+        "--compute-total-recency-adjustment",
+        action="store_true",
+        help="Store a new total recency adjustment artifact after refreshing.",
+    )
+    refresh_parser.add_argument(
+        "--db",
+        help="Optional SQLite DB path override (default derived from sport/season).",
+    )
+
+    drift_parser = subparsers.add_parser(
+        "drift-check",
+        help="Report recent drift metrics using persisted forecast artifacts.",
+    )
+    drift_parser.add_argument("--sport", required=True, help="Sport identifier (e.g., nba)")
+    drift_parser.add_argument("--season", required=True, help="Season identifier (e.g., 2024-25)")
+    drift_parser.add_argument(
+        "--model",
+        default="bradley-terry",
+        help="Model to evaluate (default: bradley-terry).",
+    )
+    drift_parser.add_argument(
+        "--window",
+        type=int,
+        default=200,
+        help="Number of most recent games to include in the drift window (default: 200).",
+    )
+    drift_parser.add_argument(
+        "--db",
+        help="Optional SQLite DB path override (default derived from sport/season).",
+    )
+
     matchup_parser = subparsers.add_parser(
         "matchup",
         aliases=["predict", "predict_matchup"],
@@ -268,6 +330,28 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--validate-ensemble-weights",
         action="store_true",
         help="Compare tuned ML ensemble weights vs equal weights on completed games; saves report to outputs/ensemble_validation/.",
+    )
+    schedule_parser.add_argument(
+        "--mode",
+        choices=["production", "research"],
+        default="production",
+        help="Set schedule lane behavior (default: production).",
+    )
+    schedule_parser.add_argument(
+        "--allow-best-fallback",
+        action="store_true",
+        help="Allow fallback to db_best_run params/weights (research only).",
+    )
+    schedule_parser.add_argument(
+        "--apply-total-recency-adjustment",
+        action="store_true",
+        help="Apply persisted total recency adjustment when building BETS.",
+    )
+    schedule_parser.add_argument(
+        "--calibration-mode",
+        choices=["off", "evaluation", "betting"],
+        default="off",
+        help="Label describing calibration usage (default: off).",
     )
     schedule_parser.add_argument(
         "--db",
@@ -1277,6 +1361,7 @@ def _run_schedule(args: argparse.Namespace) -> None:
     """Export the schedule with projections for played and upcoming games."""
     _ensure_src_on_path()
     from data.paths import db_path_for
+    from pipelines.no_fit_guard import enforce_no_fit_guard
     from pipelines.schedule import (
         build_schedule_excel_report,
         build_schedule_with_projections,
@@ -1316,8 +1401,39 @@ def _run_schedule(args: argparse.Namespace) -> None:
     output_path = Path(args.output) if args.output else None
     if getattr(args, "as_of_date", None):
         args.as_of_date = _require_iso_date(args.as_of_date, field="--as-of-date")
-    if output_path is not None and output_path.suffix.lower() == ".csv":
-        result_path = build_schedule_with_projections(
+    raw_mode = getattr(args, "mode", "production") or "production"
+    mode = raw_mode.lower()
+    if mode not in {"production", "research"}:
+        raise ValueError("--mode must be 'production' or 'research'")
+    allow_best_fallback_flag = bool(getattr(args, "allow_best_fallback", False)) and mode != "production"
+    apply_total_recency_adjustment = bool(getattr(args, "apply_total_recency_adjustment", False))
+    calibration_mode = getattr(args, "calibration_mode", "off") or "off"
+    _LOG.info("Running schedule lane: mode=%s allow_best_fallback=%s", mode, allow_best_fallback_flag)
+    with enforce_no_fit_guard(mode == "production"):
+        if output_path is not None and output_path.suffix.lower() == ".csv":
+            result_path = build_schedule_with_projections(
+                db_path,
+                sport=args.sport,
+                season=args.season,
+                division=args.division,
+                conference=args.conference,
+                model=args.model,
+                output_path=output_path,
+                upcoming_only=args.upcoming_only,
+                model_params=model_params,
+                model_params_file=args.model_params_file,
+                tuned_metric=args.tuned_metric,
+                mode=mode,
+                allow_best_fallback=allow_best_fallback_flag,
+            )
+            if isinstance(result_path, list):
+                for path in result_path:
+                    print(f"Saved schedule with projections -> {path}")
+            else:
+                print(f"Saved schedule with projections -> {result_path}")
+            return
+
+        result_path = build_schedule_excel_report(
             db_path,
             sport=args.sport,
             season=args.season,
@@ -1329,33 +1445,216 @@ def _run_schedule(args: argparse.Namespace) -> None:
             model_params=model_params,
             model_params_file=args.model_params_file,
             tuned_metric=args.tuned_metric,
+            as_of_date=getattr(args, "as_of_date", None),
+            bets_model=getattr(args, "bets_model", None),
+            strict=bool(getattr(args, "strict", False)),
+            fail_on_health_check=bool(getattr(args, "fail_on_health_check", False)),
+            mode=mode,
+            allow_best_fallback=allow_best_fallback_flag,
+            apply_total_recency_adjustment=apply_total_recency_adjustment,
+            calibration_mode=calibration_mode,
         )
-        if isinstance(result_path, list):
-            for path in result_path:
-                print(f"Saved schedule with projections -> {path}")
-        else:
-            print(f"Saved schedule with projections -> {result_path}")
-        return
+    print(f"Saved schedule workbook -> {result_path}")
 
-    result_path = build_schedule_excel_report(
+
+def _run_refresh(args: argparse.Namespace) -> None:
+    """Run rankings, persist forecast params, and optionally refresh total drift."""
+    _run_rankings(args)
+    from data.paths import db_path_for
+    from forecasting.forecast_service import (
+        refresh_forecast_params,
+        refresh_total_recency_adjustment,
+    )
+    from pipelines.model_params import resolve_model_market_params_with_metadata
+    from markets.base import Market
+
+    db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
+    _echo_db_path(db_path)
+    as_of_date = None
+    raw_as_of = getattr(args, "as_of_date", None)
+    if raw_as_of:
+        as_of_date = _require_iso_date(raw_as_of, field="--as-of-date")
+
+    models = _resolve_models_arg(args.model)
+    parsed_params = _parse_json_arg(args.model_params)
+    for model_name in models:
+        resolution = resolve_model_market_params_with_metadata(
+            model_name,
+            params=parsed_params,
+            params_file=args.model_params_file,
+            db_path=db_path,
+            sport=args.sport,
+            season=args.season,
+            tuned_metric=args.tuned_metric,
+            market=Market.ML,
+        )
+        forecast_params = refresh_forecast_params(
+            db_path,
+            sport=args.sport,
+            season=args.season,
+            model=model_name,
+            as_of_date=as_of_date,
+            model_params=resolution.params,
+        )
+        print(
+            f"Persisted forecast params -> model={model_name} as_of_date={forecast_params.as_of_date or 'N/A'}"
+        )
+    if getattr(args, "compute_total_recency_adjustment", False):
+        result = refresh_total_recency_adjustment(
+            db_path,
+            sport=args.sport,
+            season=args.season,
+            as_of_date=as_of_date,
+        )
+        if result and result.get("delta") is not None:
+            print(
+                f"Total recency delta persisted: {result['delta']:+.2f} "
+                f"(sample={result.get('sample_size')})"
+            )
+        else:
+            print(
+                "Total recency adjustment not persisted (insufficient data)"
+            )
+
+
+def _run_drift_check(args: argparse.Namespace) -> None:
+    """Report drift diagnostics using persisted forecast params."""
+    from data.paths import db_path_for
+    from data.repository import load_games
+    from forecasting import build_forecasts_df
+    from forecasting.forecast_service import ForecastParams, load_latest_forecast_params
+    from pipelines.common import normalize_games
+
+    db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)
+    rows = load_games(db_path, sport=args.sport, season=args.season)
+    df = normalize_games(rows)
+    if df.empty:
+        raise ValueError(f"No games found for sport={args.sport!r}, season={args.season!r}")
+    played = _completed_games(df)
+    played = played.sort_values("date", ascending=False)
+    window = int(getattr(args, "window", 200))
+    if window <= 0:
+        raise ValueError("--window must be positive")
+    recent = played.head(window).copy(deep=True)
+    recency_count = len(recent)
+    if recent.empty:
+        raise ValueError("No completed games to evaluate drift.")
+
+    forecast_record = load_latest_forecast_params(
         db_path,
         sport=args.sport,
         season=args.season,
-        division=args.division,
-        conference=args.conference,
         model=args.model,
-        output_path=output_path,
-        upcoming_only=args.upcoming_only,
-        model_params=model_params,
-        model_params_file=args.model_params_file,
-        tuned_metric=args.tuned_metric,
-        as_of_date=getattr(args, "as_of_date", None),
-        bets_model=getattr(args, "bets_model", None),
-        strict=bool(getattr(args, "strict", False)),
-        fail_on_health_check=bool(getattr(args, "fail_on_health_check", False)),
     )
-    print(f"Saved schedule workbook -> {result_path}")
-    
+    if not forecast_record:
+        raise RuntimeError(
+            "Missing persisted forecast params; run `refresh` before drift-check."
+        )
+    forecast_params = ForecastParams.from_dict(forecast_record["params"])
+
+    predictions = build_forecasts_df(
+        db_path=db_path,
+        sport=args.sport,
+        season=args.season,
+        model=args.model,
+        games_df=recent,
+        include_played=True,
+        include_upcoming=False,
+        forecast_params=forecast_params,
+    )
+    if predictions.empty:
+        raise ValueError("No predictions available for the selected games.")
+
+    metrics = []
+    ml_probs = []
+    outcomes = []
+    margin_residuals = []
+    total_residuals = []
+    predicted_margin_sds: list[float] = []
+    predicted_total_sds: list[float] = []
+    for _, row in predictions.iterrows():
+        home_score = row.get("home_score")
+        away_score = row.get("away_score")
+        margin_mean = row.get("margin_mean")
+        total_mean = row.get("total_mean")
+        margin_sd = row.get("margin_sd")
+        total_sd = row.get("total_sd")
+        home_win_prob = row.get("home_win_prob")
+        if (
+            home_score is None
+            or away_score is None
+            or margin_mean is None
+            or total_mean is None
+            or home_win_prob is None
+        ):
+            continue
+        try:
+            home_score = float(home_score)
+            away_score = float(away_score)
+        except Exception:
+            continue
+        if pd.isna(home_win_prob) or pd.isna(margin_mean) or pd.isna(total_mean):
+            continue
+        outcome = 1.0 if home_score > away_score else 0.0
+        prob = float(home_win_prob)
+        ml_probs.append(prob)
+        outcomes.append(outcome)
+        actual_margin = home_score - away_score
+        actual_total = home_score + away_score
+        margin_residuals.append(actual_margin - float(margin_mean))
+        total_residuals.append(actual_total - float(total_mean))
+        if margin_sd is not None and not pd.isna(margin_sd):
+            predicted_margin_sds.append(float(margin_sd))
+        if total_sd is not None and not pd.isna(total_sd):
+            predicted_total_sds.append(float(total_sd))
+
+    if not ml_probs:
+        raise ValueError("No valid ML predictions found in the selected window.")
+
+    ll = 0.0
+    brier = 0.0
+    for prob, outcome in zip(ml_probs, outcomes):
+        p = min(max(prob, 1e-9), 1.0 - 1e-9)
+        ll += outcome * math.log(p) + (1 - outcome) * math.log(1 - p)
+        brier += (prob - outcome) ** 2
+    log_loss = -ll / len(ml_probs)
+    brier_score = brier / len(ml_probs)
+
+    def _pop_std(values: list[float]) -> float | None:
+        if not values:
+            return None
+        mean = sum(values) / len(values)
+        return math.sqrt(sum((x - mean) ** 2 for x in values) / len(values))
+
+    spread_sd = _pop_std(margin_residuals)
+    total_sd = _pop_std(total_residuals)
+    avg_pred_margin_sd = sum(predicted_margin_sds) / len(predicted_margin_sds) if predicted_margin_sds else None
+    avg_pred_total_sd = sum(predicted_total_sds) / len(predicted_total_sds) if predicted_total_sds else None
+    spread_ratio = (
+        spread_sd / avg_pred_margin_sd if spread_sd is not None and avg_pred_margin_sd
+        else float("nan")
+    )
+    total_ratio = (
+        total_sd / avg_pred_total_sd if total_sd is not None and avg_pred_total_sd
+        else float("nan")
+    )
+    margin_bias = sum(margin_residuals) / len(margin_residuals) if margin_residuals else float("nan")
+    total_bias = sum(total_residuals) / len(total_residuals) if total_residuals else float("nan")
+
+    print(f"Drift check ({args.model}) over {len(ml_probs)} games:")
+    print(f"  ML log loss: {log_loss:.4f}  Brier score: {brier_score:.4f}")
+    spread_sd_display = spread_sd if spread_sd is not None else 0.0
+    total_sd_display = total_sd if total_sd is not None else 0.0
+    avg_pred_margin_display = avg_pred_margin_sd if avg_pred_margin_sd is not None else 0.0
+    avg_pred_total_display = avg_pred_total_sd if avg_pred_total_sd is not None else 0.0
+    print(
+        f"  Spread SD ratio: {spread_ratio:.3f} (resid_sd={spread_sd_display:.2f} pred_sd={avg_pred_margin_display:.2f})"
+    )
+    print(
+        f"  Total SD ratio: {total_ratio:.3f} (resid_sd={total_sd_display:.2f} pred_sd={avg_pred_total_display:.2f})"
+    )
+    print(f"  Bias: margin={margin_bias:.2f}, total={total_bias:.2f}")
+
     # Optional: save BETS predictions to DB and run validation
     if getattr(args, "validate_ensemble_weights", False):
         try:
@@ -2027,6 +2326,10 @@ def main(argv: list[str] | None = None) -> None:
         _run_matchup(args)
     elif args.command == "schedule":
         _run_schedule(args)
+    elif args.command == "refresh":
+        _run_refresh(args)
+    elif args.command == "drift-check":
+        _run_drift_check(args)
     elif args.command == "market-review":
         raise ValueError(
             "market-review has been retired. Use `betting market-csv` to load CSV market lines "
@@ -2573,6 +2876,17 @@ def _optional_iso_date(value: str | None, *, field: str) -> str | None:
     if value is None:
         return None
     return _require_iso_date(value, field=field)
+
+
+def _resolve_models_arg(model_arg: str | None) -> list[str]:
+    from models.registry import list_models, normalize_model_name
+
+    if not model_arg:
+        return list_models()
+    normalized = normalize_model_name(model_arg)
+    if normalized in {"all", "*"}:
+        return list_models()
+    return [normalized]
 
 
 def _run_activate_tuning(args: argparse.Namespace) -> None:

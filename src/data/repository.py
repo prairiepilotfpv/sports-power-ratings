@@ -87,6 +87,28 @@ CREATE TABLE IF NOT EXISTS model_metrics (
     UNIQUE(sport, season, model)
 );
 
+CREATE TABLE IF NOT EXISTS forecast_params (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    model TEXT NOT NULL,
+    as_of_date TEXT,
+    params_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(sport, season, model)
+);
+
+CREATE TABLE IF NOT EXISTS total_recency_adjustments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sport TEXT NOT NULL,
+    season TEXT NOT NULL,
+    as_of_date TEXT,
+    lookback_games INTEGER NOT NULL,
+    delta REAL NOT NULL,
+    sample_size INTEGER NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS model_tuned_params (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sport TEXT NOT NULL,
@@ -800,6 +822,128 @@ def load_model_metrics(
     if any(value is not None for value in backtest_values.values()):
         metrics.update(backtest_values)
     return metrics
+
+
+def save_forecast_params(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+    as_of_date: str | None,
+    params: dict[str, Any],
+) -> None:
+    """Persist precomputed forecast params for a model."""
+    init_db(db_path)
+    params_json = json.dumps(params, sort_keys=True)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        conn.execute(
+            """
+            INSERT INTO forecast_params (
+                sport,
+                season,
+                model,
+                as_of_date,
+                params_json,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(sport, season, model) DO UPDATE SET
+                as_of_date = excluded.as_of_date,
+                params_json = excluded.params_json,
+                updated_at = datetime('now')
+            """,
+            (sport, season, model, as_of_date, params_json),
+        )
+        conn.commit()
+
+
+def load_latest_forecast_params(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+) -> dict[str, Any] | None:
+    """Return the most recent forecast params row for a model, if any."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT as_of_date, params_json, updated_at
+            FROM forecast_params
+            WHERE sport = ? AND season = ? AND model = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (sport, season, model),
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        "as_of_date": row[0],
+        "params": json.loads(row[1]),
+        "updated_at": row[2],
+    }
+
+
+def save_total_recency_adjustment(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+    as_of_date: str | None,
+    lookback_games: int,
+    delta: float,
+    sample_size: int,
+) -> None:
+    """Persist the latest total recency adjustment summary."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        conn.execute(
+            """
+            INSERT INTO total_recency_adjustments (
+                sport,
+                season,
+                as_of_date,
+                lookback_games,
+                delta,
+                sample_size,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (sport, season, as_of_date, lookback_games, delta, sample_size),
+        )
+        conn.commit()
+
+
+def load_latest_total_recency_adjustment(
+    db_path: str | Path,
+    *,
+    sport: str,
+    season: str,
+) -> dict[str, Any] | None:
+    """Return the most recent total recency adjustment row for a sport/season."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path))) as conn:
+        row = conn.execute(
+            """
+            SELECT as_of_date, lookback_games, delta, sample_size, updated_at
+            FROM total_recency_adjustments
+            WHERE sport = ? AND season = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (sport, season),
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        "as_of_date": row[0],
+        "lookback_games": row[1],
+        "delta": row[2],
+        "sample_size": row[3],
+        "updated_at": row[4],
+    }
 
 
 

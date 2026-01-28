@@ -188,6 +188,7 @@ def resolve_model_params(
     season: str | None = None,
     tuned_metric: str | None = None,
     market: str | Market | None = None,
+    allow_best_fallback: bool = True,
 ) -> dict[str, Any] | None:
     """Resolve model parameters from CLI inputs or persisted tuning rows."""
     return resolve_model_market_params_with_metadata(
@@ -199,6 +200,7 @@ def resolve_model_params(
         season=season,
         tuned_metric=tuned_metric,
         market=market,
+        allow_best_fallback=allow_best_fallback,
     ).params
 
 
@@ -212,6 +214,7 @@ def resolve_model_market_params_with_metadata(
     season: str | None = None,
     tuned_metric: str | None = None,
     market: str | Market | None = None,
+    allow_best_fallback: bool = True,
 ) -> ModelParamsResolution:
     """Resolve parameters scoped to a single market and return richer metadata."""
     if params and params_file:
@@ -287,6 +290,7 @@ def resolve_model_market_params_with_metadata(
         sport=sport,
         season=season,
         market=market_name,
+        allow_best_fallback=allow_best_fallback,
     )
 
 
@@ -300,6 +304,7 @@ def resolve_model_params_with_metadata(
     season: str | None = None,
     tuned_metric: str | None = None,
     market: str | Market | None = None,
+    allow_best_fallback: bool = True,
 ) -> ModelParamsResolution:
     return resolve_model_market_params_with_metadata(
         model,
@@ -310,6 +315,7 @@ def resolve_model_params_with_metadata(
         season=season,
         tuned_metric=tuned_metric,
         market=market,
+        allow_best_fallback=allow_best_fallback,
     )
 
 
@@ -320,6 +326,7 @@ def _resolve_model_params_from_db(
     sport: str | None,
     season: str | None,
     market: str,
+    allow_best_fallback: bool = True,
 ) -> ModelParamsResolution:
     market_name = _normalize_market(market)
     effective = resolve_effective_params(
@@ -328,6 +335,7 @@ def _resolve_model_params_from_db(
         season=season,
         model=model,
         market=market_name,
+        allow_best_fallback=allow_best_fallback,
     )
     tuned_metric_used = _metric_display_from_optimized(effective.metric_optimized)
     return ModelParamsResolution(
@@ -407,6 +415,7 @@ def resolve_effective_params(
     season: str | None,
     model: str,
     market: str,
+    allow_best_fallback: bool = True,
 ) -> EffectiveParamsResolution:
     model_name = normalize_model_name(model)
     market_name = _normalize_market(market)
@@ -517,7 +526,7 @@ def resolve_effective_params(
                 market_name,
             )
             MISSING_ACTIVE_WARNING_EMITTED.add(warning_key)
-        if params_source_label == "missing_active" and has_runs:
+        if params_source_label == "missing_active" and has_runs and allow_best_fallback:
             best_run = load_best_model_market_tuning_run(
                 db_path,
                 sport=sport,
@@ -555,6 +564,7 @@ def resolve_active_ensemble_weights(
     season: str | None,
     market: str,
     ensemble_id: str,
+    allow_best_fallback: bool = True,
 ) -> ActiveParamsResolution:
     if db_path is None or sport is None or season is None:
         return ActiveParamsResolution(params=None, params_source="default", tuned_metric_used=None, source_run_id=None)
@@ -566,6 +576,9 @@ def resolve_active_ensemble_weights(
             db_path, sport=sport, season=season, market=market, ensemble_id=ensemble_id
         )
         return ActiveParamsResolution(params=weights, params_source="db_ensemble_active", tuned_metric_used=None, source_run_id=src)
+
+    if not allow_best_fallback:
+        return ActiveParamsResolution(params=None, params_source="missing_active", tuned_metric_used=None, source_run_id=None)
 
     metric_name, metric_optimized = _resolve_market_metric(market, None)
     weights, run_id = load_best_ensemble_market_tuning_weights_by_optimized_metric(
@@ -591,7 +604,7 @@ def resolve_active_ensemble_weights(
             source_run_id=run_id,
         )
 
-    return ActiveParamsResolution(params=None, params_source="default", tuned_metric_used=None, source_run_id=None)
+    return ActiveParamsResolution(params=None, params_source="missing_active", tuned_metric_used=None, source_run_id=None)
 
 
 def bootstrap_market_active_params(

@@ -14,6 +14,7 @@ except Exception:  # pragma: no cover - scipy optional
     norm = None
 
 from config import DEFAULT_WIN_PROB_K
+from pipelines.no_fit_guard import require_fit_allowed
 
 
 @dataclass(frozen=True)
@@ -224,6 +225,7 @@ def fit_total_model(
     ratings: dict[str, float],
 ) -> tuple[float, float]:
     """Fit a simple linear model for totals based on summed team ratings."""
+    require_fit_allowed("fit_total_model")
     points: list[tuple[float, float]] = []
     for row in rows:
         try:
@@ -334,6 +336,7 @@ def fit_win_prob_scale(
     grid_steps: int = 100,
 ) -> float:
     """Fit the win-probability scale using a coarse grid + golden-section search."""
+    require_fit_allowed("fit_win_prob_scale")
     if not samples:
         return default_k
 

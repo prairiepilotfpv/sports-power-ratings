@@ -20,6 +20,7 @@ from pipelines.projections import (
     team_scoring_averages,
     win_prob_distribution,
 )
+from pipelines.no_fit_guard import require_fit_allowed
 from pipelines.projection_engines import get_projection_engine
 from pipelines.run_rankings import build_rankings
 from models.registry import normalize_model_name
@@ -59,6 +60,7 @@ def team_home_advantages(
     df: pd.DataFrame, ratings: Dict[str, float]
 ) -> Dict[str, float]:
     """Estimate team-specific home advantages from residual margins."""
+    require_fit_allowed("team_home_advantages")
     if df.empty or not ratings:
         return {}
 

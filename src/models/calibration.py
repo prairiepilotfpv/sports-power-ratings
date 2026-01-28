@@ -16,6 +16,7 @@ from config import (
     MARGIN_SD_GUARDRAIL_MAX,
     MARGIN_SD_GUARDRAIL_MIN,
 )
+from pipelines.no_fit_guard import require_fit_allowed
 
 ABS_RESID_TO_SD = math.sqrt(math.pi / 2.0)
 # Floor for predicted standard deviation to avoid unrealistically tiny
@@ -250,6 +251,7 @@ def fit_conditional_sd(
     """Fit a conditional SD model from predicted margins and residuals."""
     if predicted.size < 2 or residuals.size != predicted.size:
         return None
+    require_fit_allowed("fit_conditional_sd")
     design = np.column_stack([np.ones_like(predicted), np.abs(predicted)])
     target = np.abs(residuals)
     coeffs = weighted_least_squares(design, target, weights=weights)

@@ -694,6 +694,40 @@ def analyze_migration(conn: sqlite3.Connection) -> dict:
     }
 
 
+def _add_forecast_params_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS forecast_params (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sport TEXT NOT NULL,
+            season TEXT NOT NULL,
+            model TEXT NOT NULL,
+            as_of_date TEXT,
+            params_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(sport, season, model)
+        );
+        """
+    )
+
+
+def _add_total_recency_adjustments_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS total_recency_adjustments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sport TEXT NOT NULL,
+            season TEXT NOT NULL,
+            as_of_date TEXT,
+            lookback_games INTEGER NOT NULL,
+            delta REAL NOT NULL,
+            sample_size INTEGER NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        """
+    )
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "add_hold_reason_to_staging", _add_hold_reason_to_staging),
     Migration(2, "add_clv_snapshots_table", _add_clv_snapshots_table),
@@ -711,6 +745,8 @@ MIGRATIONS: list[Migration] = [
     Migration(14, "add_bets_predictions_market_source", _add_bets_predictions_market_source),
     Migration(15, "fix_bets_predictions_unique_constraint", _fix_bets_predictions_unique_constraint),
     Migration(16, "add_spread_total_ensemble_components", _add_spread_total_ensemble_components),
+    Migration(17, "add_forecast_params_table", _add_forecast_params_table),
+    Migration(18, "add_total_recency_adjustments_table", _add_total_recency_adjustments_table),
 ]
 
 LATEST_SCHEMA_VERSION = max((m.version for m in MIGRATIONS), default=0)

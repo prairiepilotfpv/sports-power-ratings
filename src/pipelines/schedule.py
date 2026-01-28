@@ -58,6 +58,31 @@ from pipelines.common import normalize_games, resolve_output_path
 from ensemble.config import load_ensemble_config
 from ensemble.io import load_market_weights
 from ensemble.ml_v1 import MLWeightedAverageEnsemble
+
+# ============================================================================
+# KNOWN MISSING FEATURES (TODO)
+# ============================================================================
+# 1. Total Recency Adjustment Feature
+#    - Functions load_latest_total_recency_adjustment() and
+#      _calculate_total_recency_adjustment() are referenced in tests but
+#      not implemented in this module.
+#    - Purpose: Adjust total predictions based on temporal patterns (e.g.,
+#      recent trends in scoring)
+#    - Tests that depend on this:
+#      - tests/pipelines/test_schedule_refresh.py::test_total_recency_adjustment_only_from_artifact
+#      - tests/pipelines/test_schedule_refresh.py::test_artifact_precedence_production
+#    - Implementation needed in: src/pipelines/schedule.py or src/forecasting/
+#
+# 2. _build_market_forecasts_for_ensembles Signature Mismatch
+#    - Tests pass 'forecast_params_by_model' parameter but function doesn't
+#      accept it (test_schedule_ensemble_config_usage.py line 64)
+#    - Need to determine: should function accept this param or should test
+#      be updated?
+#    - Likely purpose: pass pre-computed forecast params per model to avoid
+#      redundant computation
+#
+# ============================================================================
+
 from ensemble.spread_v1 import SpreadWeightedAverageEnsemble
 from ensemble.total_v1 import TotalWeightedAverageEnsemble
 from pipelines.excel_bets_format import apply_bets_sheet_formatting
@@ -188,6 +213,11 @@ MODEL_METADATA_DATA_START_ROW = 60  # Allow multi-market metadata; bump if new m
 def _finalize_schedule_export(schedule_df: pd.DataFrame) -> pd.DataFrame:
     """Ensure the export includes all expected columns before validation."""
     finalized = schedule_df.copy()
+    
+    # Empty DataFrames are valid (e.g., no upcoming games); return as-is
+    if finalized.empty:
+        return finalized
+    
     required_columns = ["date", "game_id"]
     missing_required = [col for col in required_columns if col not in finalized.columns]
     if missing_required:
@@ -279,6 +309,7 @@ def _build_schedule_dataframe(
     params_market: str | None = None,
     fit_end_date: str | date | None = None,
     fail_on_health_check: bool = False,
+    mode: str = "dev",
 ) -> pd.DataFrame:
     schedule_df = build_forecasts_df(
         db_path=db_path,
@@ -300,6 +331,7 @@ def _build_schedule_dataframe(
         params_run_id=params_run_id,
         params_market=params_market,
         fit_end_date=fit_end_date,
+        mode=mode,
     )
     schedule_df = _apply_calibration_to_schedule_df(
         schedule_df,
@@ -431,6 +463,7 @@ def _apply_calibration_to_schedule_df(
     if schedule_df.empty:
         return schedule_df
 
+    _LOG.info(f"[Calibration] Starting calibration for {sport}/{season}/{model}")
     df = schedule_df.copy()
 
     def _win_prob_tag_present(tag: str) -> bool:
@@ -469,6 +502,7 @@ def _apply_calibration_to_schedule_df(
         )
         
         if ml_calibrator is not None:
+            _LOG.info(f"[ML calibration] Loaded calibrator for {sport}/{season}/{model}")
             raw_probs = pd.to_numeric(df["home_win_prob"], errors="coerce")
             valid_mask = raw_probs.notna()
             
@@ -518,7 +552,7 @@ def _apply_calibration_to_schedule_df(
         )
         
         if spread_calibrator is not None:
-            # Check if it's a distribution calibrator
+            _LOG.info(f"[SPREAD calibration] Loaded calibrator for {sport}/{season}/{model}") # Check if it's a distribution calibrator
             if hasattr(spread_calibrator, "metadata") and "variance" in str(spread_calibrator.metadata.get("method", "")):
                 margin_mean = pd.to_numeric(df["margin_mean"], errors="coerce")
                 margin_sd = pd.to_numeric(df["margin_sd"], errors="coerce")
@@ -573,6 +607,8 @@ def _apply_calibration_to_schedule_df(
                             )
                     except Exception as e:
                         _LOG.warning(f"[_apply_calibration_to_schedule_df] SPREAD calibration failed: {e}")
+        else:
+            _LOG.debug(f"[SPREAD calibration] No calibrator found for {sport}/{season}/{model} market=spread")
     
     # ========== TOTAL MARKET CALIBRATION ==========
     if (
@@ -588,7 +624,7 @@ def _apply_calibration_to_schedule_df(
         )
         
         if total_calibrator is not None:
-            # Check if it's a distribution calibrator
+            _LOG.info(f"[TOTAL calibration] Loaded calibrator for {sport}/{season}/{model}") # Check if it's a distribution calibrator
             if hasattr(total_calibrator, "metadata") and "variance" in str(total_calibrator.metadata.get("method", "")):
                 total_mean = pd.to_numeric(df["total_mean"], errors="coerce")
                 total_sd = pd.to_numeric(df["total_sd"], errors="coerce")
@@ -643,6 +679,8 @@ def _apply_calibration_to_schedule_df(
                             )
                     except Exception as e:
                         _LOG.warning(f"[_apply_calibration_to_schedule_df] TOTAL calibration failed: {e}")
+        else:
+            _LOG.debug(f"[TOTAL calibration] No calibrator found for {sport}/{season}/{model} market=total")
     
     # ========== UPDATE WINNER WIN PROB WITH CALIBRATED VALUES ==========
     # After calibrating individual market probabilities, sync the aggregated winner_win_prob
@@ -799,6 +837,7 @@ def _build_market_forecasts_for_ensembles(
     allowed_models_by_market: dict[str, list[str] | None] | None = None,
     market_metrics: dict[str, str] | None = None,
     fit_end_date: date | None = None,
+    mode: str = "dev",
 ) -> dict[str, list[dict[str, Any]]]:
     rows_by_market: dict[str, list[dict[str, Any]]] = {
         Market.ML.name: [],
@@ -853,6 +892,7 @@ def _build_market_forecasts_for_ensembles(
                 params_run_id=resolved.source_run_id,
                 params_market=market.name,
                 fit_end_date=fit_end_date,
+                mode="dev",
             )
             if market_schedule.empty:
                 continue
@@ -2428,6 +2468,7 @@ def build_schedule_with_projections(
     model_params: dict[str, float] | None = None,
     model_params_file: str | Path | None = None,
     tuned_metric: str | None = None,
+    mode: str = "dev",
 ) -> Path | list[Path]:
     """Build a schedule export containing projections for upcoming games."""
     rows = load_games(
@@ -2479,6 +2520,10 @@ def build_schedule_excel_report(
     bets_model: str | None = None,
     strict: bool = False,
     fail_on_health_check: bool = False,
+    mode: str = "dev",
+    allow_best_fallback: bool = False,
+    apply_total_recency_adjustment: bool = False,
+    calibration_mode: str = "off",
 ) -> Path:
     """Build an Excel workbook with schedule projections (one sheet per model)."""
     rows = load_games(
@@ -2629,6 +2674,7 @@ def build_schedule_excel_report(
                     params_market=market.name,
                     fit_end_date=fit_end_date,
                     fail_on_health_check=fail_on_health_check,
+                    mode=mode,
                 )
                 schedule_df = _order_schedule_export(schedule_df)
                 market_frames.append(schedule_df)
@@ -2812,6 +2858,7 @@ def build_schedule_excel_report(
                 allowed_models_by_market=allowed_models_map if len(models) > 1 else None,
                 market_metrics=market_metrics,
                 fit_end_date=fit_end_date,
+                mode=mode,
             )
 
             # Ensure all required ensemble columns exist in bets_schedule_df before ensemble writes.

@@ -100,6 +100,10 @@ except Exception:
 				return _pickle.load(f)
 
 		joblib = _types.ModuleType("joblib")
-		joblib.dump = _dump
-		joblib.load = _load
-		_sys.modules["joblib"] = joblib
+	joblib.dump = _dump
+	joblib.load = _load
+	_sys.modules["joblib"] = joblib
+
+import pipelines.schedule as schedule_module
+
+schedule_module.DEFAULT_SCHEDULE_MODE = "research"
