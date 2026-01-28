@@ -1,6 +1,7 @@
 # TODO
 
 ## Immediate / Merge blockers
+- [ ] **REGRESSION**: `tests/pipelines/test_schedule_calibration.py::test_spread_weights_filter_out_models_without_spread_outputs` is failing. Expected `{"gssd"}` but got `{'elo', 'gssd'}`. This is related to weight filtering logic (unrelated to BETS gating changes), but needs investigation to determine if it's a pre-existing bug or a side effect of ensemble logic changes.
 - [ ] Fix the `BETS` sheet sport-specific matching: ensure the bet-sheet parsing + matching honors NBA/NHL differences and that the signed integers on the sheet match the ingested bets.
 - [ ] Verify game ordering is stable across the pipelines (ingest → staging → models → `schedule`). Several reports still show NBA/NHL order mismatches, so confirm the ingesters generate deterministically sorted games and the downstream exports sort by `(date, game_id, away_team)`.
 - [ ] Clean the `Dashboard` + `BETS` sheets in the schedule workbook so they reflect the ensemble outputs instead of legacy single-model layouts before merging. Dashboard should be model summaries, BETS is just for determinig bet value for the days, or a specified days, games. 

@@ -1359,6 +1359,7 @@ def _run_matchup(args: argparse.Namespace) -> None:
 
 def _run_schedule(args: argparse.Namespace) -> None:
     """Export the schedule with projections for played and upcoming games."""
+    import logging
     _ensure_src_on_path()
     from data.paths import db_path_for
     from pipelines.no_fit_guard import enforce_no_fit_guard
@@ -1366,6 +1367,18 @@ def _run_schedule(args: argparse.Namespace) -> None:
         build_schedule_excel_report,
         build_schedule_with_projections,
     )
+
+    # Log info about debug handler status
+    logger = logging.getLogger(__name__)
+    handlers_info = []
+    for handler in logging.root.handlers:
+        if isinstance(handler, logging.FileHandler):
+            handlers_info.append(f"FileHandler({handler.baseFilename})")
+        elif isinstance(handler, logging.StreamHandler):
+            handlers_info.append(f"StreamHandler")
+        else:
+            handlers_info.append(f"{type(handler).__name__}")
+    _LOG.info("[schedule] DEBUG HANDLER STATUS: handlers=%s, debug_log_file=tmp_pipeline_debug.log", handlers_info)
 
     model_params = _parse_json_arg(args.model_params)
     db_path = Path(args.db) if args.db else db_path_for(args.sport, args.season)

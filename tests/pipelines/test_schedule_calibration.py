@@ -306,3 +306,245 @@ def test_ensemble_components_sorted_by_model(tmp_path, monkeypatch):
     model_order = [c["model"] for c in components]
     assert model_order == ["alpha", "middle", "zebra"], \
         f"Expected alphabetical order, got {model_order}"
+
+
+# ========== SPREAD & TOTAL CALIBRATION INSTRUMENTATION TESTS ==========
+
+
+def test_spread_calibration_instrumentation_logs_deltas(monkeypatch, caplog):
+    """Verify SPREAD calibration instrumentation logs mean and sd deltas.
+    
+    This test verifies the calibration instrumentation added to
+    _apply_calibration_to_schedule_df() logs meaningful deltas when
+    calibration shifts mean/sd parameters.
+    
+    Calibration should NOT change model math or strategy; these logs
+    exist only to verify that calibration was applied and to what degree.
+    """
+    caplog.set_level(logging.DEBUG)
+    caplog.clear()
+    
+    # Create a synthetic schedule with spread predictions
+    schedule_row = pd.DataFrame(
+        [
+            {
+                "game_id": "G-1",
+                "home_team": "Home",
+                "away_team": "Away",
+                "projected_winner": "Home",
+                "home_win_prob": 0.7,
+                "away_win_prob": 0.3,
+                "margin_mean": 5.0,
+                "margin_sd": 10.0,  # Above MARGIN_SD_GUARDRAIL_MIN (5.0)
+                "total_mean": 210.0,
+                "total_sd": 4.0,
+                "win_prob_source": "seed_model",
+            }
+        ]
+    )
+    
+    # Mock a distribution calibrator that shifts mean/sd deterministically
+    class _TestSpreadCalibrator:
+        def __init__(self):
+            self.metadata = {"method": "variance_distribution"}
+        
+        def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+            # Shift mean by 0.5 and sd by 1.0 to create observable deltas
+            # Output must be above guardrail (5.0 for margin_sd)
+            return pd.DataFrame(
+                {
+                    "calibrated_mean": df["pred_mean"] + 0.5,
+                    "calibrated_sd": df["pred_sd"] + 1.0,
+                }
+            )
+    
+    spread_calibrator = _TestSpreadCalibrator()
+    
+    def _mock_calibrator(*, market, **kwargs):
+        key = str(market).upper() if market else ""
+        if "SPREAD" in key:
+            return spread_calibrator
+        return None
+    
+    monkeypatch.setattr(
+        schedule_module,
+        "load_latest_calibrator",
+        _mock_calibrator,
+    )
+    
+    # Apply calibration
+    result = schedule_module._apply_calibration_to_schedule_df(
+        schedule_row,
+        sport="nba",
+        season="2025-26",
+        model="bradley-terry",
+    )
+    
+    # Verify calibration was applied to the dataframe
+    assert result["margin_mean"].iloc[0] == pytest.approx(5.5)  # 5.0 + 0.5
+    assert result["margin_sd"].iloc[0] == pytest.approx(11.0)  # 10.0 + 1.0 (no guardrail clip)
+    
+    # Verify instrumentation logs were captured
+    log_text = " ".join(record.message for record in caplog.records)
+    
+    # Check for SPREAD calibration instrumentation markers
+    assert "[CALIBRATION][SPREAD]" in log_text, \
+        "Expected SPREAD calibration instrumentation log"
+    assert "max_mean_delta=" in log_text, \
+        "Expected max_mean_delta metric in log"
+    assert "max_sd_delta=" in log_text, \
+        "Expected max_sd_delta metric in log"
+    assert "rows_before=" in log_text and "rows_after=" in log_text, \
+        "Expected row count metrics in log"
+
+
+def test_total_calibration_instrumentation_logs_deltas(monkeypatch, caplog):
+    """Verify TOTAL calibration instrumentation logs mean and sd deltas.
+    
+    This test verifies the calibration instrumentation added to
+    _apply_calibration_to_schedule_df() logs meaningful deltas when
+    calibration shifts mean/sd parameters.
+    
+    Calibration should NOT change model math or strategy; these logs
+    exist only to verify that calibration was applied and to what degree.
+    """
+    caplog.set_level(logging.DEBUG)
+    caplog.clear()
+    
+    # Create a synthetic schedule with total predictions
+    schedule_row = pd.DataFrame(
+        [
+            {
+                "game_id": "G-1",
+                "home_team": "Home",
+                "away_team": "Away",
+                "projected_winner": "Home",
+                "home_win_prob": 0.7,
+                "away_win_prob": 0.3,
+                "margin_mean": 5.0,
+                "margin_sd": 2.0,
+                "total_mean": 210.0,
+                "total_sd": 12.0,  # Above TOTAL_SD_GUARDRAIL_MIN (8.0)
+                "win_prob_source": "seed_model",
+            }
+        ]
+    )
+    
+    # Mock a distribution calibrator that shifts mean/sd deterministically
+    class _TestTotalCalibrator:
+        def __init__(self):
+            self.metadata = {"method": "variance_distribution"}
+        
+        def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+            # Shift mean by -3.5 and sd by 2.0 to create observable deltas
+            # Output must be above guardrail (8.0 for total_sd)
+            return pd.DataFrame(
+                {
+                    "calibrated_mean": df["pred_mean"] - 3.5,
+                    "calibrated_sd": df["pred_sd"] + 2.0,
+                }
+            )
+    
+    total_calibrator = _TestTotalCalibrator()
+    
+    def _mock_calibrator(*, market, **kwargs):
+        key = str(market).upper() if market else ""
+        if "TOTAL" in key:
+            return total_calibrator
+        return None
+    
+    monkeypatch.setattr(
+        schedule_module,
+        "load_latest_calibrator",
+        _mock_calibrator,
+    )
+    
+    # Apply calibration
+    result = schedule_module._apply_calibration_to_schedule_df(
+        schedule_row,
+        sport="nba",
+        season="2025-26",
+        model="bradley-terry",
+    )
+    
+    # Verify calibration was applied to the dataframe
+    assert result["total_mean"].iloc[0] == pytest.approx(206.5)  # 210.0 - 3.5
+    assert result["total_sd"].iloc[0] == pytest.approx(14.0)  # 12.0 + 2.0 (no guardrail clip)
+    
+    # Verify instrumentation logs were captured
+    log_text = " ".join(record.message for record in caplog.records)
+    
+    # Check for TOTAL calibration instrumentation markers
+    assert "[CALIBRATION][TOTAL]" in log_text, \
+        "Expected TOTAL calibration instrumentation log"
+    assert "max_mean_delta=" in log_text, \
+        "Expected max_mean_delta metric in log"
+    assert "max_sd_delta=" in log_text, \
+        "Expected max_sd_delta metric in log"
+    assert "rows_before=" in log_text and "rows_after=" in log_text, \
+        "Expected row count metrics in log"
+
+
+def test_spread_and_total_calibration_no_calibrator_no_error(monkeypatch, caplog):
+    """Verify that missing calibrators don't cause errors and log appropriately.
+    
+    When no calibrator is available for SPREAD or TOTAL, the function should:
+    - Not raise an error
+    - Log a debug message indicating no calibrator found
+    - Leave the original mean/sd values unchanged
+    """
+    caplog.set_level(logging.DEBUG)
+    caplog.clear()
+    
+    # Create a synthetic schedule
+    schedule_row = pd.DataFrame(
+        [
+            {
+                "game_id": "G-1",
+                "home_team": "Home",
+                "away_team": "Away",
+                "projected_winner": "Home",
+                "home_win_prob": 0.7,
+                "away_win_prob": 0.3,
+                "margin_mean": 5.0,
+                "margin_sd": 2.0,
+                "total_mean": 210.0,
+                "total_sd": 4.0,
+                "win_prob_source": "seed_model",
+            }
+        ]
+    )
+    
+    # Mock calibrator loader to return None for all markets
+    def _mock_no_calibrator(*, market, **kwargs):
+        return None
+    
+    monkeypatch.setattr(
+        schedule_module,
+        "load_latest_calibrator",
+        _mock_no_calibrator,
+    )
+    
+    # Apply calibration (should not error)
+    result = schedule_module._apply_calibration_to_schedule_df(
+        schedule_row,
+        sport="nba",
+        season="2025-26",
+        model="bradley-terry",
+    )
+    
+    # Verify original values unchanged
+    assert result["margin_mean"].iloc[0] == 5.0
+    assert result["margin_sd"].iloc[0] == 2.0
+    assert result["total_mean"].iloc[0] == 210.0
+    assert result["total_sd"].iloc[0] == 4.0
+    
+    # Verify no calibration tags were added
+    assert "calibrated" not in result["win_prob_source"].iloc[0]
+    
+    # Verify debug logs for missing calibrators
+    log_text = " ".join(record.message for record in caplog.records)
+    assert "[SPREAD calibration] No calibrator found" in log_text, \
+        "Expected debug log for missing SPREAD calibrator"
+    assert "[TOTAL calibration] No calibrator found" in log_text, \
+        "Expected debug log for missing TOTAL calibrator"

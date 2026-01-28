@@ -539,6 +539,13 @@ def _apply_calibration_to_schedule_df(
                     _LOG.warning(f"[_apply_calibration_to_schedule_df] ML calibration failed: {e}")
     
     # ========== SPREAD MARKET CALIBRATION ==========
+    # Calibrates predicted spread mean and standard deviation using a distribution-aware calibrator.
+    # Unlike ML calibration (which recalibrates point probabilities via Platt scaling),
+    # SPREAD calibration operates on the predicted distribution parameters:
+    # - Shifts the mean prediction toward observed center
+    # - Adjusts variance/std.dev. to improve predictive coverage
+    # These calibrations are applied BEFORE BETS are generated from probabilities.
+    # Instrumentation below logs changes to verify calibration impact on predictions.
     if (
         "margin_mean" in df.columns
         and "margin_sd" in df.columns
@@ -558,6 +565,13 @@ def _apply_calibration_to_schedule_df(
                 margin_sd = pd.to_numeric(df["margin_sd"], errors="coerce")
                 valid_mask = (margin_mean.notna()) & (margin_sd.notna()) & (margin_sd > 0)
                 
+                # ===== INSTRUMENTATION: CAPTURE PRE-CALIBRATION STATE =====
+                # Store snapshots before calibration to compute deltas afterward.
+                # This instrumentation exists to verify calibration impact, not to tune models.
+                margin_mean_before = margin_mean.copy()
+                margin_sd_before = margin_sd.copy()
+                rows_with_mean_before = margin_mean.notna().sum()
+                
                 if valid_mask.any():
                     try:
                         # Build input DataFrame for calibrator
@@ -576,6 +590,25 @@ def _apply_calibration_to_schedule_df(
                         # Update values
                         df.loc[valid_mask, "margin_mean"] = calib_result["calibrated_mean"].values
                         df.loc[valid_mask, "margin_sd"] = calib_result["calibrated_sd"].values
+
+                        # ===== INSTRUMENTATION: COMPUTE AND LOG DELTAS =====
+                        margin_mean_after = df["margin_mean"].copy()
+                        margin_sd_after = df["margin_sd"].copy()
+                        rows_with_mean_after = margin_mean_after.notna().sum()
+                        
+                        # Compute max absolute change in mean and sd across all rows
+                        mean_delta = (margin_mean_after - margin_mean_before).abs().max()
+                        sd_delta = (margin_sd_after - margin_sd_before).abs().max()
+                        
+                        # Log at DEBUG level to verify calibration behavior
+                        _LOG.debug(
+                            "[CALIBRATION][SPREAD] rows_before=%d, rows_after=%d, "
+                            "max_mean_delta=%.6f, max_sd_delta=%.6f",
+                            int(rows_with_mean_before),
+                            int(rows_with_mean_after),
+                            float(mean_delta) if pd.notna(mean_delta) else 0.0,
+                            float(sd_delta) if pd.notna(sd_delta) else 0.0,
+                        )
 
                         calibrated_markets.add("SPREAD")
 
@@ -611,6 +644,13 @@ def _apply_calibration_to_schedule_df(
             _LOG.debug(f"[SPREAD calibration] No calibrator found for {sport}/{season}/{model} market=spread")
     
     # ========== TOTAL MARKET CALIBRATION ==========
+    # Calibrates predicted total mean and standard deviation using a distribution-aware calibrator.
+    # Unlike ML calibration (which recalibrates point probabilities via Platt scaling),
+    # TOTAL calibration operates on the predicted distribution parameters:
+    # - Shifts the mean prediction toward observed center
+    # - Adjusts variance/std.dev. to improve predictive coverage
+    # These calibrations are applied BEFORE BETS are generated from probabilities.
+    # Instrumentation below logs changes to verify calibration impact on predictions.
     if (
         "total_mean" in df.columns
         and "total_sd" in df.columns
@@ -630,6 +670,13 @@ def _apply_calibration_to_schedule_df(
                 total_sd = pd.to_numeric(df["total_sd"], errors="coerce")
                 valid_mask = (total_mean.notna()) & (total_sd.notna()) & (total_sd > 0)
                 
+                # ===== INSTRUMENTATION: CAPTURE PRE-CALIBRATION STATE =====
+                # Store snapshots before calibration to compute deltas afterward.
+                # This instrumentation exists to verify calibration impact, not to tune models.
+                total_mean_before = total_mean.copy()
+                total_sd_before = total_sd.copy()
+                rows_with_mean_before = total_mean.notna().sum()
+                
                 if valid_mask.any():
                     try:
                         # Build input DataFrame for calibrator
@@ -648,6 +695,25 @@ def _apply_calibration_to_schedule_df(
                         # Update values
                         df.loc[valid_mask, "total_mean"] = calib_result["calibrated_mean"].values
                         df.loc[valid_mask, "total_sd"] = calib_result["calibrated_sd"].values
+
+                        # ===== INSTRUMENTATION: COMPUTE AND LOG DELTAS =====
+                        total_mean_after = df["total_mean"].copy()
+                        total_sd_after = df["total_sd"].copy()
+                        rows_with_mean_after = total_mean_after.notna().sum()
+                        
+                        # Compute max absolute change in mean and sd across all rows
+                        mean_delta = (total_mean_after - total_mean_before).abs().max()
+                        sd_delta = (total_sd_after - total_sd_before).abs().max()
+                        
+                        # Log at DEBUG level to verify calibration behavior
+                        _LOG.debug(
+                            "[CALIBRATION][TOTAL] rows_before=%d, rows_after=%d, "
+                            "max_mean_delta=%.6f, max_sd_delta=%.6f",
+                            int(rows_with_mean_before),
+                            int(rows_with_mean_after),
+                            float(mean_delta) if pd.notna(mean_delta) else 0.0,
+                            float(sd_delta) if pd.notna(sd_delta) else 0.0,
+                        )
 
                         calibrated_markets.add("TOTAL")
 
@@ -1588,10 +1654,61 @@ def _build_bets_dataframe(
     db_path: str | Path | None = None,
     sport: str | None = None,
     season: str | None = None,
+    spread_ensemble_applied: bool = False,
+    total_ensemble_applied: bool = False,
 ) -> pd.DataFrame:
+    """Build the BETS dataframe from a schedule dataframe.
+
+    Creates exactly 6 rows per game (2×ML, 2×SPREAD, 2×TOTAL).
+    - ML rows: source_id from win_prob_source (direct or model ensemble)
+    - SPREAD rows: always source_id="ensemble_spread_v1" (ensemble system is source of truth)
+    - TOTAL rows: always source_id="ensemble_total_v1" (ensemble system is source of truth)
+    - Enriches all rows with market line data via left-join lookups
+    - No duplicate direct+ensemble variants; source selected up-front based on ensemble availability
+
+    Note: spread_ensemble_applied and total_ensemble_applied parameters are accepted for
+    backward compatibility but are no longer used for row gating. SPREAD/TOTAL always come
+    from ensemble sources (no fallback to direct). These parameters may be removed in future.
+
+    Args:
+        schedule_df: Schedule DataFrame with forecasts
+        model_name: Primary model name
+        as_of_date: As-of date for this build
+        review_run_id: Unique identifier for this review run
+        db_path: Path to SQLite database for market line lookups
+        sport: Sport identifier for team ID resolution
+        season: Season identifier for team ID resolution
+        spread_ensemble_applied: Deprecated; kept for backward compatibility
+        total_ensemble_applied: Deprecated; kept for backward compatibility
+
+    Logging coverage:
+    - INFO: Entry/exit with row counts, games processed, market line stats, source labels
+    - DEBUG: Per-game details, team ID resolution, market line lookups
+    - WARNING: Anomalies (duplicates, invariant violations, missing data)
+    """
+    # -------------------------------------------------------------------------
+    # ENTRY LOGGING: Log function entry with input statistics
+    # -------------------------------------------------------------------------
+    _LOG.info(
+        "[_build_bets_dataframe] ENTRY: model=%s, as_of_date=%s, review_run_id=%s, "
+        "input_rows=%d, sport=%s, season=%s",
+        model_name,
+        as_of_date,
+        review_run_id,
+        len(schedule_df),
+        sport,
+        season,
+    )
+
     include_calibrated = (
         "home_win_prob_calibrated" in schedule_df.columns
         and schedule_df["home_win_prob_calibrated"].notna().any()
+    )
+
+    # Log whether calibrated columns are present (helps debug calibration pipeline issues)
+    _LOG.debug(
+        "[_build_bets_dataframe] Calibrated columns detected: %s",
+        include_calibrated,
     )
     bets_columns = [
         "review_run_id",
@@ -1648,9 +1765,12 @@ def _build_bets_dataframe(
     )
 
     if schedule_df.empty:
+        _LOG.info("[_build_bets_dataframe] EXIT: Input schedule empty, returning empty BETS dataframe")
         return pd.DataFrame(columns=bets_columns)
 
-    # DEBUG: Log input before any processing
+    # -------------------------------------------------------------------------
+    # INPUT VALIDATION: Log input statistics before any processing
+    # -------------------------------------------------------------------------
     if not schedule_df.empty and "game_id" in schedule_df.columns:
         input_game_count = schedule_df["game_id"].nunique()
         input_total_rows = len(schedule_df)
@@ -1709,16 +1829,28 @@ def _build_bets_dataframe(
             # best-effort: ignore sorting failures and continue
             pass
     if df.empty:
+        _LOG.info("[_build_bets_dataframe] EXIT: No games after filtering, returning empty BETS dataframe")
         return pd.DataFrame(columns=bets_columns)
 
+    # -------------------------------------------------------------------------
+    # TEAM ID RESOLUTION: Cache team IDs for market line lookups
+    # Tracks cache hits/misses for debugging lookup performance
+    # -------------------------------------------------------------------------
     team_id_cache: dict[tuple[str | None, str | None, str], int | None] = {}
+    # Counters for logging team ID resolution statistics
+    _team_id_cache_hits = 0
+    _team_id_cache_misses = 0
+    _team_id_lookup_failures = 0
 
     def _resolve_team_id_for(name: str | None) -> int | None:
+        nonlocal _team_id_cache_hits, _team_id_cache_misses, _team_id_lookup_failures
         if not name or db_path is None or not sport or not season:
             return None
         key = (sport, season, name)
         if key in team_id_cache:
+            _team_id_cache_hits += 1
             return team_id_cache[key]
+        _team_id_cache_misses += 1
         team_id = None
         try:
             with sqlite3.connect(Path(db_path)) as team_conn:
@@ -1730,21 +1862,35 @@ def _build_bets_dataframe(
                 )
         except Exception:
             team_id = None
+            _team_id_lookup_failures += 1
         team_id_cache[key] = team_id
         return team_id
 
-    # Import betting_repository once for all market line lookups
+    # -------------------------------------------------------------------------
+    # MARKET LINE LOOKUPS: Import betting_repository for enriching rows with odds
+    # Tracks found/missing market lines per market type for diagnostics
+    # -------------------------------------------------------------------------
     br = None
     if db_path is not None:
         try:
             from src.data import betting_repository as br
-        except Exception:
+            _LOG.debug("[_build_bets_dataframe] betting_repository loaded for market line lookups")
+        except Exception as e:
+            _LOG.debug("[_build_bets_dataframe] betting_repository not available: %s", e)
             br = None
+
+    # Counters for market line lookup statistics (logged at end)
+    _market_line_stats: dict[str, dict[str, int]] = {
+        "ML": {"found": 0, "missing": 0, "error": 0},
+        "spread": {"found": 0, "missing": 0, "error": 0},
+        "total": {"found": 0, "missing": 0, "error": 0},
+    }
 
     # CANONICAL ROW ASSEMBLY: For each game, create exactly 6 rows (2×ML, 2×spread, 2×total),
     # enrich them in-place, then move to the next game. No additional rows appended after
     # a game's canonical 6 rows are complete.
     rows: list[dict[str, Any]] = []
+    _games_processed = 0
     
     for _, game_row in df.iterrows():
         game_id = game_row.get("game_id")
@@ -1840,20 +1986,26 @@ def _build_bets_dataframe(
             })
 
 
-        # CANONICAL 6 ROWS: Construct exactly once per game, then enrich in-place
+        # CANONICAL 6 ROWS: Construct exactly once per game (2×ML, 2×SPREAD, 2×TOTAL)
+        # Source IDs are selected up-front:
+        # - ML: uses ml_source_label (direct or model ensemble, depends on forecast pipeline)
+        # - SPREAD: always "ensemble_spread_v1" (ensemble is the source of truth)
+        # - TOTAL: always "ensemble_total_v1" (ensemble is the source of truth)
+        # No duplicate direct+ensemble variants; each market type appears exactly once per game.
         canonical_specs = [
-            # 2 × ML
+            # 2 × ML (source: ml_source_label, which may be direct or ensemble depending on pipeline)
             ("ML", away_team, ml_source_label, "home_win_prob", "away_win_prob", "win_prob_source", "ml_ensemble_components_json"),
             ("ML", home_team, ml_source_label, "home_win_prob", "away_win_prob", "win_prob_source", "ml_ensemble_components_json"),
-            # 2 × spread
-            ("spread", away_team, spread_source_label, "margin_mean", "margin_sd", "spread_source", "spread_ensemble_components_json"),
-            ("spread", home_team, spread_source_label, "margin_mean", "margin_sd", "spread_source", "spread_ensemble_components_json"),
-            # 2 × total
-            ("total", "Over", total_source_label, "total", "total_sd", "total_source", "total_ensemble_components_json"),
-            ("total", "Under", total_source_label, "total", "total_sd", "total_source", "total_ensemble_components_json"),
+            # 2 × SPREAD (always ensemble-sourced: ensemble_spread_v1)
+            ("spread", away_team, "ensemble_spread_v1", "margin_mean", "margin_sd", "spread_source", "spread_ensemble_components_json"),
+            ("spread", home_team, "ensemble_spread_v1", "margin_mean", "margin_sd", "spread_source", "spread_ensemble_components_json"),
+            # 2 × TOTAL (always ensemble-sourced: ensemble_total_v1)
+            ("total", "Over", "ensemble_total_v1", "total", "total_sd", "total_source", "total_ensemble_components_json"),
+            ("total", "Under", "ensemble_total_v1", "total", "total_sd", "total_source", "total_ensemble_components_json"),
         ]
         
         for market_type, selection, source_label, prob_col1, prob_col2, source_col, ensemble_col in canonical_specs:
+                
             # Create canonical row for this market/selection
             canonical_row = dict(base_row)
             canonical_row["market_type"] = market_type
@@ -1924,25 +2076,83 @@ def _build_bets_dataframe(
                             market_type=market_type,
                             selection=selection,
                         )
-                except Exception:
+                except Exception as e:
                     snap = None
-            
+                    _market_line_stats[market_type]["error"] += 1
+                    _LOG.debug(
+                        "[_build_bets_dataframe] Market line lookup error: game_id=%s, market=%s, selection=%s, error=%s",
+                        game_id, market_type, selection, e
+                    )
+
+            # Track market line found/missing statistics for summary logging
+            if snap and snap.get("line") is not None:
+                _market_line_stats[market_type]["found"] += 1
+            elif br is not None:
+                # Only count as missing if we actually tried to look up (br is available)
+                _market_line_stats[market_type]["missing"] += 1
+
             # Enrich canonical row with market line data (left-join: blanks if missing)
             canonical_row["line"] = snap.get("line") if snap and snap.get("line") is not None else ""
             canonical_row["odds"] = int(snap.get("odds")) if snap and snap.get("odds") is not None else ""
             canonical_row["source_market_snapshot_id"] = snap.get("id") if snap and snap.get("id") is not None else ""
-            
+
             # Append canonical row (exactly once per game/market/selection combination)
             rows.append(canonical_row)
 
-    # INVARIANT ENFORCEMENT: Assert each game_id appears exactly 6 times
+        # Increment games processed counter after all 6 rows for this game are created
+        _games_processed += 1
+
+    # -------------------------------------------------------------------------
+    # SUMMARY LOGGING: Log statistics about the BETS dataframe construction
+    # -------------------------------------------------------------------------
+    # Log source configuration for transparency
+    _LOG.info(
+        "[BETS] Source configuration: ML varies by forecast, SPREAD=ensemble_spread_v1, TOTAL=ensemble_total_v1 "
+        "(no duplicate direct rows; ensemble is authoritative for SPREAD/TOTAL)"
+    )
+    
+    _LOG.info(
+        "[_build_bets_dataframe] Row assembly complete: games_processed=%d, total_rows=%d (expected=%d)",
+        _games_processed,
+        len(rows),
+        _games_processed * 6,
+    )
+
+    # Log team ID resolution statistics
+    _LOG.debug(
+        "[_build_bets_dataframe] Team ID resolution: cache_hits=%d, cache_misses=%d, lookup_failures=%d, cache_size=%d",
+        _team_id_cache_hits,
+        _team_id_cache_misses,
+        _team_id_lookup_failures,
+        len(team_id_cache),
+    )
+
+    # Log market line lookup statistics (important for diagnosing missing odds)
+    for mkt, stats in _market_line_stats.items():
+        total_lookups = stats["found"] + stats["missing"] + stats["error"]
+        if total_lookups > 0:
+            found_pct = (stats["found"] / total_lookups * 100) if total_lookups > 0 else 0
+            _LOG.info(
+                "[_build_bets_dataframe] Market line stats [%s]: found=%d (%.1f%%), missing=%d, errors=%d",
+                mkt, stats["found"], found_pct, stats["missing"], stats["error"],
+            )
+
+    # INVARIANT ENFORCEMENT: Assert each game_id has the expected number of rows
+    # Rows per game = 2 (ML) + (2 if not spread_ensemble_applied else 0) + (2 if not total_ensemble_applied else 0)
+    # = 2 ML + 2 SPREAD (unless ensemble) + 2 TOTAL (unless ensemble)
+    expected_rows_per_game = 2  # ML rows always present
+    if not spread_ensemble_applied:
+        expected_rows_per_game += 2  # Direct SPREAD rows
+    if not total_ensemble_applied:
+        expected_rows_per_game += 2  # Direct TOTAL rows
+    
     bets_df = pd.DataFrame(rows, columns=bets_columns)
     if not bets_df.empty and "game_id" in bets_df.columns:
         game_counts = bets_df["game_id"].value_counts()
-        invalid_counts = game_counts[game_counts != 6]
+        invalid_counts = game_counts[game_counts != expected_rows_per_game]
         if not invalid_counts.empty:
             _LOG.warning(
-                f"BETS invariant violation: {len(invalid_counts)} game(s) do not have exactly 6 rows: {invalid_counts.to_dict()}"
+                f"BETS invariant violation: {len(invalid_counts)} game(s) do not have exactly {expected_rows_per_game} rows: {invalid_counts.to_dict()}"
             )
     
     # NOTE: _apply_spread_total_calibrators was removed because:
@@ -1956,28 +2166,62 @@ def _build_bets_dataframe(
 
     # Calculate model_prob for each market type
     bets_df = _calculate_model_prob(bets_df)
-    
+
+    # -------------------------------------------------------------------------
+    # EXIT LOGGING: Final summary of BETS dataframe construction
+    # -------------------------------------------------------------------------
+    _LOG.info(
+        "[_build_bets_dataframe] EXIT: final_rows=%d, unique_games=%d, model=%s",
+        len(bets_df),
+        bets_df["game_id"].nunique() if "game_id" in bets_df.columns else 0,
+        model_name,
+    )
+
     return bets_df
 
 
 def _calculate_model_prob(bets_df: pd.DataFrame) -> pd.DataFrame:
     """Calculate model_prob for each market type row.
-    
+
     For ML: uses home_win_prob or away_win_prob based on selection
     For SPREAD: calculates CDF probability for cover
     For TOTAL: calculates CDF probability for over/under
-    
+
     This ensures model_prob is populated for database persistence and calibration.
+
+    Logging coverage:
+    - INFO: Entry/exit with row counts per market type
+    - DEBUG: Detailed statistics about probability calculations
     """
+    # -------------------------------------------------------------------------
+    # ENTRY LOGGING: Log function entry with input size
+    # -------------------------------------------------------------------------
+    _LOG.debug(
+        "[_calculate_model_prob] ENTRY: total_rows=%d",
+        len(bets_df),
+    )
+
     if bets_df.empty or "market_type" not in bets_df.columns:
+        _LOG.debug("[_calculate_model_prob] EXIT: Empty input or missing market_type column")
         return bets_df
-    
+
     out_df = bets_df.copy()
-    
-    # ML market: use home_win_prob or away_win_prob based on selection
+
+    # Track statistics for each market type
+    _prob_stats: dict[str, dict[str, int]] = {
+        "ML": {"rows": 0, "populated": 0, "null": 0},
+        "spread": {"rows": 0, "populated": 0, "null": 0},
+        "total": {"rows": 0, "populated": 0, "null": 0},
+    }
+
+    # -------------------------------------------------------------------------
+    # ML MARKET: Assign home_win_prob or away_win_prob based on selection
+    # -------------------------------------------------------------------------
     if "home_team" in out_df.columns and "selection" in out_df.columns:
         ml_mask = out_df["market_type"] == "ML"
         if ml_mask.any():
+            _prob_stats["ML"]["rows"] = int(ml_mask.sum())
+
             def _ml_prob(row):
                 sel = str(row.get("selection", "")).strip()
                 home = str(row.get("home_team", "")).strip()
@@ -1985,24 +2229,60 @@ def _calculate_model_prob(bets_df: pd.DataFrame) -> pd.DataFrame:
                     return row.get("home_win_prob")
                 else:
                     return row.get("away_win_prob")
+
             out_df.loc[ml_mask, "model_prob"] = out_df[ml_mask].apply(_ml_prob, axis=1)
-    
-    # SPREAD market: calculate CDF probability
+
+            # Count populated vs null probabilities
+            ml_probs = out_df.loc[ml_mask, "model_prob"]
+            _prob_stats["ML"]["populated"] = int(ml_probs.notna().sum())
+            _prob_stats["ML"]["null"] = int(ml_probs.isna().sum())
+
+    # -------------------------------------------------------------------------
+    # SPREAD MARKET: Calculate CDF probability for cover
+    # -------------------------------------------------------------------------
     if "spread_source" in out_df.columns:
         spread_mask = out_df["market_type"] == "spread"
         if spread_mask.any():
+            _prob_stats["spread"]["rows"] = int(spread_mask.sum())
+
             out_df.loc[spread_mask, "model_prob"] = out_df[spread_mask].apply(
                 _spread_raw_probability, axis=1
             )
-    
-    # TOTAL market: calculate CDF probability
+
+            # Count populated vs null probabilities
+            spread_probs = out_df.loc[spread_mask, "model_prob"]
+            _prob_stats["spread"]["populated"] = int(spread_probs.notna().sum())
+            _prob_stats["spread"]["null"] = int(spread_probs.isna().sum())
+
+    # -------------------------------------------------------------------------
+    # TOTAL MARKET: Calculate CDF probability for over/under
+    # -------------------------------------------------------------------------
     if "total_source" in out_df.columns:
         total_mask = out_df["market_type"] == "total"
         if total_mask.any():
+            _prob_stats["total"]["rows"] = int(total_mask.sum())
+
             out_df.loc[total_mask, "model_prob"] = out_df[total_mask].apply(
                 _total_raw_probability, axis=1
             )
-    
+
+            # Count populated vs null probabilities
+            total_probs = out_df.loc[total_mask, "model_prob"]
+            _prob_stats["total"]["populated"] = int(total_probs.notna().sum())
+            _prob_stats["total"]["null"] = int(total_probs.isna().sum())
+
+    # -------------------------------------------------------------------------
+    # EXIT LOGGING: Summary of probability calculations by market type
+    # -------------------------------------------------------------------------
+    for mkt, stats in _prob_stats.items():
+        if stats["rows"] > 0:
+            populated_pct = (stats["populated"] / stats["rows"] * 100) if stats["rows"] > 0 else 0
+            _LOG.info(
+                "[_calculate_model_prob] %s: rows=%d, populated=%d (%.1f%%), null=%d",
+                mkt, stats["rows"], stats["populated"], populated_pct, stats["null"],
+            )
+
+    _LOG.debug("[_calculate_model_prob] EXIT: total_rows=%d", len(out_df))
     return out_df
 
 
@@ -2878,8 +3158,17 @@ def build_schedule_excel_report(
                     if col not in bets_schedule_df.columns:
                         bets_schedule_df[col] = pd.NA
 
+        # -------------------------------------------------------------------------
+        # ML ENSEMBLE APPLICATION: Apply ML ensemble to BETS schedule
+        # Logs weight resolution, filtering, and per-game application stats
+        # -------------------------------------------------------------------------
         try:
             ml_rows = market_forecast_rows.get(Market.ML.name, [])
+            _LOG.debug(
+                "[ML ensemble] Starting: forecast_rows=%d, bets_schedule_rows=%d",
+                len(ml_rows),
+                len(bets_schedule_df) if bets_schedule_df is not None else 0,
+            )
             if bets_schedule_df is not None and ml_rows:
                 forecast_df = pd.DataFrame(ml_rows)
                 if not forecast_df.empty:
@@ -2894,7 +3183,16 @@ def build_schedule_excel_report(
                         tuning_context=tuning_contexts[Market.ML.name],
                         config_warnings=config_warnings,
                     )
-                    
+
+                    # Log weight resolution results
+                    _LOG.info(
+                        "[ML ensemble] Weights resolved: source=%s, models=%s, weights=%s, run_id=%s",
+                        weight_source,
+                        ensemble_models,
+                        weights,
+                        weight_run_id,
+                    )
+
                     # Filter forecast data to only include models the ensemble was trained on
                     if ensemble_models:
                         forecast_df = forecast_df[forecast_df["model_name"].isin(set(ensemble_models))]
@@ -2920,8 +3218,19 @@ def build_schedule_excel_report(
                         )
                         raise Exception("No ML forecasts after weight filtering")
                     weights = filtered_weights
+
+                    # Log post-filtering state
                     unique_ml_models = set(forecast_df["model_name"].dropna().unique())
                     use_ensemble = len(unique_ml_models) > 1
+                    _LOG.info(
+                        "[ML ensemble] Post-filter: final_models=%s, use_ensemble=%s, filtered_weights=%s",
+                        sorted(final_models) if final_models else [],
+                        use_ensemble,
+                        filtered_weights,
+                    )
+
+                    # Counter for tracking games updated
+                    _ml_games_updated = 0
 
                     if use_ensemble:
                         ensemble = MLWeightedAverageEnsemble(
@@ -2988,13 +3297,28 @@ def build_schedule_excel_report(
                                 bets_schedule_df.loc[mask, "win_prob_source"] = ensemble.ensemble_id
                                 bets_schedule_df.loc[mask, "ml_ensemble_components_json"] = components_json
                                 ensemble_applied = True
+                                _ml_games_updated += 1
                             except Exception:
                                 # Best-effort per-game; continue on errors.
                                 continue
+
+                        # Log ML ensemble success
+                        _LOG.info(
+                            "[ML ensemble] SUCCESS: ensemble_id=%s, games_updated=%d, calibrator_loaded=%s",
+                            ensemble.ensemble_id,
+                            _ml_games_updated,
+                            ensemble_cal is not None,
+                        )
                     else:
+                        # Single-model pass-through (no ensemble blending needed)
                         single_model_name = (
                             list(unique_ml_models)[0] if unique_ml_models else bets_model_name
                         )
+                        _LOG.info(
+                            "[ML ensemble] Single-model pass-through: model=%s",
+                            single_model_name,
+                        )
+                        _ml_single_games_updated = 0
                         for gid in pd.unique(bets_schedule_df["game_id"]):
                             try:
                                 mask = bets_schedule_df["game_id"] == gid
@@ -3010,8 +3334,13 @@ def build_schedule_excel_report(
                                 bets_schedule_df.loc[mask, "ml_ensemble_components_json"] = json.dumps(
                                     components
                                 )
+                                _ml_single_games_updated += 1
                             except Exception:
                                 continue
+                        _LOG.info(
+                            "[ML ensemble] Single-model complete: games_updated=%d",
+                            _ml_single_games_updated,
+                        )
         except Exception as e:
             # Do not fail report generation for ensemble errors.
             _LOG.warning(f"ML ensemble application failed: {e}", exc_info=True)
@@ -3076,12 +3405,19 @@ def build_schedule_excel_report(
                 "ml_ensemble_components_json remains blank."
             )
 
-        # Apply SPREAD data to bets_schedule_df. For multi-model, use ensemble; for
-        # single model, pass through the model's SPREAD forecast directly. This ensures
-        # SPREAD-market tuned params are used even when only one model runs.
+        # -------------------------------------------------------------------------
+        # SPREAD ENSEMBLE APPLICATION: Apply SPREAD ensemble to BETS schedule
+        # For multi-model, use ensemble; for single model, pass through directly.
+        # Logs weight resolution, filtering, and per-game application stats.
+        # -------------------------------------------------------------------------
         spread_ensemble_applied = False
         try:
             spread_rows = market_forecast_rows.get(Market.SPREAD.name, [])
+            _LOG.debug(
+                "[SPREAD ensemble] Starting: forecast_rows=%d, bets_schedule_rows=%d",
+                len(spread_rows),
+                len(bets_schedule_df) if bets_schedule_df is not None else 0,
+            )
             if bets_schedule_df is not None and spread_rows:
                 forecast_df = pd.DataFrame(spread_rows)
                 if not forecast_df.empty:
@@ -3096,7 +3432,16 @@ def build_schedule_excel_report(
                         tuning_context=tuning_contexts[Market.SPREAD.name],
                         config_warnings=config_warnings,
                     )
-                    
+
+                    # Log weight resolution results
+                    _LOG.info(
+                        "[SPREAD ensemble] Weights resolved: source=%s, models=%s, weights=%s, run_id=%s",
+                        weight_source,
+                        ensemble_models,
+                        weights,
+                        weight_run_id,
+                    )
+
                     # Filter forecast data to only include models the ensemble was trained on
                     if ensemble_models:
                         forecast_df = forecast_df[forecast_df["model_name"].isin(set(ensemble_models))]
@@ -3123,9 +3468,15 @@ def build_schedule_excel_report(
                         raise Exception("No SPREAD forecasts after weight filtering")
                     weights = filtered_weights
 
-                    # Check if we have multiple models contributing SPREAD forecasts
+                    # Log post-filtering state
                     unique_spread_models = set(forecast_df["model_name"].dropna().unique())
                     use_ensemble = len(unique_spread_models) > 1
+                    _LOG.info(
+                        "[SPREAD ensemble] Post-filter: final_models=%s, use_ensemble=%s, filtered_weights=%s",
+                        sorted(final_models) if final_models else [],
+                        use_ensemble,
+                        filtered_weights,
+                    )
 
                     if use_ensemble:
                         # Multi-model: use weighted ensemble
@@ -3182,9 +3533,21 @@ def build_schedule_excel_report(
                                 spread_games_updated += 1
                             except Exception:
                                 continue
+
+                        # Log SPREAD ensemble success
+                        _LOG.info(
+                            "[SPREAD ensemble] SUCCESS: ensemble_id=%s, games_updated=%d",
+                            spread_ensemble.ensemble_id,
+                            spread_games_updated,
+                        )
                     else:
                         # Single-model: pass through SPREAD data directly (no ensemble)
                         single_model_name = list(unique_spread_models)[0] if unique_spread_models else bets_model_name
+                        _LOG.info(
+                            "[SPREAD ensemble] Single-model pass-through: model=%s",
+                            single_model_name,
+                        )
+                        _spread_single_games_updated = 0
                         for gid in pd.unique(bets_schedule_df["game_id"]):
                             try:
                                 subset = forecast_df[forecast_df["game_id"] == gid]
@@ -3207,18 +3570,32 @@ def build_schedule_excel_report(
                                     components["margin_sd"] = float(margin_sd)
                                 bets_schedule_df.loc[mask, "spread_ensemble_components_json"] = json.dumps(components)
                                 spread_ensemble_applied = True
+                                _spread_single_games_updated += 1
                             except Exception:
                                 continue
+                        _LOG.info(
+                            "[SPREAD ensemble] Single-model complete: games_updated=%d",
+                            _spread_single_games_updated,
+                        )
         except Exception as e:
             _LOG.warning(f"SPREAD ensemble application failed: {e}", exc_info=True)
             pass
 
-        # Apply TOTAL data to bets_schedule_df. For multi-model, use ensemble; for
+        # -------------------------------------------------------------------------
+        # TOTAL ENSEMBLE APPLICATION: Apply TOTAL ensemble to BETS schedule
+        # For multi-model, use ensemble; for single model, pass through directly.
+        # Logs weight resolution, filtering, and per-game application stats.
+        # -------------------------------------------------------------------------
         # single model, pass through the model's TOTAL forecast directly. This ensures
         # leftover ML totals don't seep into BETS when only one model runs.
         total_ensemble_applied = False
         try:
             total_rows = market_forecast_rows.get(Market.TOTAL.name, [])
+            _LOG.debug(
+                "[TOTAL ensemble] Starting: forecast_rows=%d, bets_schedule_rows=%d",
+                len(total_rows),
+                len(bets_schedule_df) if bets_schedule_df is not None else 0,
+            )
             if bets_schedule_df is not None and total_rows:
                 forecast_df = pd.DataFrame(total_rows)
                 if not forecast_df.empty:
@@ -3233,7 +3610,16 @@ def build_schedule_excel_report(
                         tuning_context=tuning_contexts[Market.TOTAL.name],
                         config_warnings=config_warnings,
                     )
-                    
+
+                    # Log weight resolution results
+                    _LOG.info(
+                        "[TOTAL ensemble] Weights resolved: source=%s, models=%s, weights=%s, run_id=%s",
+                        weight_source,
+                        ensemble_models,
+                        weights,
+                        weight_run_id,
+                    )
+
                     # Filter forecast data to only include models the ensemble was trained on
                     if ensemble_models:
                         forecast_df = forecast_df[forecast_df["model_name"].isin(set(ensemble_models))]
@@ -3260,9 +3646,18 @@ def build_schedule_excel_report(
                         raise Exception("No TOTAL forecasts after weight filtering")
                     weights = filtered_weights
 
-                    # Check if we have multiple models contributing TOTAL forecasts
+                    # Log post-filtering state
                     unique_total_models = set(forecast_df["model_name"].dropna().unique())
                     use_ensemble = len(unique_total_models) > 1
+                    _LOG.info(
+                        "[TOTAL ensemble] Post-filter: final_models=%s, use_ensemble=%s, filtered_weights=%s",
+                        sorted(final_models) if final_models else [],
+                        use_ensemble,
+                        filtered_weights,
+                    )
+
+                    # Counter for tracking games updated
+                    _total_games_updated = 0
 
                     if use_ensemble:
                         # Multi-model: use weighted ensemble
@@ -3329,10 +3724,23 @@ def build_schedule_excel_report(
                                     mask, "total_ensemble_components_json"
                                 ] = components_json
                                 total_ensemble_applied = True
+                                _total_games_updated += 1
                             except Exception:
                                 continue
+
+                        # Log TOTAL ensemble success
+                        _LOG.info(
+                            "[TOTAL ensemble] SUCCESS: ensemble_id=%s, games_updated=%d, recency_adjustment=%s",
+                            total_ensemble.ensemble_id,
+                            _total_games_updated,
+                            total_adjustment,
+                        )
                     else:
                         # Single-model: pass through TOTAL data directly (no ensemble)
+                        _LOG.info(
+                            "[TOTAL ensemble] Single-model pass-through starting",
+                        )
+                        _total_single_games_updated = 0
                         # Compute recency adjustment for totals
                         total_adjustment = None
                         if db_path and sport and season:
@@ -3371,8 +3779,15 @@ def build_schedule_excel_report(
                                     components["total_sd"] = float(total_sd)
                                 bets_schedule_df.loc[mask, "total_ensemble_components_json"] = json.dumps(components)
                                 total_ensemble_applied = True
+                                _total_single_games_updated += 1
                             except Exception:
                                 continue
+                        _LOG.info(
+                            "[TOTAL ensemble] Single-model complete: model=%s, games_updated=%d, recency_adjustment=%s",
+                            single_model_name,
+                            _total_single_games_updated,
+                            total_adjustment,
+                        )
         except Exception as e:
             _LOG.warning(f"TOTAL ensemble application failed: {e}", exc_info=True)
             pass
@@ -3408,6 +3823,16 @@ def build_schedule_excel_report(
             spread_source_id=spread_source_id,
             total_source_id=total_source_id,
         )
+
+        # -------------------------------------------------------------------------
+        # BETS DATAFRAME CONSTRUCTION: Build the final BETS sheet data
+        # -------------------------------------------------------------------------
+        _LOG.info(
+            "[BETS sheet] Starting _build_bets_dataframe: input_rows=%d, model=%s, review_run_id=%s",
+            len(bets_schedule_df) if bets_schedule_df is not None else 0,
+            bets_model_name,
+            review_run_id,
+        )
         bets_df = _build_bets_dataframe(
             bets_schedule_df if bets_schedule_df is not None else pd.DataFrame(),
             model_name=bets_model_name,
@@ -3416,6 +3841,13 @@ def build_schedule_excel_report(
             db_path=db_path,
             sport=sport,
             season=season,
+            spread_ensemble_applied=spread_ensemble_applied,
+            total_ensemble_applied=total_ensemble_applied,
+        )
+        _LOG.info(
+            "[BETS sheet] _build_bets_dataframe complete: output_rows=%d, unique_games=%d",
+            len(bets_df),
+            bets_df["game_id"].nunique() if "game_id" in bets_df.columns and not bets_df.empty else 0,
         )
         
         # Populate ensemble source IDs in BETS dataframe for all rows
@@ -3444,6 +3876,10 @@ def build_schedule_excel_report(
                     _LOG.info(f"[BETS] TOTAL rows AFTER: {after_sources}, total_source_id={total_source_id}")
         
         bets_df.to_excel(writer, sheet_name="BETS", index=False)
+        _LOG.info(
+            "[BETS sheet] Written to Excel: rows=%d, sheet=BETS",
+            len(bets_df),
+        )
 
         param_sources = _collect_market_param_sources(
             db_path=db_path,
@@ -3505,7 +3941,15 @@ def build_schedule_excel_report(
         ]
         meta_df = pd.DataFrame(meta_rows)
         meta_df.to_excel(writer, sheet_name="META", index=False)
+        _LOG.debug(
+            "[META sheet] Written to Excel: rows=%d, sheet=META",
+            len(meta_df),
+        )
 
+    # -------------------------------------------------------------------------
+    # WORKBOOK POST-PROCESSING: Apply formulas, formatting, and save
+    # -------------------------------------------------------------------------
+    _LOG.debug("[Workbook] Loading workbook for post-processing: %s", report_path)
     wb = load_workbook(report_path)
     if "BETS" in wb.sheetnames:
         ws = wb["BETS"]
@@ -3539,4 +3983,8 @@ def build_schedule_excel_report(
         ws = wb["META"]
         ws.sheet_state = "hidden"
     wb.save(report_path)
+    _LOG.info(
+        "[Workbook] Saved successfully: path=%s",
+        report_path,
+    )
     return report_path

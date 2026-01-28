@@ -115,12 +115,34 @@ def test_schedule_bets_rows_and_log_bets(tmp_path: Path) -> None:
     )
 
     bets_df = pd.read_excel(workbook_path, sheet_name="BETS")
-    assert len(bets_df) == 6
-    assert set(bets_df["market_type"]) == {"ML", "spread", "total"}
-    assert {"Over", "Under"} <= set(bets_df["selection"])
+    # BETS always creates exactly 6 rows per game: 2×ML, 2×SPREAD, 2×TOTAL
+    # SPREAD/TOTAL are always ensemble-sourced (no direct duplicates)
+    assert len(bets_df) == 6, f"Expected 6 rows (2 ML + 2 SPREAD + 2 TOTAL), got {len(bets_df)}"
+    
+    # Verify market type distribution
+    market_types = bets_df["market_type"].value_counts()
+    assert market_types.get("ML", 0) == 2, f"Expected 2 ML rows, got {market_types.get('ML', 0)}"
+    assert market_types.get("spread", 0) == 2, f"Expected 2 SPREAD rows, got {market_types.get('spread', 0)}"
+    assert market_types.get("total", 0) == 2, f"Expected 2 TOTAL rows, got {market_types.get('total', 0)}"
+    
+    # Verify SPREAD/TOTAL are ensemble-sourced
+    spread_rows = bets_df[bets_df["market_type"] == "spread"]
+    assert (spread_rows["spread_source"] == "ensemble_spread_v1").all(), (
+        f"SPREAD rows should have spread_source='ensemble_spread_v1', got {spread_rows['spread_source'].unique()}"
+    )
+    
+    total_rows = bets_df[bets_df["market_type"] == "total"]
+    assert (total_rows["total_source"] == "ensemble_total_v1").all(), (
+        f"TOTAL rows should have total_source='ensemble_total_v1', got {total_rows['total_source'].unique()}"
+    )
 
-    bets_df.loc[0, "stake"] = 1
-    bets_df.loc[0, "odds"] = -110
+    # Test logging bets: stake the first ML row (away team)
+    ml_rows = bets_df[bets_df["market_type"] == "ML"]
+    ml_rows.loc[ml_rows.index[0], "stake"] = 1
+    ml_rows.loc[ml_rows.index[0], "odds"] = -110
+    bets_df.loc[ml_rows.index[0], "stake"] = 1
+    bets_df.loc[ml_rows.index[0], "odds"] = -110
+    
     with pd.ExcelWriter(workbook_path, engine="openpyxl", mode="a") as writer:
         writer.book.remove(writer.book["BETS"])
         bets_df.to_excel(writer, sheet_name="BETS", index=False)
