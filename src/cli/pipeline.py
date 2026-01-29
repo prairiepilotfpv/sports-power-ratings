@@ -2578,6 +2578,31 @@ def _run_calibrate_ensemble(args: argparse.Namespace) -> None:
         )
         print(f"Saved ML calibrator -> {out_path}")
     
+    # ===== SPREAD MARKET =====
+    elif market_upper == "SPREAD":
+        db_path = args.db or str(Path("data") / "db" / args.sport / f"{args.season}.db")
+        
+        results = calibrate_sport_season(
+            db_path,
+            sport=args.sport,
+            season=args.season,
+            models=model_list or [],
+            markets=[Market.SPREAD],
+            source_id=args.source,
+            method=args.method,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        
+        if "spread" in results:
+            _, path = results["spread"]
+            if path:
+                print(f"Saved SPREAD calibrator -> {path}")
+            else:
+                print("SPREAD calibrator fitted but not saved")
+        else:
+            print("No SPREAD calibrator was fitted")
+    
     # ===== TOTAL MARKET WITH REGIMES =====
     elif market_upper == "TOTAL":
         regimes = getattr(args, "regimes", None)
@@ -2675,7 +2700,7 @@ def _run_calibrate_ensemble(args: argparse.Namespace) -> None:
                 print("No TOTAL calibrator was fitted")
     
     else:
-        raise ValueError(f"Market '{market_upper}' not supported. Use 'ML' or 'total'.")
+        raise ValueError(f"Market '{market_upper}' not supported. Use 'ML', 'SPREAD', or 'TOTAL'.")
 
 
 def _run_calibration_report(args: argparse.Namespace) -> None:

@@ -459,7 +459,7 @@ python -m src.cli.pipeline tune-ensemble --sport nba --season 2025-26 --market M
 - Stores the tuning run in the DB and writes weights to `outputs/ensembles/<sport>/<season>/<market>/<ensemble_id>.json`.
 - `tuning-status` reports whether active weights come from explicit DB actives, best runs, or defaults.
 
-## calibrate — fit a probability calibrator for an ML source
+## calibrate — fit probability/distribution calibrators for sports markets
 
 ### ML Calibration (Phase 8)
 
@@ -468,7 +468,20 @@ python -m src.cli.pipeline calibrate --sport nba --season 2025-26 --market ML --
   --start-date 2020-01-01 --end-date 2024-12-31 --csv data/raw/nba_history.csv
 ```
 
+- Fits probability calibrator for home win probabilities.
 - Calibrators are written to `outputs/calibrators/<sport>/<season>/<source_id>/<market>/`.
+
+### SPREAD Calibration (Phase 8+)
+
+```bash
+python -m src.cli.pipeline calibrate --sport nba --season 2025-26 --market spread --source ensemble_spread_v1 \
+  --start-date 2025-10-25 --end-date 2026-01-20
+```
+
+- Fits distribution calibrator for margin (home_score - away_score) predictions.
+- Uses `margin_mean` and `margin_sd` as inputs.
+- Outputs calibrated mean/sd parameters to `outputs/calibrators/<sport>/<season>/<source_id>/spread/`.
+- Case-insensitive: `--market SPREAD`, `--market Spread`, or `--market spread` all work.
 
 ### TOTAL Calibration - Global (Phase 8)
 
