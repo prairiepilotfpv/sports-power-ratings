@@ -11,14 +11,20 @@ from typing import Any, Dict, Iterable, List, Mapping, TypeAlias
 import re
 import sqlite3
 
+import numpy as np
+import pandas as pd
+
 from config import (
     MARGIN_SD_GUARDRAIL_MIN,
     TOTAL_SD_GUARDRAIL_MIN,
     CLIP_RATE_WARN_THRESHOLD,
     CLIP_RATE_ERROR_THRESHOLD,
+    MIN_WEIGHT_EPS,
+    MIN_NEFF,
+    ENSEMBLE_STRICT_MODE,
+    MARKET_MODEL_ALLOWLISTS,
 )
 
-import pandas as pd
 from pandas._libs.missing import NAType
 from openpyxl import load_workbook
 from openpyxl.styles.numbers import FORMAT_CURRENCY_USD_SIMPLE
@@ -58,6 +64,7 @@ from pipelines.common import normalize_games, resolve_output_path
 from ensemble.config import load_ensemble_config
 from ensemble.io import load_market_weights
 from ensemble.ml_v1 import MLWeightedAverageEnsemble
+from ensemble.audit import EnsembleAudit, compute_neff
 
 # ============================================================================
 # KNOWN MISSING FEATURES (TODO)
@@ -104,6 +111,9 @@ from pipelines.projections import (
 )
 from pipelines.metadata import prediction_hash
 from calibration.io import load_latest_calibrator
+from calibration.mean_calibrator import MeanCalibrator
+from calibration.variance_audit import compute_variance_audit, log_variance_audit
+from calibration.active_policy import load_total_active_policy, get_total_policy_path
 from models.base import resolve_model_identity
 from models.registry import get_model, list_models, normalize_model_name
 from markets.base import Market
@@ -118,6 +128,8 @@ MARKET_ORDER: Dict[str, int] = {market.name: idx for idx, market in enumerate(EX
 CalibratedProbability: TypeAlias = float | NAType
 
 _LOG = logging.getLogger(__name__)
+# NOTE: All log messages MUST be ASCII-only for Windows console compatibility.
+# Avoid emojis, fancy Unicode characters; use ASCII alternatives (OK, ->, -).
 
 
 class HealthCheckError(Exception):
@@ -427,6 +439,460 @@ def _compute_total_recency_adjustment(
         return None
 
 
+def _apply_total_bucket_calibration(
+    df: pd.DataFrame,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+) -> tuple[pd.DataFrame, bool, Dict[str, int]]:
+    """Apply regime-conditioned total bucket calibration (Phase 10).
+    
+    Loads manifest + bucket calibrators, routes each row to correct bucket,
+    applies two-stage calibration (mean then variance) with fallback to global.
+    
+    Args:
+        df: Schedule DataFrame with total_mean and total_sd columns
+        sport: Sport code
+        season: Season identifier
+        model: Model name
+        
+    Returns:
+        Tuple of (modified_df, calibration_applied_bool, usage_stats_dict)
+        usage_stats_dict keys: 'bucket_low', 'bucket_mid', 'bucket_high', 'global'
+    """
+    from calibration.total_bucket_regimes import (
+        load_total_bucket_manifest,
+        select_calibrator_by_bucket,
+        total_bucket_regime,
+    )
+    from calibration.io import load_latest_calibrator
+    from pathlib import Path as PathlibPath
+    from markets.registry import get_market_spec
+    
+    if "total_mean" not in df.columns or "total_sd" not in df.columns:
+        return df, False, {}
+    
+    # Attempt to load manifest
+    try:
+        spec = get_market_spec("total")
+        calib_dir = spec.calibrator_dir(sport, season, model)
+        manifest = load_total_bucket_manifest(calib_dir)
+        if manifest is None:
+            _LOG.debug("[total_bucket] Manifest not found; falling back to global calibration")
+            return df, False, {}
+    except Exception as e:
+        _LOG.debug("[total_bucket] Failed to load manifest: %s; falling back", e)
+        return df, False, {}
+    
+    # Load calibrators (global + bucket)
+    calibrators = {}
+    try:
+        global_mean = load_latest_calibrator(
+            sport=sport,
+            season=season,
+            model=model,
+            market="total_mean",
+        )
+        if global_mean:
+            calibrators["global_mean"] = global_mean
+    except Exception as e:
+        _LOG.debug("[total_bucket] Failed to load global mean calibrator: %s", e)
+    
+    try:
+        global_var = load_latest_calibrator(
+            sport=sport,
+            season=season,
+            model=model,
+            market="total",
+        )
+        if global_var:
+            calibrators["global_variance"] = global_var
+    except Exception as e:
+        _LOG.debug("[total_bucket] Failed to load global variance calibrator: %s", e)
+    
+    # Load per-bucket calibrators
+    for bucket_label in ["low", "mid", "high"]:
+        try:
+            bucket_mean = load_latest_calibrator(
+                sport=sport,
+                season=season,
+                model=f"{model}_bucket_{bucket_label}",
+                market="total_mean",
+            )
+            if bucket_mean:
+                calibrators[f"bucket_{bucket_label}_mean"] = bucket_mean
+        except Exception:
+            pass
+        
+        try:
+            bucket_var = load_latest_calibrator(
+                sport=sport,
+                season=season,
+                model=f"{model}_bucket_{bucket_label}",
+                market="total",
+            )
+            if bucket_var:
+                calibrators[f"bucket_{bucket_label}_variance"] = bucket_var
+        except Exception:
+            pass
+    
+    # Apply calibration per row with bucket routing
+    total_mean = pd.to_numeric(df["total_mean"], errors="coerce")
+    total_sd = pd.to_numeric(df["total_sd"], errors="coerce")
+    valid_mask = (total_mean.notna()) & (total_sd.notna()) & (total_sd > 0)
+    
+    if not valid_mask.any():
+        _LOG.debug("[total_bucket] No valid total_mean/total_sd rows")
+        return df, False, {}
+    
+    df = df.copy()
+    usage_stats = {"bucket_low": 0, "bucket_mid": 0, "bucket_high": 0, "global": 0}
+    
+    # Mean stage: shift mean by bucket
+    for idx in df[valid_mask].index:
+        row_total_mean = total_mean[idx]
+        thresholds = (manifest.low_threshold, manifest.mid_threshold)
+        bucket = total_bucket_regime(row_total_mean, thresholds=thresholds)
+        
+        if bucket and bucket in ["low", "mid", "high"]:
+            bucket_mean_key = f"bucket_{bucket}_mean"
+            if bucket_mean_key in calibrators and calibrators[bucket_mean_key] is not None:
+                try:
+                    calib_input = pd.DataFrame({
+                        "pred_mean": [row_total_mean],
+                        "pred_sd": [total_sd[idx]],
+                    })
+                    result = calibrators[bucket_mean_key].transform(calib_input)
+                    df.loc[idx, "total_mean"] = result["calibrated_mean"].values[0]
+                    usage_stats[f"bucket_{bucket}"] += 1
+                except Exception as e:
+                    _LOG.debug("[total_bucket] Mean calibration failed for row %s: %s", idx, e)
+                    usage_stats["global"] += 1
+                    continue
+            else:
+                # Fall back to global mean
+                if "global_mean" in calibrators and calibrators["global_mean"] is not None:
+                    try:
+                        calib_input = pd.DataFrame({
+                            "pred_mean": [row_total_mean],
+                            "pred_sd": [total_sd[idx]],
+                        })
+                        result = calibrators["global_mean"].transform(calib_input)
+                        df.loc[idx, "total_mean"] = result["calibrated_mean"].values[0]
+                    except Exception:
+                        pass
+                usage_stats["global"] += 1
+        else:
+            # No bucket assignment; use global
+            if "global_mean" in calibrators and calibrators["global_mean"] is not None:
+                try:
+                    calib_input = pd.DataFrame({
+                        "pred_mean": [row_total_mean],
+                        "pred_sd": [total_sd[idx]],
+                    })
+                    result = calibrators["global_mean"].transform(calib_input)
+                    df.loc[idx, "total_mean"] = result["calibrated_mean"].values[0]
+                except Exception:
+                    pass
+            usage_stats["global"] += 1
+    
+    # Variance stage: scale SD by bucket (after mean calibration)
+    for idx in df[valid_mask].index:
+        updated_total_mean = pd.to_numeric(df.loc[idx, "total_mean"], errors="coerce")
+        row_total_sd = total_sd[idx]
+        
+        thresholds = (manifest.low_threshold, manifest.mid_threshold)
+        bucket = total_bucket_regime(updated_total_mean, thresholds=thresholds)
+        
+        if bucket and bucket in ["low", "mid", "high"]:
+            bucket_var_key = f"bucket_{bucket}_variance"
+            if bucket_var_key in calibrators and calibrators[bucket_var_key] is not None:
+                try:
+                    calib_input = pd.DataFrame({
+                        "pred_mean": [updated_total_mean],
+                        "pred_sd": [row_total_sd],
+                    })
+                    result = calibrators[bucket_var_key].transform(calib_input)
+                    calibrated_sd = result["calibrated_sd"].values[0]
+                    calibrated_sd = max(calibrated_sd, TOTAL_SD_GUARDRAIL_MIN)
+                    df.loc[idx, "total_sd"] = calibrated_sd
+                except Exception as e:
+                    _LOG.debug("[total_bucket] Variance calibration failed for row %s: %s", idx, e)
+                    continue
+            else:
+                # Fall back to global variance
+                if "global_variance" in calibrators and calibrators["global_variance"] is not None:
+                    try:
+                        calib_input = pd.DataFrame({
+                            "pred_mean": [updated_total_mean],
+                            "pred_sd": [row_total_sd],
+                        })
+                        result = calibrators["global_variance"].transform(calib_input)
+                        calibrated_sd = result["calibrated_sd"].values[0]
+                        calibrated_sd = max(calibrated_sd, TOTAL_SD_GUARDRAIL_MIN)
+                        df.loc[idx, "total_sd"] = calibrated_sd
+                    except Exception:
+                        pass
+        else:
+            # No bucket assignment; use global variance
+            if "global_variance" in calibrators and calibrators["global_variance"] is not None:
+                try:
+                    calib_input = pd.DataFrame({
+                        "pred_mean": [updated_total_mean],
+                        "pred_sd": [row_total_sd],
+                    })
+                    result = calibrators["global_variance"].transform(calib_input)
+                    calibrated_sd = result["calibrated_sd"].values[0]
+                    calibrated_sd = max(calibrated_sd, TOTAL_SD_GUARDRAIL_MIN)
+                    df.loc[idx, "total_sd"] = calibrated_sd
+                except Exception:
+                    pass
+    
+    # Log usage summary
+    total_applied = sum(v for k, v in usage_stats.items())
+    if total_applied > 0:
+        _LOG.info(
+            "[total_bucket calibration] used={low: %d, mid: %d, high: %d}, fallback_global=%d",
+            usage_stats["bucket_low"],
+            usage_stats["bucket_mid"],
+            usage_stats["bucket_high"],
+            usage_stats["global"],
+        )
+        return df, True, usage_stats
+    else:
+        return df, False, usage_stats
+
+
+def _apply_two_stage_total_calibration(
+    df: pd.DataFrame,
+    *,
+    sport: str,
+    season: str,
+    model: str,
+) -> tuple[pd.DataFrame, bool]:
+    """Apply two-stage TOTAL calibration: mean first, then variance.
+    
+    Behavior controlled by active TOTAL policy (Phase 12):
+    - If policy exists with mode=global: apply global TOTAL calibration
+    - If policy exists with mode=total_bucket: apply bucket calibration
+    - If no policy: try bucket first, fall back to global (legacy behavior)
+    
+    Stage 1 (Mean Calibration):
+    - Shifts total_mean to correct bias
+    - Does NOT modify total_sd
+    - Logs pre/post mean and % improvement
+    
+    Stage 2 (Variance Calibration):
+    - Adjusts total_sd to improve coverage
+    - Does NOT modify total_mean
+    - Includes variance audit metrics
+    
+    Args:
+        df: Schedule DataFrame with total_mean and total_sd columns
+        sport: Sport code
+        season: Season identifier
+        model: Model name
+        
+    Returns:
+        Tuple of (modified_df, calibration_applied_bool)
+    """
+    if "total_mean" not in df.columns or "total_sd" not in df.columns:
+        return df, False
+    
+    total_mean = pd.to_numeric(df["total_mean"], errors="coerce")
+    total_sd = pd.to_numeric(df["total_sd"], errors="coerce")
+    valid_mask = (total_mean.notna()) & (total_sd.notna()) & (total_sd > 0)
+    
+    if not valid_mask.any():
+        _LOG.debug("[TOTAL calibration] No valid total_mean/total_sd rows to calibrate")
+        return df, False
+    
+    # ===== LOAD ACTIVE POLICY (Phase 12) =====
+    policy = load_total_active_policy(sport=sport, season=season)
+    
+    if policy:
+        policy_mode = policy.get("mode")
+        # Log once: ASCII-only
+        _LOG.info(
+            "[calibration policy] market=TOTAL mode=%s policy=%s",
+            policy_mode,
+            str(get_total_policy_path(sport, season)),
+        )
+        
+        if policy_mode == "total_bucket":
+            # ===== APPLY BUCKET CALIBRATION (policy-driven) =====
+            try:
+                df_bucket, bucket_applied, usage_stats = _apply_total_bucket_calibration(
+                    df,
+                    sport=sport,
+                    season=season,
+                    model=model,
+                )
+                if bucket_applied:
+                    _LOG.debug("[TOTAL calibration] Applied policy-selected bucket calibration")
+                    return df_bucket, True
+            except Exception as e:
+                _LOG.warning("[TOTAL calibration] Policy bucket calibration failed: %s; using global fallback", e)
+                # Fall through to global
+        
+        elif policy_mode == "global":
+            # ===== APPLY GLOBAL CALIBRATION (policy-driven) =====
+            _LOG.debug("[TOTAL calibration] Using policy-selected global calibration")
+            # Fall through to global block below
+    else:
+        # ===== NO POLICY: TRY BUCKET CALIBRATION FIRST (legacy behavior) =====
+        try:
+            df_bucket, bucket_applied, usage_stats = _apply_total_bucket_calibration(
+                df,
+                sport=sport,
+                season=season,
+                model=model,
+            )
+            if bucket_applied:
+                _LOG.info("[TOTAL calibration] Applied bucket-conditioned calibration (Phase 10)")
+                return df_bucket, True
+        except Exception as e:
+            _LOG.debug("[TOTAL calibration] Bucket calibration attempt failed: %s; falling back to global", e)
+    
+    # ===== FALL BACK TO GLOBAL CALIBRATION =====
+    mean_calibrated = False
+    try:
+        mean_calibrator = load_latest_calibrator(
+            sport=sport,
+            season=season,
+            model=model,
+            market="total_mean",  # Look for mean-specific calibrator
+        )
+        
+        if mean_calibrator is not None and isinstance(mean_calibrator, MeanCalibrator):
+            mean_before = total_mean.loc[valid_mask].copy()
+            
+            calib_input = pd.DataFrame({
+                "pred_mean": total_mean.loc[valid_mask],
+                "pred_sd": total_sd.loc[valid_mask],
+            })
+            
+            try:
+                calib_result = mean_calibrator.transform(calib_input)
+                df.loc[valid_mask, "total_mean"] = calib_result["calibrated_mean"].values
+                mean_after = df.loc[valid_mask, "total_mean"]
+                
+                mean_delta = (mean_after - mean_before).abs().max()
+                mean_improvement = (
+                    100.0 * (mean_calibrator.rmse_before - mean_calibrator.rmse_after)
+                    / mean_calibrator.rmse_before
+                    if mean_calibrator.rmse_before and mean_calibrator.rmse_before > 0
+                    else 0.0
+                )
+                
+                _LOG.info(
+                    "[TOTAL calibration] MEAN stage: delta=%+.4f, improvement=%+.1f%%, "
+                    "samples=%d",
+                    float(mean_delta) if pd.notna(mean_delta) else 0.0,
+                    mean_improvement,
+                    valid_mask.sum(),
+                )
+                mean_calibrated = True
+            except Exception as e:
+                _LOG.warning("[TOTAL calibration] Mean stage failed: %s", e)
+    except Exception as e:
+        _LOG.debug("[TOTAL calibration] Mean calibrator not available: %s", e)
+    
+    # ===== STAGE 2: VARIANCE CALIBRATION =====
+    variance_calibrated = False
+    try:
+        # Reload total_sd in case mean calibration modified the DataFrame
+        total_sd = pd.to_numeric(df["total_sd"], errors="coerce")
+        valid_mask = (valid_mask) & (total_sd.notna()) & (total_sd > 0)
+        
+        if not valid_mask.any():
+            _LOG.debug("[TOTAL calibration] No valid rows for variance stage")
+        else:
+            variance_calibrator = load_latest_calibrator(
+                sport=sport,
+                season=season,
+                model=model,
+                market="total",  # Primary total calibrator (variance)
+            )
+            
+            if variance_calibrator is not None:
+                # Check that it's a variance calibrator, not mean
+                is_variance_cal = (
+                    hasattr(variance_calibrator, "metadata") and
+                    "variance" in str(variance_calibrator.metadata.get("method", ""))
+                )
+                
+                if is_variance_cal:
+                    # Audit before variance calibration
+                    sd_before = float(np.nanmedian(total_sd[valid_mask]))
+                    
+                    # Pre-calibration: collect residuals for audit
+                    # (We won't have actual_value here, so we use predictions as proxy for diagnostics)
+                    
+                    calib_input = pd.DataFrame({
+                        "pred_mean": df.loc[valid_mask, "total_mean"],
+                        "pred_sd": total_sd[valid_mask],
+                    })
+                    
+                    try:
+                        calib_result = variance_calibrator.transform(calib_input)
+                        pre_guardrail_sd = calib_result["calibrated_sd"]
+                        df.loc[valid_mask, "total_sd_pre_guardrail"] = pre_guardrail_sd.values
+                        
+                        clipped_sd = pre_guardrail_sd.clip(lower=TOTAL_SD_GUARDRAIL_MIN)
+                        df.loc[valid_mask, "total_sd"] = clipped_sd.values
+                        
+                        # Audit after variance calibration
+                        sd_after = float(np.nanmedian(df.loc[valid_mask, "total_sd"]))
+                        sd_change_pct = 100.0 * (sd_after - sd_before) / sd_before if sd_before else 0.0
+                        
+                        # Guardrail metrics
+                        guardrail_count = len(pre_guardrail_sd[pre_guardrail_sd.notna()])
+                        clipped_count = int((pre_guardrail_sd < TOTAL_SD_GUARDRAIL_MIN).sum())
+                        clip_pct = 100.0 * clipped_count / guardrail_count if guardrail_count else 0.0
+                        
+                        # Variance audit: log key metrics about uncertainty calibration
+                        # These metrics help identify if calibration is too aggressive or conservative
+                        c_param = variance_calibrator.c if hasattr(variance_calibrator, "c") else 1.0
+                        tau_param = variance_calibrator.tau if hasattr(variance_calibrator, "tau") else 0.0
+                        
+                        _LOG.info(
+                            "[TOTAL calibration] VARIANCE stage: sd_before=%.3f, sd_after=%.3f, "
+                            "change=%+.1f%%, c=%.3f, tau=%.3f, guardrail_clipped=%.1f%% (%d/%d), samples=%d",
+                            sd_before,
+                            sd_after,
+                            sd_change_pct,
+                            c_param,
+                            tau_param,
+                            clip_pct,
+                            clipped_count,
+                            guardrail_count,
+                            valid_mask.sum(),
+                        )
+                        variance_calibrated = True
+                    except Exception as e:
+                        _LOG.warning("[TOTAL calibration] Variance stage failed: %s", e)
+    except Exception as e:
+        _LOG.debug("[TOTAL calibration] Variance calibrator not available: %s", e)
+    
+    # Log overall result
+    if mean_calibrated or variance_calibrated:
+        stages = []
+        if mean_calibrated:
+            stages.append("mean")
+        if variance_calibrated:
+            stages.append("variance")
+        _LOG.info(
+            "[TOTAL calibration] Completed stages: %s",
+            "+".join(stages),
+        )
+        return df, True
+    else:
+        _LOG.debug("[TOTAL calibration] Neither mean nor variance calibration applied")
+        return df, False
+
+
 def _apply_calibration_to_schedule_df(
     schedule_df: pd.DataFrame,
     *,
@@ -644,109 +1110,28 @@ def _apply_calibration_to_schedule_df(
             _LOG.debug(f"[SPREAD calibration] No calibrator found for {sport}/{season}/{model} market=spread")
     
     # ========== TOTAL MARKET CALIBRATION ==========
-    # Calibrates predicted total mean and standard deviation using a distribution-aware calibrator.
-    # Unlike ML calibration (which recalibrates point probabilities via Platt scaling),
-    # TOTAL calibration operates on the predicted distribution parameters:
-    # - Shifts the mean prediction toward observed center
-    # - Adjusts variance/std.dev. to improve predictive coverage
-    # These calibrations are applied BEFORE BETS are generated from probabilities.
-    # Instrumentation below logs changes to verify calibration impact on predictions.
+    # Phase 8: Two-stage TOTAL calibration for improved transparency and diagnostics
+    # Stage 1: Mean calibration (shifts location, does not modify SD)
+    # Stage 2: Variance calibration (adjusts uncertainty, does not shift mean)
+    # 
+    # This explicit separation provides:
+    # - Clearer diagnostics about bias vs uncertainty issues
+    # - Separate logging of mean shifts and variance adjustments
+    # - Ability to apply only one stage if needed
+    # - Variance audit metrics to detect coverage problems
     if (
         "total_mean" in df.columns
         and "total_sd" in df.columns
         and not _win_prob_tag_present("calibrated_total")
     ):
-        total_calibrator = load_latest_calibrator(
+        df, total_calib_applied = _apply_two_stage_total_calibration(
+            df,
             sport=sport,
             season=season,
             model=model,
-            market="total",
         )
-        
-        if total_calibrator is not None:
-            _LOG.info(f"[TOTAL calibration] Loaded calibrator for {sport}/{season}/{model}") # Check if it's a distribution calibrator
-            if hasattr(total_calibrator, "metadata") and "variance" in str(total_calibrator.metadata.get("method", "")):
-                total_mean = pd.to_numeric(df["total_mean"], errors="coerce")
-                total_sd = pd.to_numeric(df["total_sd"], errors="coerce")
-                valid_mask = (total_mean.notna()) & (total_sd.notna()) & (total_sd > 0)
-                
-                # ===== INSTRUMENTATION: CAPTURE PRE-CALIBRATION STATE =====
-                # Store snapshots before calibration to compute deltas afterward.
-                # This instrumentation exists to verify calibration impact, not to tune models.
-                total_mean_before = total_mean.copy()
-                total_sd_before = total_sd.copy()
-                rows_with_mean_before = total_mean.notna().sum()
-                
-                if valid_mask.any():
-                    try:
-                        # Build input DataFrame for calibrator
-                        calib_input = pd.DataFrame({
-                            "pred_mean": total_mean.loc[valid_mask],
-                            "pred_sd": total_sd.loc[valid_mask],
-                        })
-                        
-                        # Apply calibrator
-                        calib_result = total_calibrator.transform(calib_input)
-                        pre_guardrail_sd = calib_result["calibrated_sd"]
-                        df.loc[valid_mask, "total_sd_pre_guardrail"] = pre_guardrail_sd.values
-                        clipped_sd = pre_guardrail_sd.clip(lower=TOTAL_SD_GUARDRAIL_MIN)
-                        calib_result["calibrated_sd"] = clipped_sd
-
-                        # Update values
-                        df.loc[valid_mask, "total_mean"] = calib_result["calibrated_mean"].values
-                        df.loc[valid_mask, "total_sd"] = calib_result["calibrated_sd"].values
-
-                        # ===== INSTRUMENTATION: COMPUTE AND LOG DELTAS =====
-                        total_mean_after = df["total_mean"].copy()
-                        total_sd_after = df["total_sd"].copy()
-                        rows_with_mean_after = total_mean_after.notna().sum()
-                        
-                        # Compute max absolute change in mean and sd across all rows
-                        mean_delta = (total_mean_after - total_mean_before).abs().max()
-                        sd_delta = (total_sd_after - total_sd_before).abs().max()
-                        
-                        # Log at DEBUG level to verify calibration behavior
-                        _LOG.debug(
-                            "[CALIBRATION][TOTAL] rows_before=%d, rows_after=%d, "
-                            "max_mean_delta=%.6f, max_sd_delta=%.6f",
-                            int(rows_with_mean_before),
-                            int(rows_with_mean_after),
-                            float(mean_delta) if pd.notna(mean_delta) else 0.0,
-                            float(sd_delta) if pd.notna(sd_delta) else 0.0,
-                        )
-
-                        calibrated_markets.add("TOTAL")
-
-                        _LOG.info(
-                            f"[_apply_calibration_to_schedule_df] Applied TOTAL distribution calibrator "
-                            f"to {valid_mask.sum()} rows"
-                        )
-
-                        guardrail_mask = pre_guardrail_sd.notna()
-                        guardrail_count = int(guardrail_mask.sum())
-                        if guardrail_count:
-                            clipped_mask = guardrail_mask & (
-                                pre_guardrail_sd < TOTAL_SD_GUARDRAIL_MIN
-                            )
-                            clipped_count = int(clipped_mask.sum())
-                            pct_clipped = float(clipped_count / guardrail_count * 100)
-                            raw_p50 = float(pre_guardrail_sd[guardrail_mask].median())
-                            used_p50 = float(clipped_sd[guardrail_mask].median())
-                            _LOG.info(
-                                "[_apply_calibration_to_schedule_df] TOTAL guardrail summary: "
-                                "threshold=%.2f, clipped=%.1f%% (%d/%d), "
-                                "p50 raw=%.3f, p50 used=%.3f",
-                                TOTAL_SD_GUARDRAIL_MIN,
-                                pct_clipped,
-                                clipped_count,
-                                guardrail_count,
-                                raw_p50,
-                                used_p50,
-                            )
-                    except Exception as e:
-                        _LOG.warning(f"[_apply_calibration_to_schedule_df] TOTAL calibration failed: {e}")
-        else:
-            _LOG.debug(f"[TOTAL calibration] No calibrator found for {sport}/{season}/{model} market=total")
+        if total_calib_applied:
+            calibrated_markets.add("TOTAL")
     
     # ========== UPDATE WINNER WIN PROB WITH CALIBRATED VALUES ==========
     # After calibrating individual market probabilities, sync the aggregated winner_win_prob
@@ -1016,6 +1401,175 @@ def _build_market_forecasts_for_ensembles(
                         }
                     )
     return rows_by_market
+
+
+def _validate_bets_ensemble_contract(bets_df: pd.DataFrame) -> None:
+    """Validate strict ensemble-only contract for BETS sheet.
+    
+    BETS rows must come from ensembles, never from direct/fallback sources:
+    - ML rows: market_forecast_source should NOT be "direct" or "direct+calibrated_*"
+    - SPREAD rows: market_forecast_source == "ensemble_spread_v1"
+    - TOTAL rows: market_forecast_source == "ensemble_total_v1"
+    
+    Note: ML rows CAN be single-model sources (e.g., "elo") when only one model is available.
+    The contract is that when multi-model ensembles are used, they must not fall back to "direct".
+    
+    Raises RuntimeError if any row violates this contract.
+    """
+    if bets_df.empty:
+        return
+    
+    # Check for presence of key columns
+    if "market_forecast_source" not in bets_df.columns or "market_type" not in bets_df.columns:
+        _LOG.warning("[BETS validator] Cannot validate: missing market_forecast_source or market_type columns")
+        return
+    
+    violations: list[dict[str, Any]] = []
+    
+    # SPREAD and TOTAL have strict ensemble requirements
+    for market_type, expected_source in [("spread", "ensemble_spread_v1"), ("total", "ensemble_total_v1")]:
+        market_rows = bets_df[bets_df["market_type"] == market_type]
+        
+        if market_rows.empty:
+            continue
+        
+        # Check that all rows for this market type have the expected source
+        bad_sources = market_rows[market_rows["market_forecast_source"] != expected_source]
+        
+        if not bad_sources.empty:
+            for _, row in bad_sources.iterrows():
+                violations.append({
+                    "game_id": row.get("game_id"),
+                    "market_type": market_type,
+                    "actual_source": row.get("market_forecast_source"),
+                    "expected_source": expected_source,
+                })
+    
+    # ML has a softer requirement: no "direct" fallback, but single-model sources are OK
+    ml_rows = bets_df[bets_df["market_type"] == "ML"]
+    if not ml_rows.empty:
+        # Check for "direct" or "direct+calibrated_*" sources (these are forbidden fallbacks)
+        bad_ml_rows = ml_rows[
+            (ml_rows["market_forecast_source"] == "direct") |
+            (ml_rows["market_forecast_source"].str.contains("direct\\+", regex=True, na=False))
+        ]
+        
+        if not bad_ml_rows.empty:
+            for _, row in bad_ml_rows.iterrows():
+                violations.append({
+                    "game_id": row.get("game_id"),
+                    "market_type": "ML",
+                    "actual_source": row.get("market_forecast_source"),
+                    "expected_source": "ensemble_ml_v1 or single-model source (NOT direct)",
+                })
+    
+    if violations:
+        # Format error message with details
+        violation_summary = "\n".join([
+            f"  game_id={v['game_id']}, market={v['market_type']}: "
+            f"got {v['actual_source']}, expected {v['expected_source']}"
+            for v in violations[:20]  # Show first 20
+        ])
+        remaining = max(0, len(violations) - 20)
+        remaining_text = f"\n  ... and {remaining} more violations" if remaining > 0 else ""
+        
+        raise RuntimeError(
+            f"BETS ensemble contract violation: {len(violations)} row(s) do not use valid ensemble sources.\n"
+            f"Violations:\n{violation_summary}{remaining_text}\n"
+            f"Contract: SPREAD must be ensemble_spread_v1, TOTAL must be ensemble_total_v1. "
+            f"ML can be ensemble_ml_v1 or a single-model source, but NOT 'direct' or 'direct+calibrated_*' fallbacks."
+        )
+    
+    _LOG.info("[BETS validator] OK: contract enforced - all %d rows use valid sources", len(bets_df))
+
+
+def _validate_model_market_forecast_contract(
+    forecast_df: pd.DataFrame,
+    market: str | Market,
+    target_game_ids: set[str] | None = None,
+    model_name: str | None = None,
+) -> None:
+    """Validate forecast contract before ensemble application.
+    
+    Enforces strict contract for per-model forecasts:
+    1. Required columns present for the market
+    2. All values are finite (not NaN, not infinity)
+    3. Standard deviations > 0 (where applicable)
+    4. If target_game_ids provided, forecast covers all target games (Option B alignment)
+    
+    Args:
+        forecast_df: Forecast DataFrame with model predictions
+        market: Market identifier (ML, SPREAD, TOTAL)
+        target_game_ids: Optional set of game IDs that MUST be covered (Option B strict mode)
+        model_name: Optional model name for error context
+    
+    Raises:
+        RuntimeError: If contract is violated
+    """
+    if forecast_df.empty:
+        return
+    
+    market_name = market if isinstance(market, str) else market.name
+    market_key = market_name.upper()
+    required_columns = _market_required_columns(market_key)
+    model_context = f" for {model_name}" if model_name else ""
+    
+    # Check for required columns
+    missing_columns = [col for col in required_columns if col not in forecast_df.columns]
+    if missing_columns:
+        raise RuntimeError(
+            f"Forecast validation failed{model_context} for market {market_key}: "
+            f"missing required columns {missing_columns}"
+        )
+    
+    # Check for finite values in required columns
+    for col in required_columns:
+        if col in forecast_df.columns:
+            non_null = forecast_df[col].notna()
+            non_finite = ~np.isfinite(forecast_df[col])
+            bad_rows = forecast_df[non_null & non_finite]
+            if not bad_rows.empty:
+                bad_count = len(bad_rows)
+                sample_games = bad_rows["game_id"].head(3).tolist() if "game_id" in bad_rows.columns else []
+                raise RuntimeError(
+                    f"Forecast validation failed{model_context} for market {market_key}: "
+                    f"{bad_count} row(s) have non-finite {col} values (sample games: {sample_games})"
+                )
+    
+    # Check SD columns are positive where present
+    if market_key in ("SPREAD", "TOTAL"):
+        sd_col = "margin_sd" if market_key == "SPREAD" else "total_sd"
+        if sd_col in forecast_df.columns:
+            non_null = forecast_df[sd_col].notna()
+            non_positive = forecast_df[sd_col] <= 0
+            bad_rows = forecast_df[non_null & non_positive]
+            if not bad_rows.empty:
+                bad_count = len(bad_rows)
+                sample_games = bad_rows["game_id"].head(3).tolist() if "game_id" in bad_rows.columns else []
+                raise RuntimeError(
+                    f"Forecast validation failed{model_context} for market {market_key}: "
+                    f"{bad_count} row(s) have non-positive {sd_col} values (sample games: {sample_games})"
+                )
+    
+    # Check Option B alignment: if target_game_ids provided, forecast must cover all
+    if target_game_ids:
+        forecast_game_ids = set(
+            forecast_df["game_id"].dropna().unique() if "game_id" in forecast_df.columns else []
+        )
+        missing_game_ids = target_game_ids - forecast_game_ids
+        if missing_game_ids:
+            raise RuntimeError(
+                f"Forecast validation failed{model_context} for market {market_key}: "
+                f"missing forecast for {len(missing_game_ids)} target game(s). "
+                f"Expected {len(target_game_ids)}, got {len(forecast_game_ids)}. "
+                f"Missing games: {sorted(list(missing_game_ids))[:10]}"
+            )
+    
+    _LOG.debug(
+        f"[Forecast validator] OK: contract enforced for {market_key}{model_context}: "
+        f"{len(forecast_df)} rows, all required columns finite, "
+        f"SD > 0" + (f", coverage {len(forecast_game_ids)}/{len(target_game_ids)} games" if target_game_ids else "")
+    )
 
 
 def _validate_market_tuning_inputs(
@@ -1497,6 +2051,283 @@ def _filter_market_weights_for_forecast(
         )
 
     return normalized_weights, set(normalized_weights.keys())
+
+
+def _resolve_ensemble_weights_with_audit(
+    *,
+    weights: dict[str, float] | None,
+    forecast_df: pd.DataFrame,
+    market: str | Market,
+    weight_source: str,
+    weight_run_id: str | None = None,
+    selection_run_id: str | None = None,
+    strict: bool | None = None,
+) -> EnsembleAudit:
+    """Resolve ensemble weights with full audit trail and governance.
+    
+    This function:
+    1. Filters weights based on forecast availability and required columns.
+    2. Applies MIN_WEIGHT_EPS clamping.
+    3. Checks Neff threshold.
+    4. Returns EnsembleAudit with dropped reasons, Neff, and coverage info.
+    
+    Args:
+        weights: Dict of model -> weight (or None for uniform).
+        forecast_df: DataFrame with model forecasts.
+        market: Market name (ML, SPREAD, TOTAL).
+        weight_source: Source of weights (db_best_run, config, file, etc.).
+        weight_run_id: Optional run ID from tuning source.
+        selection_run_id: Optional run ID from selection source.
+        strict: If True, enforce strict governance (raise on Neff < MIN_NEFF).
+                If None, use ENSEMBLE_STRICT_MODE default.
+    
+    Returns:
+        EnsembleAudit object with final weights, dropped models, Neff, and coverage info.
+    
+    Raises:
+        RuntimeError: In strict mode if Neff < MIN_NEFF after governance.
+    """
+    market_name = market if isinstance(market, str) else market.name
+    market_key = market_name.upper()
+    required_columns = _market_required_columns(market_key)
+    
+    audit = EnsembleAudit(market=market_key, weight_source=weight_source)
+    audit.weight_run_id = weight_run_id
+    audit.selection_run_id = selection_run_id
+    
+    # Step 1: Identify forecast models and their validity
+    forecast_models: set[str] = set()
+    model_validity: dict[str, bool] = {}
+    invalid_reasons: dict[str, str] = {}
+    model_coverage: dict[str, dict[str, Any]] = {}
+    
+    for model_name, group in forecast_df.groupby("model_name"):
+        if pd.isna(model_name):
+            continue
+        normalized = normalize_model_name(str(model_name))
+        if not normalized:
+            continue
+        forecast_models.add(normalized)
+        
+        # Check required columns
+        missing: list[str] = []
+        for column in required_columns:
+            if column not in group.columns or not group[column].notna().any():
+                missing.append(column)
+        
+        if missing:
+            model_validity[normalized] = False
+            invalid_reasons[normalized] = f"missing {', '.join(missing)}"
+        else:
+            model_validity[normalized] = True
+        
+        # Track coverage stats
+        game_count = group["game_id"].nunique() if "game_id" in group.columns else 0
+        model_coverage[normalized] = {
+            "games_with_forecasts": game_count,
+            "required_columns": list(required_columns),
+            "has_required_columns": not missing,
+        }
+    
+    # Step 2: Build candidate weights
+    candidate_weights: dict[str, float] = {}
+    if weights is not None:
+        for model_name, value in weights.items():
+            normalized = normalize_model_name(model_name)
+            if not normalized:
+                continue
+            try:
+                weight_value = float(value)
+            except Exception:
+                weight_value = 0.0
+            candidate_weights[normalized] = weight_value
+    else:
+        for model in forecast_models:
+            candidate_weights[model] = 1.0
+    
+    # Ensure all forecast models have at least a 0 weight in candidates
+    for model in forecast_models:
+        candidate_weights.setdefault(model, 0.0)
+    
+    # Step 3: Filter weights based on validity and required columns
+    filtered_weights: dict[str, float] = {}
+    drop_reasons: dict[str, str] = {}
+    
+    for model, weight in candidate_weights.items():
+        if weight <= 0:
+            drop_reasons[model] = f"weight={weight}"
+            continue
+        if model not in forecast_models:
+            drop_reasons[model] = "missing forecast rows"
+            continue
+        if required_columns and not model_validity.get(model, True):
+            reason = invalid_reasons.get(model, "missing required fields")
+            drop_reasons[model] = reason
+            continue
+        filtered_weights[model] = weight
+    
+    # Step 4: Apply MIN_WEIGHT_EPS clamping (weights below threshold set to 0)
+    clamped_weights: dict[str, float] = {}
+    for model, weight in filtered_weights.items():
+        if weight < MIN_WEIGHT_EPS:
+            drop_reasons[model] = f"weight={weight} < MIN_WEIGHT_EPS={MIN_WEIGHT_EPS}"
+            audit.weight_clamped = True
+        else:
+            clamped_weights[model] = weight
+    
+    filtered_weights = clamped_weights
+    
+    # Determine effective strict mode (CLI override takes precedence)
+    effective_strict = ENSEMBLE_STRICT_MODE if strict is None else strict
+    
+    # Step 5: Handle fallback scenarios
+    valid_models = {m for m, valid in model_validity.items() if valid}
+    
+    if len(filtered_weights) <= 1 and len(valid_models) > 1:
+        fallback_models = sorted(valid_models)
+        uniform_weights = {model: 1.0 / len(fallback_models) for model in fallback_models}
+        audit.fallback_applied = True
+        warning_msg = (
+            f"Tuned weights for {market_key} collapsed to {len(filtered_weights)} model(s) "
+            f"after filtering; falling back to uniform weights over {fallback_models}"
+        )
+        audit.warnings.append(warning_msg)
+        _LOG.warning("[ensemble audit] %s", warning_msg)
+        filtered_weights = uniform_weights
+    
+    if not filtered_weights:
+        if not valid_models:
+            error_msg = (
+                f"No valid {market_key} ensemble members after filtering "
+                f"(candidates={json.dumps(candidate_weights, sort_keys=True)}, "
+                f"drops={json.dumps(drop_reasons, sort_keys=True)}). No fallback available."
+            )
+            audit.warnings.append(error_msg)
+            _LOG.error("[ensemble audit] %s", error_msg)
+            
+            if effective_strict:
+                raise RuntimeError(error_msg)
+            # Non-strict: allow to return empty audit, will be handled upstream
+            audit.final_models = []
+            audit.final_weights = {}
+            audit.dropped_models = drop_reasons
+            audit.coverage_summary = {m: model_coverage.get(m, {}) for m in candidate_weights}
+            audit.neff = 0.0
+            audit.neff_threshold_met = False
+            return audit
+        
+        # Fallback to uniform over valid models
+        fallback_weights = {
+            model: 1.0 / len(valid_models) for model in sorted(valid_models)
+        }
+        audit.fallback_applied = True
+        warning_msg = (
+            f"No positive weights for {market_key} after filtering; "
+            f"falling back to uniform weights over {sorted(valid_models)}"
+        )
+        audit.warnings.append(warning_msg)
+        _LOG.warning("[ensemble audit] %s", warning_msg)
+        filtered_weights = fallback_weights
+    
+    # Step 6: Normalize weights to sum to 1.0
+    total_weight = sum(filtered_weights.values())
+    normalized_weights = {
+        model: weight / total_weight for model, weight in filtered_weights.items()
+    }
+    
+    # Step 7: Calculate Neff and check threshold
+    neff = compute_neff(normalized_weights)
+    neff_threshold_met = neff >= MIN_NEFF
+    
+    if not neff_threshold_met and effective_strict:
+        error_msg = (
+            f"Ensemble {market_key} has Neff={neff:.2f} < MIN_NEFF={MIN_NEFF}; "
+            f"strict mode enabled, raising error"
+        )
+        audit.warnings.append(error_msg)
+        raise RuntimeError(error_msg)
+    elif not neff_threshold_met:
+        warning_msg = f"Neff={neff:.2f} < MIN_NEFF={MIN_NEFF} (non-strict mode, allowing)"
+        audit.warnings.append(warning_msg)
+        _LOG.warning("[ensemble audit][%s] %s", market_key, warning_msg)
+    
+    # Step 8: Populate audit object
+    audit.final_models = sorted(normalized_weights.keys())
+    audit.final_weights = normalized_weights
+    audit.dropped_models = drop_reasons
+    audit.coverage_summary = {m: model_coverage.get(m, {}) for m in candidate_weights}
+    audit.neff = neff
+    audit.neff_threshold_met = neff_threshold_met
+    
+    # Emit audit log
+    audit.emit_log()
+    
+    return audit
+
+
+def _compute_ml_coverage_report(
+    *,
+    forecast_df: pd.DataFrame,
+    bets_schedule_df: pd.DataFrame | None,
+    expected_component_models: list[str] | None,
+    filtered_weights: dict[str, float],
+) -> dict[str, Any]:
+    """
+    Compute ML ensemble coverage diagnostics before the ensemble decision.
+    
+    Returns dict with:
+      - expected_models: list of models that were supposed to be in ensemble
+      - present_models: set of unique model_names in forecast_df
+      - per_model: dict with coverage stats for each present model
+      - dropped_models: dict mapping dropped model to reason
+      - total_bets_games: total games in bets_schedule_df
+    """
+    present_models = set()
+    per_model_stats: dict[str, dict[str, Any]] = {}
+    
+    for model_name in forecast_df.get("model_name", []).dropna().unique():
+        normalized = normalize_model_name(str(model_name))
+        if not normalized:
+            continue
+        present_models.add(normalized)
+        
+        model_df = forecast_df[forecast_df["model_name"] == model_name]
+        unique_games = model_df.get("game_id", pd.Series([])).nunique() if "game_id" in model_df.columns else 0
+        
+        p_col_non_null = 0
+        p_col_nan = 0
+        if "p_home_win" in model_df.columns:
+            p_col_non_null = model_df["p_home_win"].notna().sum()
+            p_col_nan = model_df["p_home_win"].isna().sum()
+        
+        per_model_stats[normalized] = {
+            "games_covered": int(unique_games),
+            "non_null_p_home_win": int(p_col_non_null),
+            "nan_p_home_win": int(p_col_nan),
+        }
+    
+    dropped_models: dict[str, str] = {}
+    if expected_component_models:
+        for model in expected_component_models:
+            normalized = normalize_model_name(model)
+            if normalized not in present_models:
+                dropped_models[normalized] = "missing forecast rows"
+            elif normalized not in filtered_weights:
+                nan_count = per_model_stats[normalized]["nan_p_home_win"]
+                if nan_count > 0:
+                    dropped_models[normalized] = f"NaN p_home_win ({nan_count} rows)"
+                else:
+                    dropped_models[normalized] = "filtered out (reason unknown)"
+    
+    total_bets_games = len(bets_schedule_df) if bets_schedule_df is not None else 0
+    
+    return {
+        "expected_models": expected_component_models or [],
+        "present_models": sorted(present_models),
+        "per_model": per_model_stats,
+        "dropped_models": dropped_models,
+        "total_bets_games": total_bets_games,
+    }
 
 
 def _load_active_selection_context(
@@ -2904,6 +3735,7 @@ def build_schedule_excel_report(
         Market.TOTAL.name: _market_config_value(Market.TOTAL.name, "weights"),
     }
     resolved_ensemble_meta: dict[str, dict[str, Any]] = {}
+    ensemble_audits: dict[str, EnsembleAudit] = {}  # Track audits for each market
 
     with pd.ExcelWriter(report_path) as writer:
         for model_name in models:
@@ -3201,23 +4033,42 @@ def build_schedule_excel_report(
                                 f"No ML forecasts matched ensemble models {ensemble_models}; ensemble skipped"
                             )
                             raise Exception("No ML forecasts after ensemble model filter")
-                    filtered_weights, final_models = _filter_market_weights_for_forecast(
-                        weights=weights,
-                        forecast_df=forecast_df,
-                        market=Market.ML.name,
-                    )
-                    if not final_models:
-                        config_warnings.append(
-                            "No ML forecasts remained after weight filtering; ensemble skipped"
+                    
+                    # Use audited weight resolution with strict mode from CLI
+                    final_models = set()
+                    filtered_weights = {}
+                    try:
+                        ml_audit = _resolve_ensemble_weights_with_audit(
+                            weights=weights,
+                            forecast_df=forecast_df,
+                            market=Market.ML,
+                            weight_source=weight_source or "equal",
+                            weight_run_id=weight_run_id,
+                            selection_run_id=selection_run_id,
+                            strict=strict,  # CLI --strict flag override
                         )
-                        raise Exception("No ML forecasts after weight filtering")
-                    forecast_df = forecast_df[forecast_df["model_name"].isin(final_models)]
-                    if forecast_df.empty:
-                        config_warnings.append(
-                            "No ML forecasts remained after weight filtering; ensemble skipped"
+                    except RuntimeError as e:
+                        # Strict mode error - re-raise
+                        if strict:
+                            raise
+                        # Non-strict: log warning and skip ensemble
+                        _LOG.warning("[ML ensemble] Audited resolver failed (non-strict): %s", e)
+                        ml_audit = None
+                    
+                    if ml_audit is None or not ml_audit.final_models:
+                        # No valid ensemble; skip and continue with direct/single-model forecasting
+                        _LOG.info(
+                            "[ML ensemble] Audit returned no final models; ensemble skipped"
                         )
-                        raise Exception("No ML forecasts after weight filtering")
-                    weights = filtered_weights
+                        if ml_audit and ml_audit.warnings:
+                            config_warnings.extend(ml_audit.warnings)
+                        use_ensemble = False
+                    else:
+                        # Ensemble is valid; continue with application
+                        filtered_weights = ml_audit.final_weights
+                        final_models = set(ml_audit.final_models)
+                        forecast_df = forecast_df[forecast_df["model_name"].isin(final_models)]
+                        weights = filtered_weights
 
                     # Log post-filtering state
                     unique_ml_models = set(forecast_df["model_name"].dropna().unique())
@@ -3228,6 +4079,97 @@ def build_schedule_excel_report(
                         use_ensemble,
                         filtered_weights,
                     )
+
+                    # =========================================================================
+                    # ML COVERAGE REPORT: Detailed diagnostics before ensemble application
+                    # =========================================================================
+                    coverage_report = _compute_ml_coverage_report(
+                        forecast_df=forecast_df,
+                        bets_schedule_df=bets_schedule_df,
+                        expected_component_models=ensemble_models,
+                        filtered_weights=filtered_weights,
+                    )
+                    
+                    # Log coverage details (single compact block)
+                    per_model_str = "; ".join(
+                        f"{m}: games={coverage_report['per_model'][m]['games_covered']}, "
+                        f"non_null_p={coverage_report['per_model'][m]['non_null_p_home_win']}, "
+                        f"nan_p={coverage_report['per_model'][m]['nan_p_home_win']}"
+                        for m in sorted(coverage_report['per_model'].keys())
+                    )
+                    dropped_str = "; ".join(
+                        f"{m}: {reason}" 
+                        for m, reason in sorted(coverage_report['dropped_models'].items())
+                    )
+                    
+                    _LOG.info(
+                        "[ML ensemble coverage] bets_games=%d, expected_models=%s, present_models=%s",
+                        coverage_report['total_bets_games'],
+                        coverage_report['expected_models'],
+                        coverage_report['present_models'],
+                    )
+                    if per_model_str:
+                        _LOG.info(
+                            "[ML ensemble coverage] per_model={%s}",
+                            per_model_str,
+                        )
+                    if dropped_str:
+                        _LOG.info(
+                            "[ML ensemble coverage] dropped={%s}",
+                            dropped_str,
+                        )
+
+                    # =========================================================================
+                    # STRICT ENSEMBLE ASSERTION
+                    # =========================================================================
+                    # If ML ensemble was configured to use >=2 models but only <2 are available after
+                    # filtering, raise RuntimeError with full diagnostics instead of silently
+                    # degrading to single-model pass-through.
+                    if ensemble_models and len(ensemble_models) >= 2 and len(unique_ml_models) < 2:
+                        # Ensemble expected but not available - collect detailed diagnostics
+                        sample_game_ids_per_dropped: dict[str, list[str]] = {}
+                        for dropped_model in coverage_report['dropped_models'].keys():
+                            dropped_model_rows = forecast_df[
+                                forecast_df["model_name"].str.lower() == dropped_model.lower()
+                            ]
+                            if dropped_model_rows.empty and "game_id" in forecast_df.columns:
+                                # Model completely missing - show games from other models
+                                sample_gids = forecast_df["game_id"].dropna().unique()[:5]
+                                sample_game_ids_per_dropped[dropped_model] = [str(g) for g in sample_gids]
+                            elif not dropped_model_rows.empty and "game_id" in dropped_model_rows.columns:
+                                # Model has rows but missing column or all NaN - show specific games
+                                sample_gids = dropped_model_rows["game_id"].dropna().unique()[:5]
+                                sample_game_ids_per_dropped[dropped_model] = [str(g) for g in sample_gids]
+                        
+                        # Build comprehensive error message
+                        error_parts = [
+                            f"ML ensemble configured with {len(ensemble_models)} models {ensemble_models} but only {len(unique_ml_models)} available after filtering.",
+                            f"Expected models: {ensemble_models}",
+                            f"Present models: {coverage_report['present_models']}",
+                            f"Dropped models with reasons:",
+                        ]
+                        for model, reason in sorted(coverage_report['dropped_models'].items()):
+                            sample_games = sample_game_ids_per_dropped.get(model, [])
+                            sample_str = f" (games: {', '.join(sample_games)})" if sample_games else ""
+                            error_parts.append(f"  - {model}: {reason}{sample_str}")
+                        
+                        # Add per-model coverage stats
+                        error_parts.append("Per-model coverage statistics:")
+                        for model, stats in sorted(coverage_report['per_model'].items()):
+                            error_parts.append(
+                                f"  - {model}: {stats['games_covered']} games, "
+                                f"{stats['non_null_p_home_win']} non-null p_home_win, "
+                                f"{stats['nan_p_home_win']} NaN p_home_win"
+                            )
+                        
+                        error_parts.append(
+                            f"Total BETS games in window: {coverage_report['total_bets_games']}"
+                        )
+                        error_parts.append(
+                            "SOLUTION: Add missing forecast rows, fix data quality issues, or reconfigure ensemble."
+                        )
+                        
+                        raise RuntimeError("\n".join(error_parts))
 
                     # Counter for tracking games updated
                     _ml_games_updated = 0
@@ -3241,6 +4183,10 @@ def build_schedule_excel_report(
                         )
                         used_models = sorted(set(forecast_df.get("model_name", [])))
                         cfg_meta = market_config_meta.get(Market.ML.name, {}) if isinstance(market_config_meta, dict) else {}
+                        
+                        # Store audit for this market
+                        ensemble_audits[Market.ML.name] = ml_audit
+                        
                         resolved_ensemble_meta[Market.ML.name] = {
                             "ensemble_id": ensemble.ensemble_id,
                             "metric_slot": market_metrics.get(Market.ML.name),
@@ -3259,6 +4205,7 @@ def build_schedule_excel_report(
                                 else None
                             ),
                             "tuning_run_id": weight_run_id if weight_source == "db_tuned" else None,
+                            "audit": ml_audit.to_dict(),  # Include audit metadata
                         }
                         # Load calibrator for the ensemble source, if present
                         try:
@@ -3272,6 +4219,9 @@ def build_schedule_excel_report(
                             ensemble_cal = None
 
                         # Apply per-game ensemble
+                        # Track which games receive ensemble output for strict contract enforcement
+                        games_with_ml_ensemble = set()
+                        
                         for gid in pd.unique(bets_schedule_df["game_id"]):
                             try:
                                 subset = forecast_df[forecast_df["game_id"] == gid]
@@ -3298,9 +4248,26 @@ def build_schedule_excel_report(
                                 bets_schedule_df.loc[mask, "ml_ensemble_components_json"] = components_json
                                 ensemble_applied = True
                                 _ml_games_updated += 1
+                                games_with_ml_ensemble.add(gid)
                             except Exception:
                                 # Best-effort per-game; continue on errors.
                                 continue
+
+                        # STRICT CONTRACT ENFORCEMENT: All games in BETS must have ML ensemble output
+                        all_bets_games = set(pd.unique(bets_schedule_df["game_id"]))
+                        missing_ml_ensemble = all_bets_games - games_with_ml_ensemble
+                        
+                        if missing_ml_ensemble:
+                            # This is a contract violation: ML ensemble should cover all games or fail loudly
+                            missing_list = sorted(list(missing_ml_ensemble))[:10]  # Show first 10
+                            raise RuntimeError(
+                                f"ML ensemble ({ensemble.ensemble_id}) failed to produce output for {len(missing_ml_ensemble)} "
+                                f"game(s) that appear in BETS. This violates the core contract: ensembles ALWAYS used. "
+                                f"Missing games: {missing_list}{'...' if len(missing_ml_ensemble) > 10 else ''}. "
+                                f"Expected ensemble_id={ensemble.ensemble_id}, available forecasts={len(forecast_df)}, "
+                                f"total_bets_games={len(all_bets_games)}, games_updated={_ml_games_updated}. "
+                                f"This likely indicates a join key mismatch or filtering issue in the forecast pipeline."
+                            )
 
                         # Log ML ensemble success
                         _LOG.info(
@@ -3334,6 +4301,9 @@ def build_schedule_excel_report(
                                 bets_schedule_df.loc[mask, "ml_ensemble_components_json"] = json.dumps(
                                     components
                                 )
+                                # Set win_prob_source to the model name (not "direct")
+                                # This ensures contract enforcement: no "direct" sources in BETS
+                                bets_schedule_df.loc[mask, "win_prob_source"] = single_model_name
                                 _ml_single_games_updated += 1
                             except Exception:
                                 continue
@@ -3353,56 +4323,41 @@ def build_schedule_excel_report(
                 or not bets_schedule_df["ml_ensemble_components_json"].notna().any()
             )
         )
-        fallback_applied = False
+        
+        # STRICT CONTRACT ENFORCEMENT: No fallback for ML ensemble
+        # If ML ensemble components are missing after application and ensemble was supposed to apply,
+        # this is a contract violation and must be reported loudly.
         if ml_components_missing and not ensemble_applied:
-            try:
-                fallback_rows = market_forecast_rows.get(Market.ML.name, [])
-                if fallback_rows:
-                    fallback_df = pd.DataFrame(fallback_rows)
-                    if not fallback_df.empty:
-                        allowed_models = allowed_models_map.get(Market.ML.name)
-                        if allowed_models:
-                            fallback_df = fallback_df[
-                                fallback_df["model_name"].isin(set(allowed_models))
-                            ]
-                        if not fallback_df.empty:
-                            weights, _, _, _, _ = _resolve_ensemble_weights(
-                                db_path=db_path,
-                                sport=sport,
-                                season=season,
-                                market=Market.ML.name,
-                                ensemble_id=ensemble_ids[Market.ML.name],
-                                config_weights=config_weights_map.get(Market.ML.name),
-                                selection_context=selection_contexts[Market.ML.name],
-                                tuning_context=tuning_contexts[Market.ML.name],
-                                config_warnings=config_warnings,
-                            )
-                            ensemble = MLWeightedAverageEnsemble(
-                                sport,
-                                season,
-                                ensemble_id=ensemble_ids[Market.ML.name],
-                                weights=weights,
-                            )
-                            for gid in pd.unique(fallback_df["game_id"]):
-                                subset = fallback_df[fallback_df["game_id"] == gid]
-                                if subset.empty:
-                                    continue
-                                _, components_json = ensemble.combine(subset)
-                                if components_json is None:
-                                    continue
-                                mask = bets_schedule_df["game_id"] == gid
-                                bets_schedule_df.loc[
-                                    mask, "ml_ensemble_components_json"
-                                ] = components_json
-                            fallback_applied = True
-            except Exception as exc:  # pragma: no cover - best-effort fallback
-                _LOG.warning(
-                    "ML ensemble fallback failed: %s", exc, exc_info=False
-                )
-        if ml_components_missing and not fallback_applied and not ensemble_applied:
-            _LOG.warning(
-                "ML ensemble fallback ran without an applied ensemble; "
-                "ml_ensemble_components_json remains blank."
+            # Check if we attempted multi-model ensemble
+            ml_rows = market_forecast_rows.get(Market.ML.name, [])
+            if ml_rows:
+                ml_forecast_df = pd.DataFrame(ml_rows)
+                unique_ml_models = set(ml_forecast_df.get("model_name", []).dropna().unique())
+                if len(unique_ml_models) > 1:
+                    # Multi-model scenario but ensemble didn't apply - this is a bug
+                    missing_game_ids = set()
+                    if "game_id" in bets_schedule_df.columns:
+                        # Identify which games have missing ML ensemble data
+                        for gid in bets_schedule_df["game_id"].unique():
+                            ml_rows_for_game = ml_forecast_df[ml_forecast_df["game_id"] == gid]
+                            if ml_rows_for_game.empty or not ml_rows_for_game["model_name"].notna().any():
+                                missing_game_ids.add(gid)
+                    
+                    if missing_game_ids:
+                        missing_list = sorted(list(missing_game_ids))[:10]
+                        raise RuntimeError(
+                            f"ML ensemble contract violation: {len(missing_game_ids)} game(s) have no ML ensemble output "
+                            f"despite multi-model forecasts being available. This indicates a join/filter failure in the "
+                            f"ensemble pipeline. Missing games: {missing_list}{'...' if len(missing_game_ids) > 10 else ''}. "
+                            f"Available models: {sorted(unique_ml_models)}. "
+                            f"Total BETS games: {bets_schedule_df['game_id'].nunique() if 'game_id' in bets_schedule_df.columns else 0}. "
+                            f"No fallback is permitted - ensembles ALWAYS apply or the pipeline fails."
+                        )
+                    
+            # Single-model or no forecasts is acceptable - log but don't fail
+            _LOG.debug(
+                "[ML ensemble] No ML ensemble components in BETS after application. "
+                "This may be expected for single-model scenarios."
             )
 
         # -------------------------------------------------------------------------
@@ -3450,23 +4405,42 @@ def build_schedule_excel_report(
                                 f"No SPREAD forecasts matched ensemble models {ensemble_models}; ensemble skipped"
                             )
                             raise Exception("No SPREAD forecasts after ensemble model filter")
-                    filtered_weights, final_models = _filter_market_weights_for_forecast(
-                        weights=weights,
-                        forecast_df=forecast_df,
-                        market=Market.SPREAD.name,
-                    )
-                    if not final_models:
-                        config_warnings.append(
-                            "No SPREAD forecasts remained after weight filtering; ensemble skipped"
+                    
+                    # Use audited weight resolution with strict mode from CLI
+                    final_models = set()
+                    filtered_weights = {}
+                    try:
+                        spread_audit = _resolve_ensemble_weights_with_audit(
+                            weights=weights,
+                            forecast_df=forecast_df,
+                            market=Market.SPREAD,
+                            weight_source=weight_source or "equal",
+                            weight_run_id=weight_run_id,
+                            selection_run_id=selection_run_id,
+                            strict=strict,  # CLI --strict flag override
                         )
-                        raise Exception("No SPREAD forecasts after weight filtering")
-                    forecast_df = forecast_df[forecast_df["model_name"].isin(final_models)]
-                    if forecast_df.empty:
-                        config_warnings.append(
-                            "No SPREAD forecasts remained after weight filtering; ensemble skipped"
+                    except RuntimeError as e:
+                        # Strict mode error - re-raise
+                        if strict:
+                            raise
+                        # Non-strict: log warning and skip ensemble
+                        _LOG.warning("[SPREAD ensemble] Audited resolver failed (non-strict): %s", e)
+                        spread_audit = None
+                    
+                    if spread_audit is None or not spread_audit.final_models:
+                        # No valid ensemble; skip and continue
+                        _LOG.info(
+                            "[SPREAD ensemble] Audit returned no final models; ensemble skipped"
                         )
-                        raise Exception("No SPREAD forecasts after weight filtering")
-                    weights = filtered_weights
+                        if spread_audit and spread_audit.warnings:
+                            config_warnings.extend(spread_audit.warnings)
+                        use_ensemble = False
+                    else:
+                        # Ensemble is valid; continue with application
+                        filtered_weights = spread_audit.final_weights
+                        final_models = set(spread_audit.final_models)
+                        forecast_df = forecast_df[forecast_df["model_name"].isin(final_models)]
+                        weights = filtered_weights
 
                     # Log post-filtering state
                     unique_spread_models = set(forecast_df["model_name"].dropna().unique())
@@ -3488,6 +4462,10 @@ def build_schedule_excel_report(
                         )
                         used_models = sorted(unique_spread_models)
                         cfg_meta = market_config_meta.get(Market.SPREAD.name, {}) if isinstance(market_config_meta, dict) else {}
+                        
+                        # Store audit for this market
+                        ensemble_audits[Market.SPREAD.name] = spread_audit
+                        
                         resolved_ensemble_meta[Market.SPREAD.name] = {
                             "ensemble_id": spread_ensemble.ensemble_id,
                             "metric_slot": market_metrics.get(Market.SPREAD.name),
@@ -3506,6 +4484,7 @@ def build_schedule_excel_report(
                                 else None
                             ),
                             "tuning_run_id": weight_run_id if weight_source == "db_tuned" else None,
+                            "audit": spread_audit.to_dict(),  # Include audit metadata
                         }
                         spread_games_updated = 0
                         bets_game_ids = pd.unique(bets_schedule_df["game_id"])
@@ -3628,23 +4607,42 @@ def build_schedule_excel_report(
                                 f"No TOTAL forecasts matched ensemble models {ensemble_models}; ensemble skipped"
                             )
                             raise Exception("No TOTAL forecasts after ensemble model filter")
-                    filtered_weights, final_models = _filter_market_weights_for_forecast(
-                        weights=weights,
-                        forecast_df=forecast_df,
-                        market=Market.TOTAL.name,
-                    )
-                    if not final_models:
-                        config_warnings.append(
-                            "No TOTAL forecasts remained after weight filtering; ensemble skipped"
+                    
+                    # Use audited weight resolution with strict mode from CLI
+                    final_models = set()
+                    filtered_weights = {}
+                    try:
+                        total_audit = _resolve_ensemble_weights_with_audit(
+                            weights=weights,
+                            forecast_df=forecast_df,
+                            market=Market.TOTAL,
+                            weight_source=weight_source or "equal",
+                            weight_run_id=weight_run_id,
+                            selection_run_id=selection_run_id,
+                            strict=strict,  # CLI --strict flag override
                         )
-                        raise Exception("No TOTAL forecasts after weight filtering")
-                    forecast_df = forecast_df[forecast_df["model_name"].isin(final_models)]
-                    if forecast_df.empty:
-                        config_warnings.append(
-                            "No TOTAL forecasts remained after weight filtering; ensemble skipped"
+                    except RuntimeError as e:
+                        # Strict mode error - re-raise
+                        if strict:
+                            raise
+                        # Non-strict: log warning and skip ensemble
+                        _LOG.warning("[TOTAL ensemble] Audited resolver failed (non-strict): %s", e)
+                        total_audit = None
+                    
+                    if total_audit is None or not total_audit.final_models:
+                        # No valid ensemble; skip and continue
+                        _LOG.info(
+                            "[TOTAL ensemble] Audit returned no final models; ensemble skipped"
                         )
-                        raise Exception("No TOTAL forecasts after weight filtering")
-                    weights = filtered_weights
+                        if total_audit and total_audit.warnings:
+                            config_warnings.extend(total_audit.warnings)
+                        use_ensemble = False
+                    else:
+                        # Ensemble is valid; continue with application
+                        filtered_weights = total_audit.final_weights
+                        final_models = set(total_audit.final_models)
+                        forecast_df = forecast_df[forecast_df["model_name"].isin(final_models)]
+                        weights = filtered_weights
 
                     # Log post-filtering state
                     unique_total_models = set(forecast_df["model_name"].dropna().unique())
@@ -3669,6 +4667,10 @@ def build_schedule_excel_report(
                         )
                         used_models = sorted(unique_total_models)
                         cfg_meta = market_config_meta.get(Market.TOTAL.name, {}) if isinstance(market_config_meta, dict) else {}
+                        
+                        # Store audit for this market
+                        ensemble_audits[Market.TOTAL.name] = total_audit
+                        
                         resolved_ensemble_meta[Market.TOTAL.name] = {
                             "ensemble_id": total_ensemble.ensemble_id,
                             "metric_slot": market_metrics.get(Market.TOTAL.name),
@@ -3687,6 +4689,7 @@ def build_schedule_excel_report(
                                 else None
                             ),
                             "tuning_run_id": weight_run_id if weight_source == "db_tuned" else None,
+                            "audit": total_audit.to_dict(),  # Include audit metadata
                         }
                         # Compute recency adjustment for totals (e.g., to account for January slowdown)
                         total_adjustment = None
@@ -3874,6 +4877,14 @@ def build_schedule_excel_report(
                     bets_df.loc[mask, "total_source"] = total_source_id
                     after_sources = bets_df.loc[mask, "total_source"].unique()
                     _LOG.info(f"[BETS] TOTAL rows AFTER: {after_sources}, total_source_id={total_source_id}")
+            
+            # STRICT CONTRACT ENFORCEMENT: Validate that all BETS rows use correct ensemble sources
+            # This must happen AFTER sources are populated above
+            try:
+                _validate_bets_ensemble_contract(bets_df)
+            except RuntimeError as e:
+                _LOG.error(f"[BETS validator] Contract violation: {e}")
+                raise
         
         bets_df.to_excel(writer, sheet_name="BETS", index=False)
         _LOG.info(

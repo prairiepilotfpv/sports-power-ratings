@@ -5,7 +5,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from src.pipelines.schedule import _build_bets_dataframe
+from src.pipelines.schedule import _build_bets_dataframe, _validate_bets_ensemble_contract
 
 
 class TestBetsEnsembleGating:
@@ -284,3 +284,202 @@ class TestBetsEnsembleGating:
         assert total_selections == ["Over", "Under"], (
             f"TOTAL selections should be [Over, Under], got {total_selections}"
         )
+
+class TestBetsEnsembleContractEnforcement:
+    """Test suite for strict BETS ensemble contract enforcement."""
+    
+    def _create_valid_bets_df(self, num_games: int = 2) -> pd.DataFrame:
+        """Create a valid BETS dataframe with all correct ensemble sources."""
+        rows = []
+        for game_idx in range(num_games):
+            game_id = f"game_{game_idx}"
+            date_val = date(2025, 11, 10)
+            home_team = f"Team_H{game_idx}"
+            away_team = f"Team_A{game_idx}"
+            
+            # 2 ML rows
+            for selection in [away_team, home_team]:
+                rows.append({
+                    "game_id": game_id,
+                    "date": date_val,
+                    "market_type": "ML",
+                    "selection": selection,
+                    "market_forecast_source": "ensemble_ml_v1",
+                    "win_prob_source": "ensemble_ml_v1",
+                })
+            
+            # 2 SPREAD rows
+            for selection in [away_team, home_team]:
+                rows.append({
+                    "game_id": game_id,
+                    "date": date_val,
+                    "market_type": "spread",
+                    "selection": selection,
+                    "market_forecast_source": "ensemble_spread_v1",
+                    "spread_source": "ensemble_spread_v1",
+                })
+            
+            # 2 TOTAL rows
+            for selection in ["Over", "Under"]:
+                rows.append({
+                    "game_id": game_id,
+                    "date": date_val,
+                    "market_type": "total",
+                    "selection": selection,
+                    "market_forecast_source": "ensemble_total_v1",
+                    "total_source": "ensemble_total_v1",
+                })
+        
+        return pd.DataFrame(rows)
+    
+    def test_validate_passes_for_correct_ensemble_sources(self):
+        """Validator passes when all rows use correct ensemble sources."""
+        bets_df = self._create_valid_bets_df(num_games=3)
+        
+        # Should not raise
+        _validate_bets_ensemble_contract(bets_df)
+    
+    def test_validate_passes_for_single_model_ml_source(self):
+        """Validator passes when ML rows use a single-model source (not 'direct')."""
+        bets_df = self._create_valid_bets_df(num_games=2)
+        
+        # Change ML source to a single-model source (this is OK)
+        ml_rows = bets_df[bets_df["market_type"] == "ML"]
+        bets_df.loc[ml_rows.index, "market_forecast_source"] = "elo"
+        
+        # Should not raise - single-model sources are allowed for ML
+        _validate_bets_ensemble_contract(bets_df)
+
+    
+    def test_validate_fails_for_direct_ml_fallback_source(self):
+        """Validator raises RuntimeError if any ML row has 'direct' fallback source."""
+        bets_df = self._create_valid_bets_df(num_games=2)
+        
+        # Corrupt one ML row with direct source (forbidden fallback)
+        ml_rows = bets_df[bets_df["market_type"] == "ML"]
+        bets_df.loc[ml_rows.index[0], "market_forecast_source"] = "direct"
+        
+        with pytest.raises(RuntimeError) as exc_info:
+            _validate_bets_ensemble_contract(bets_df)
+        
+        assert "direct" in str(exc_info.value).lower()
+
+    
+    def test_validate_fails_for_direct_spread_source(self):
+        """Validator raises RuntimeError if any SPREAD row has direct source."""
+        bets_df = self._create_valid_bets_df(num_games=2)
+        
+        # Corrupt one SPREAD row with direct source
+        spread_rows = bets_df[bets_df["market_type"] == "spread"]
+        bets_df.loc[spread_rows.index[0], "market_forecast_source"] = "direct"
+        
+        with pytest.raises(RuntimeError) as exc_info:
+            _validate_bets_ensemble_contract(bets_df)
+        
+        assert "spread" in str(exc_info.value).lower()
+        assert "direct" in str(exc_info.value).lower()
+    
+    def test_validate_fails_for_direct_total_source(self):
+        """Validator raises RuntimeError if any TOTAL row has direct source."""
+        bets_df = self._create_valid_bets_df(num_games=2)
+        
+        # Corrupt one TOTAL row with direct source
+        total_rows = bets_df[bets_df["market_type"] == "total"]
+        bets_df.loc[total_rows.index[0], "market_forecast_source"] = "direct"
+        
+        with pytest.raises(RuntimeError) as exc_info:
+            _validate_bets_ensemble_contract(bets_df)
+        
+        assert "total" in str(exc_info.value).lower()
+        assert "direct" in str(exc_info.value).lower()
+    
+    def test_validate_fails_for_calibrated_ml_source(self):
+        """Validator raises RuntimeError if any ML row has direct+calibrated source."""
+        bets_df = self._create_valid_bets_df(num_games=2)
+        
+        # Corrupt one ML row with direct+calibrated_ml (the fallback we're eliminating)
+        ml_rows = bets_df[bets_df["market_type"] == "ML"]
+        bets_df.loc[ml_rows.index[0], "market_forecast_source"] = "direct+calibrated_ml"
+        
+        with pytest.raises(RuntimeError) as exc_info:
+            _validate_bets_ensemble_contract(bets_df)
+        
+        assert "contract violation" in str(exc_info.value).lower()
+        assert "direct" in str(exc_info.value).lower() or "calibrated" in str(exc_info.value).lower()
+    
+    def test_validate_detects_multiple_violations(self):
+        """Validator detects multiple rows with contract violations."""
+        bets_df = self._create_valid_bets_df(num_games=3)
+        
+        # Corrupt multiple rows
+        ml_rows = bets_df[bets_df["market_type"] == "ML"]
+        bets_df.loc[ml_rows.index[0], "market_forecast_source"] = "direct"
+        bets_df.loc[ml_rows.index[1], "market_forecast_source"] = "direct"
+        
+        spread_rows = bets_df[bets_df["market_type"] == "spread"]
+        bets_df.loc[spread_rows.index[0], "market_forecast_source"] = "model_x"
+        
+        with pytest.raises(RuntimeError) as exc_info:
+            _validate_bets_ensemble_contract(bets_df)
+        
+        error_msg = str(exc_info.value)
+        assert "3" in error_msg  # 3 violations total
+        assert "contract violation" in error_msg.lower()
+    
+    def test_validate_includes_game_id_in_error(self):
+        """Validator includes game_id in error message for diagnostics."""
+        bets_df = self._create_valid_bets_df(num_games=2)
+        
+        # Corrupt one row
+        ml_rows = bets_df[bets_df["market_type"] == "ML"]
+        target_game_id = bets_df.loc[ml_rows.index[0], "game_id"]
+        bets_df.loc[ml_rows.index[0], "market_forecast_source"] = "direct"
+        
+        with pytest.raises(RuntimeError) as exc_info:
+            _validate_bets_ensemble_contract(bets_df)
+        
+        error_msg = str(exc_info.value)
+        assert target_game_id in error_msg
+    
+    def test_validate_handles_empty_dataframe(self):
+        """Validator handles empty BETS dataframe gracefully."""
+        empty_df = pd.DataFrame(columns=["market_type", "market_forecast_source"])
+        
+        # Should not raise
+        _validate_bets_ensemble_contract(empty_df)
+    
+    def test_validate_handles_missing_columns(self):
+        """Validator handles DataFrames with missing required columns gracefully."""
+        df = pd.DataFrame({
+            "game_id": ["g1"],
+            "selection": ["Team A"],
+            # Missing market_type or market_forecast_source
+        })
+        
+        # Should not raise, just log warning
+        _validate_bets_ensemble_contract(df)
+    
+    def test_ensemble_ml_single_model_source_allowed(self):
+        """Contract: ML rows can have single-model sources (not just ensemble_ml_v1)."""
+        bets_df = self._create_valid_bets_df(num_games=1)
+        
+        # Change ML source to a model name - this is allowed
+        ml_rows_mask = bets_df["market_type"] == "ML"
+        bets_df.loc[ml_rows_mask, "market_forecast_source"] = "bradley-terry"
+        
+        # Should not raise - single-model sources are OK for ML
+        _validate_bets_ensemble_contract(bets_df)
+
+    def test_logging_validator_no_unicode_error(self):
+        """
+        Regression test: validator logging paths must use ASCII-only strings.
+        This prevents UnicodeEncodeError on Windows console output.
+        """
+        bets_df = self._create_valid_bets_df(num_games=1)
+        
+        # Call validator which logs a message with ASCII-only text
+        # (✓ checkmark replaced with "OK:" to ensure ASCII-only output)
+        try:
+            _validate_bets_ensemble_contract(bets_df)
+        except UnicodeEncodeError:
+            pytest.fail("Validator logging raised UnicodeEncodeError. Check for non-ASCII characters.")

@@ -51,6 +51,58 @@ def _market_guardrails(market: Market) -> tuple[float | None, float | None]:
     return None, None
 
 
+def _log_calibration_window(
+    games_df: pd.DataFrame,
+    *,
+    market: str,
+    window_type: str = "expanding",
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> None:
+    """Log calibration window details for transparency.
+    
+    Args:
+        games_df: DataFrame of games used for calibration
+        market: Market name (ML, SPREAD, TOTAL)
+        window_type: "expanding" (all data) or "rolling" (recent data)
+        start_date: Optional start date cutoff (YYYY-MM-DD)
+        end_date: Optional end date cutoff (YYYY-MM-DD)
+    """
+    game_count = len(games_df)
+    
+    # Extract date range from games if present
+    actual_start = None
+    actual_end = None
+    if "date" in games_df.columns:
+        try:
+            dates = pd.to_datetime(games_df["date"], errors="coerce")
+            actual_start = dates.min().date().isoformat() if dates.notna().any() else None
+            actual_end = dates.max().date().isoformat() if dates.notna().any() else None
+        except Exception:
+            pass
+    
+    _LOG.info(
+        "[calibration window] market=%s mode=%s lookback=%s start=%s end=%s "
+        "actual_start=%s actual_end=%s games=%d",
+        market,
+        window_type,
+        "N/A",  # Lookback would be computed from window_type and dates
+        start_date or "none",
+        end_date or "none",
+        actual_start or "unknown",
+        actual_end or "unknown",
+        game_count,
+    )
+
+
+def _market_guardrails(market: Market) -> tuple[float | None, float | None]:
+    if market == Market.SPREAD:
+        return MARGIN_SD_GUARDRAIL_MIN, MARGIN_SD_GUARDRAIL_MAX
+    if market == Market.TOTAL:
+        return TOTAL_SD_GUARDRAIL_MIN, TOTAL_SD_GUARDRAIL_MAX
+    return None, None
+
+
 def load_completed_games(
     db_path: str | Path,
     *,
@@ -498,6 +550,261 @@ def fit_calibrator_for_market(
     return calibrator, saved_path
 
 
+def fit_total_bucket_calibrators(
+    dataset_df: pd.DataFrame,
+    *,
+    sport: str,
+    season: str,
+    source_id: str = "historical",
+    method: str = "auto",
+    low_threshold: float = 210.0,
+    mid_threshold: float = 225.0,
+    min_samples_per_bucket: int = 200,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> tuple[Any, Any, dict[str, Any], Path | None]:
+    """Fit global + per-bucket TOTAL calibrators with regime labeling.
+    
+    Phase 10 implementation: fits separate mean + variance calibrators per total_bucket,
+    with fallback to global when bucket samples are insufficient.
+    
+    Args:
+        dataset_df: Calibration dataset with pred_mean, pred_sd, actual_value
+        sport: Sport code
+        season: Season identifier
+        source_id: Source identifier for artifacts
+        method: Calibration method ("auto", "isotonic", "platt")
+        low_threshold: Cutoff for low bucket (default 210)
+        mid_threshold: Cutoff for mid/high boundary (default 225)
+        min_samples_per_bucket: Minimum samples to fit bucket calibrator (default 200)
+        start_date: Optional fit window start
+        end_date: Optional fit window end
+    
+    Returns:
+        Tuple of (global_calibrator, mean_calibrator, bucket_calibrators_dict, manifest_path)
+        bucket_calibrators_dict keys: 'low_mean', 'low_variance', 'mid_mean', 'mid_variance', etc.
+    """
+    from calibration.total_bucket_regimes import (
+        label_dataframe_with_total_bucket,
+        TotalBucketManifest,
+        save_total_bucket_manifest,
+    )
+    from calibration.mean_calibrator import MeanCalibrator
+    from calibration.io import save_calibrator
+    from markets.registry import get_market_spec
+    
+    _LOG.info(
+        "[fit_total_bucket_calibrators] Starting regime-conditioned TOTAL calibration "
+        "for %s/%s (thresholds: %.0f/%.0f, min_samples: %d)",
+        sport, season, low_threshold, mid_threshold, min_samples_per_bucket,
+    )
+    
+    if dataset_df.empty:
+        raise ValueError("Cannot fit calibrators: empty dataset")
+    
+    # Label each row with its total_bucket
+    df = label_dataframe_with_total_bucket(
+        dataset_df.copy(),
+        total_col="pred_mean",
+        thresholds=(low_threshold, mid_threshold),
+    )
+    
+    # Count samples per bucket
+    bucket_counts = df["total_bucket"].value_counts().to_dict()
+    sample_counts = {
+        "global": len(df),
+        "low": bucket_counts.get("low", 0),
+        "mid": bucket_counts.get("mid", 0),
+        "high": bucket_counts.get("high", 0),
+    }
+    _LOG.info(
+        "[fit_total_bucket_calibrators] Sample distribution: "
+        "global=%d, low=%d, mid=%d, high=%d",
+        sample_counts["global"],
+        sample_counts["low"],
+        sample_counts["mid"],
+        sample_counts["high"],
+    )
+    
+    # ===== FIT GLOBAL CALIBRATORS =====
+    global_mean_calibrator = None
+    global_variance_calibrator = None
+    
+    try:
+        # Mean calibrator (global)
+        mean_calib, _ = fit_calibrator_for_market(
+            df,
+            market=Market.TOTAL,
+            method=method,
+            sport=None,
+            season=None,
+            source_id=None,
+        )
+        if isinstance(mean_calib, MeanCalibrator):
+            global_mean_calibrator = mean_calib
+            _LOG.info("[fit_total_bucket_calibrators] Fitted global mean calibrator")
+    except Exception as e:
+        _LOG.warning("[fit_total_bucket_calibrators] Failed to fit global mean: %s", e)
+    
+    try:
+        # Variance calibrator (global)
+        variance_calib, _ = fit_calibrator_for_market(
+            df,
+            market=Market.TOTAL,
+            method=method,
+            sport=None,
+            season=None,
+            source_id=None,
+        )
+        global_variance_calibrator = variance_calib
+        _LOG.info("[fit_total_bucket_calibrators] Fitted global variance calibrator")
+    except Exception as e:
+        _LOG.warning("[fit_total_bucket_calibrators] Failed to fit global variance: %s", e)
+    
+    # ===== FIT PER-BUCKET CALIBRATORS =====
+    bucket_calibrators = {}
+    bucket_flags = {"mean": {}, "variance": {}}
+    
+    for bucket_label in ["low", "mid", "high"]:
+        bucket_df = df[df["total_bucket"] == bucket_label].copy()
+        bucket_sample_count = len(bucket_df)
+        
+        if bucket_sample_count < min_samples_per_bucket:
+            _LOG.info(
+                "[fit_total_bucket_calibrators] Insufficient samples for %s bucket "
+                "(%d < %d); skipping",
+                bucket_label, bucket_sample_count, min_samples_per_bucket,
+            )
+            bucket_flags["mean"][bucket_label] = False
+            bucket_flags["variance"][bucket_label] = False
+            continue
+        
+        # Fit mean calibrator for bucket
+        try:
+            bucket_mean_calib, _ = fit_calibrator_for_market(
+                bucket_df,
+                market=Market.TOTAL,
+                method=method,
+                sport=None,
+                season=None,
+                source_id=None,
+            )
+            if isinstance(bucket_mean_calib, MeanCalibrator):
+                bucket_calibrators[f"{bucket_label}_mean"] = bucket_mean_calib
+                bucket_flags["mean"][bucket_label] = True
+                _LOG.info("[fit_total_bucket_calibrators] Fitted %s bucket mean calibrator", bucket_label)
+        except Exception as e:
+            _LOG.warning("[fit_total_bucket_calibrators] Failed to fit %s mean: %s", bucket_label, e)
+            bucket_flags["mean"][bucket_label] = False
+        
+        # Fit variance calibrator for bucket
+        try:
+            bucket_var_calib, _ = fit_calibrator_for_market(
+                bucket_df,
+                market=Market.TOTAL,
+                method=method,
+                sport=None,
+                season=None,
+                source_id=None,
+            )
+            bucket_calibrators[f"{bucket_label}_variance"] = bucket_var_calib
+            bucket_flags["variance"][bucket_label] = True
+            _LOG.info("[fit_total_bucket_calibrators] Fitted %s bucket variance calibrator", bucket_label)
+        except Exception as e:
+            _LOG.warning("[fit_total_bucket_calibrators] Failed to fit %s variance: %s", bucket_label, e)
+            bucket_flags["variance"][bucket_label] = False
+    
+    # ===== SAVE ARTIFACTS =====
+    spec = get_market_spec(Market.TOTAL)
+    calib_dir = spec.calibrator_dir(sport, season, source_id)
+    calib_dir.mkdir(parents=True, exist_ok=True)
+    
+    saved_files = {}
+    
+    # Save global calibrators
+    if global_mean_calibrator:
+        try:
+            global_mean_path = save_calibrator(
+                global_mean_calibrator,
+                calib_dir / "global",
+                market="total_mean",
+                metadata={"sport": sport, "season": season, "regime": "global"},
+            )
+            saved_files["calibrator_global_mean"] = str(global_mean_path.relative_to(calib_dir.parent.parent.parent))
+        except Exception as e:
+            _LOG.warning("[fit_total_bucket_calibrators] Failed to save global mean: %s", e)
+    
+    if global_variance_calibrator:
+        try:
+            global_var_path = save_calibrator(
+                global_variance_calibrator,
+                calib_dir / "global",
+                market="total",
+                metadata={"sport": sport, "season": season, "regime": "global"},
+            )
+            saved_files["calibrator_global_variance"] = str(global_var_path.relative_to(calib_dir.parent.parent.parent))
+        except Exception as e:
+            _LOG.warning("[fit_total_bucket_calibrators] Failed to save global variance: %s", e)
+    
+    # Save per-bucket calibrators
+    for bucket_label in ["low", "mid", "high"]:
+        for cal_type in ["mean", "variance"]:
+            key = f"{bucket_label}_{cal_type}"
+            if key in bucket_calibrators:
+                try:
+                    cal_obj = bucket_calibrators[key]
+                    market_label = f"total_{cal_type}" if cal_type == "mean" else "total"
+                    cal_path = save_calibrator(
+                        cal_obj,
+                        calib_dir / f"bucket_{bucket_label}",
+                        market=market_label,
+                        metadata={"sport": sport, "season": season, "regime": bucket_label},
+                    )
+                    saved_files[f"calibrator_bucket_{bucket_label}_{cal_type}"] = str(
+                        cal_path.relative_to(calib_dir.parent.parent.parent)
+                    )
+                except Exception as e:
+                    _LOG.warning("[fit_total_bucket_calibrators] Failed to save %s %s: %s", bucket_label, cal_type, e)
+    
+    # ===== CREATE AND SAVE MANIFEST =====
+    manifest = TotalBucketManifest(
+        sport=sport,
+        season=season,
+        source=source_id,
+        market="total",
+        low_threshold=low_threshold,
+        mid_threshold=mid_threshold,
+        min_samples_per_bucket=min_samples_per_bucket,
+        samples_global=sample_counts["global"],
+        samples_low=sample_counts["low"],
+        samples_mid=sample_counts["mid"],
+        samples_high=sample_counts["high"],
+        has_global_mean=global_mean_calibrator is not None,
+        has_global_variance=global_variance_calibrator is not None,
+        has_bucket_mean=bucket_flags["mean"],
+        has_bucket_variance=bucket_flags["variance"],
+        fit_start_date=start_date,
+        fit_end_date=end_date,
+        calibrator_global_mean=saved_files.get("calibrator_global_mean"),
+        calibrator_global_variance=saved_files.get("calibrator_global_variance"),
+        calibrators_bucket_mean={
+            b: saved_files.get(f"calibrator_bucket_{b}_mean")
+            for b in ["low", "mid", "high"]
+            if saved_files.get(f"calibrator_bucket_{b}_mean")
+        },
+        calibrators_bucket_variance={
+            b: saved_files.get(f"calibrator_bucket_{b}_variance")
+            for b in ["low", "mid", "high"]
+            if saved_files.get(f"calibrator_bucket_{b}_variance")
+        },
+    )
+    
+    manifest_path = save_total_bucket_manifest(manifest, calib_dir)
+    _LOG.info("[fit_total_bucket_calibrators] Saved manifest to %s", manifest_path)
+    
+    return global_variance_calibrator, global_mean_calibrator, bucket_calibrators, manifest_path
+
+
 def calibrate_sport_season(
     db_path: str | Path,
     *,
@@ -644,6 +951,15 @@ def calibrate_sport_season(
             if dataset_df.empty:
                 _LOG.warning(f"[calibrate_sport_season] No valid data for {market.name}, skipping")
                 continue
+
+            # Log calibration window details for transparency
+            _log_calibration_window(
+                games_df,
+                market=market.name,
+                window_type="expanding",  # For now, always expanding (all data in season)
+                start_date=start_date,
+                end_date=end_date,
+            )
 
             # Fit calibrator
             calibrator, saved_path = fit_calibrator_for_market(

@@ -1,0 +1,11 @@
+{
+  "market": "total",
+  "mode": "total_bucket",
+  "total_bucket": {
+    "manifest_path": "/path/to/bucket/manifest.json"
+  },
+  "promoted_at": "2026-01-29T02:59:00.803350+00:00",
+  "global": {
+    "path": "/path/to/global/calibrator"
+  }
+}

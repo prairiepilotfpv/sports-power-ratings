@@ -106,3 +106,33 @@ The schedule workbook (`schedule_with_projections.xlsx`) includes a `BETS` sheet
 - **Empty weights:** equal weights are applied.
 - **No configured models remain:** falls back to available models for that market.
 - **Experimental models showing up:** rerun without `--include-experimental` or remove them from the config.
+
+## Phase 6: Ensemble Governance (Advanced)
+
+See [PHASE6_ENSEMBLE_GOVERNANCE.md](../PHASE6_ENSEMBLE_GOVERNANCE.md) for details on:
+- **Market model allowlists**: Single source of truth for which models per market
+- **Weight governance**: MIN_WEIGHT_EPS clamping, MIN_NEFF threshold enforcement
+- **EnsembleAudit**: Comprehensive audit object tracking dropped models, coverage, Neff
+- **Strict mode**: Fail-fast on weight collapse or insufficient model count
+- **No silent fallback**: All fallbacks logged loudly for visibility
+
+Quick reference:
+```python
+# In src/config.py
+MARKET_MODEL_ALLOWLISTS = {
+    "ML": ["bradley-terry", "elo", "gssd", "poisson", "toor"],
+    "SPREAD": ["bradley-terry", "elo", "gssd", "poisson", "toor"],
+    "TOTAL": ["bradley-terry", "elo", "gssd", "poisson", "toor"],
+}
+
+MIN_WEIGHT_EPS = 0.01  # Clamp weights below this
+MIN_NEFF = 1.5  # Minimum effective model count
+ENSEMBLE_STRICT_MODE = False  # Fail on Neff < threshold (when True)
+```
+
+Audit logging example:
+```
+[ensemble audit][ML] source=db_best_run Neff=2.8 (threshold=met) 
+models=['elo', 'bradley-terry'] weights={'elo': 0.6, 'bradley-terry': 0.4}
+```
+

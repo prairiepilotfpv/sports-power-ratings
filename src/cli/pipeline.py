@@ -1153,12 +1153,264 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Calibrator method (default: auto).",
     )
     calibrate_parser.add_argument(
+        "--regimes",
+        choices=["total_bucket"],
+        help="Regime type for TOTAL market: 'total_bucket' for bucketed calibration (Phase 10).",
+    )
+    calibrate_parser.add_argument(
+        "--total-bucket-low-threshold",
+        type=float,
+        default=210.0,
+        help="Low bucket threshold for total_bucket regimes (default: 210).",
+    )
+    calibrate_parser.add_argument(
+        "--total-bucket-mid-threshold",
+        type=float,
+        default=225.0,
+        help="Mid/high bucket threshold for total_bucket regimes (default: 225).",
+    )
+    calibrate_parser.add_argument(
+        "--min-samples-per-bucket",
+        type=int,
+        default=200,
+        help="Minimum samples to fit a bucket calibrator (default: 200).",
+    )
+    calibrate_parser.add_argument(
         "--csv",
         help="Optional CSV path of historical games (defaults to DB for sport/season).",
     )
     calibrate_parser.add_argument(
         "--db",
         help="Optional SQLite DB path override for historical games.",
+    )
+
+    calibration_report_parser = subparsers.add_parser(
+        "calibration-report",
+        help="Evaluate calibration quality: compute metrics, slice by regime, detect drift.",
+    )
+    calibration_report_parser.add_argument(
+        "--sport", required=True, help="Sport identifier (e.g., nba)"
+    )
+    calibration_report_parser.add_argument(
+        "--season", required=True, help="Season identifier (e.g., 2025-26)"
+    )
+    calibration_report_parser.add_argument(
+        "--schedule-path",
+        required=True,
+        help="Path to schedule CSV/XLSX with post-calibration projections.",
+    )
+    calibration_report_parser.add_argument(
+        "--markets",
+        default="ML,spread,total",
+        help="Comma-separated markets to evaluate (default: ML,spread,total).",
+    )
+    calibration_report_parser.add_argument(
+        "--slicing-regimes",
+        help="JSON config for regime slicing (e.g., '{\"favorite_vs_underdog\": {}, \"spread_bucket\": {}}'). "
+        "If omitted, evaluates only top-level metrics.",
+    )
+    calibration_report_parser.add_argument(
+        "--fit-start-date",
+        help="Fit window start date (YYYY-MM-DD) for drift comparison.",
+    )
+    calibration_report_parser.add_argument(
+        "--fit-end-date",
+        help="Fit window end date (YYYY-MM-DD) for drift comparison.",
+    )
+    calibration_report_parser.add_argument(
+        "--eval-start-date",
+        help="Eval window start date (YYYY-MM-DD) for drift comparison.",
+    )
+    calibration_report_parser.add_argument(
+        "--eval-end-date",
+        help="Eval window end date (YYYY-MM-DD) for drift comparison.",
+    )
+    calibration_report_parser.add_argument(
+        "--rolling-window-days",
+        type=int,
+        help="Rolling window size in days for stability tracking (optional).",
+    )
+    calibration_report_parser.add_argument(
+        "--output-dir",
+        default="outputs/calibration_reports",
+        help="Output directory for JSON reports and CSV files (default: outputs/calibration_reports).",
+    )
+    calibration_report_parser.add_argument(
+        "--csv-output",
+        action="store_true",
+        help="Also export regime metrics and rolling window results to CSV files.",
+    )
+
+    # ---- Phase 11: calibration-ab ----
+    calibration_ab_parser = subparsers.add_parser(
+        "calibration-ab",
+        help="Run A/B evaluation comparing global vs bucketed TOTAL calibration.",
+    )
+    calibration_ab_parser.add_argument(
+        "--sport", required=True, help="Sport identifier (e.g., nba)"
+    )
+    calibration_ab_parser.add_argument(
+        "--season", required=True, help="Season identifier (e.g., 2025-26)"
+    )
+    calibration_ab_parser.add_argument(
+        "--market",
+        default="total",
+        help="Market to evaluate (default: total). Only 'total' supported.",
+    )
+    calibration_ab_parser.add_argument(
+        "--source",
+        required=True,
+        help="Prediction source id (e.g., ensemble_total_v1).",
+    )
+    calibration_ab_parser.add_argument(
+        "--fit-start",
+        required=True,
+        help="Fit window start date (YYYY-MM-DD).",
+    )
+    calibration_ab_parser.add_argument(
+        "--fit-end",
+        required=True,
+        help="Fit window end date (YYYY-MM-DD).",
+    )
+    calibration_ab_parser.add_argument(
+        "--eval-start",
+        required=True,
+        help="Eval window start date (YYYY-MM-DD).",
+    )
+    calibration_ab_parser.add_argument(
+        "--eval-end",
+        required=True,
+        help="Eval window end date (YYYY-MM-DD).",
+    )
+    calibration_ab_parser.add_argument(
+        "--bucket-thresholds",
+        default="210,225",
+        help="Comma-separated low,mid threshold for total buckets (default: 210,225).",
+    )
+    calibration_ab_parser.add_argument(
+        "--min-samples-per-bucket",
+        type=int,
+        default=200,
+        help="Minimum samples per bucket to fit calibrator (default: 200).",
+    )
+    calibration_ab_parser.add_argument(
+        "--tolerance-pct",
+        type=float,
+        default=0.05,
+        help="MAE/RMSE tolerance percentage for policy gate (default: 0.05 = 5%%).",
+    )
+    calibration_ab_parser.add_argument(
+        "--output-dir",
+        default="outputs/calibration_ab",
+        help="Output directory for report JSON (default: outputs/calibration_ab).",
+    )
+    calibration_ab_parser.add_argument(
+        "--db",
+        help="Optional SQLite DB path override.",
+    )
+    calibration_ab_parser.add_argument(
+        "--models",
+        help="Comma-separated list of TOTAL models (default: from ensemble config).",
+    )
+
+    # ---- Phase 12: calibration-policy ----
+    calibration_policy_parser = subparsers.add_parser(
+        "calibration-policy",
+        help="Show current active TOTAL calibration policy.",
+    )
+    calibration_policy_parser.add_argument(
+        "--sport", required=True, help="Sport identifier (e.g., nba)"
+    )
+    calibration_policy_parser.add_argument(
+        "--season", required=True, help="Season identifier (e.g., 2025-26)"
+    )
+
+    # ---- Phase 12: calibration-promote-total ----
+    calibration_promote_parser = subparsers.add_parser(
+        "calibration-promote-total",
+        help="Promote a TOTAL calibration policy (global or bucket) to active.",
+    )
+    calibration_promote_parser.add_argument(
+        "--sport", required=True, help="Sport identifier (e.g., nba)"
+    )
+    calibration_promote_parser.add_argument(
+        "--season", required=True, help="Season identifier (e.g., 2025-26)"
+    )
+    calibration_promote_parser.add_argument(
+        "--mode",
+        required=True,
+        choices=["global", "total_bucket"],
+        help="Calibration mode (global or total_bucket).",
+    )
+    calibration_promote_parser.add_argument(
+        "--global-path",
+        help="Path to global calibrator artifact/directory (required for mode=global).",
+    )
+    calibration_promote_parser.add_argument(
+        "--manifest-path",
+        help="Path to bucket manifest JSON (required for mode=total_bucket).",
+    )
+    calibration_promote_parser.add_argument(
+        "--notes",
+        default="",
+        help="Optional notes about this promotion.",
+    )
+
+    # ---- Phase 12: calibration-rollback-total ----
+    calibration_rollback_parser = subparsers.add_parser(
+        "calibration-rollback-total",
+        help="Rollback TOTAL calibration policy (remove active.json).",
+    )
+    calibration_rollback_parser.add_argument(
+        "--sport", required=True, help="Sport identifier (e.g., nba)"
+    )
+    calibration_rollback_parser.add_argument(
+        "--season", required=True, help="Season identifier (e.g., 2025-26)"
+    )
+
+    # ---- Phase 13: calibration-promote-total-from-report ----
+    calibration_promote_from_report_parser = subparsers.add_parser(
+        "calibration-promote-total-from-report",
+        help="Promote TOTAL calibration policy from Phase 11 A/B report.",
+    )
+    calibration_promote_from_report_parser.add_argument(
+        "--sport", required=True, help="Sport identifier (e.g., nba)"
+    )
+    calibration_promote_from_report_parser.add_argument(
+        "--season", required=True, help="Season identifier (e.g., 2025-26)"
+    )
+    calibration_promote_from_report_parser.add_argument(
+        "--report", required=True, help="Path to calibration_ab_report.json"
+    )
+    calibration_promote_from_report_parser.add_argument(
+        "--notes",
+        default="",
+        help="Optional notes about this promotion.",
+    )
+
+    # ---- Phase 13: calibration-policy-health ----
+    calibration_policy_health_parser = subparsers.add_parser(
+        "calibration-policy-health",
+        help="Check health of active TOTAL calibration policy (advisory only).",
+    )
+    calibration_policy_health_parser.add_argument(
+        "--sport", required=True, help="Sport identifier (e.g., nba)"
+    )
+    calibration_policy_health_parser.add_argument(
+        "--season", required=True, help="Season identifier (e.g., 2025-26)"
+    )
+    calibration_policy_health_parser.add_argument(
+        "--market", default="total", help="Market to evaluate (default: total)."
+    )
+    calibration_policy_health_parser.add_argument(
+        "--window-games",
+        type=int,
+        default=100,
+        help="Number of recent games to evaluate (default: 100).",
+    )
+    calibration_policy_health_parser.add_argument(
+        "--db",
+        help="Optional SQLite DB path override.",
     )
 
     return parser.parse_args(argv)
@@ -2292,27 +2544,768 @@ def _run_select_ensemble(args: argparse.Namespace) -> None:
 
 def _run_calibrate_ensemble(args: argparse.Namespace) -> None:
     _ensure_src_on_path()
+    from pathlib import Path
     from pipelines.ensemble_tuning import calibrate_ml_ensemble
+    from calibration.historical_calibration import (
+        calibrate_sport_season,
+        fit_total_bucket_calibrators,
+        load_completed_games,
+        generate_model_predictions,
+        build_total_calibration_dataset,
+    )
+    from markets.base import Market
 
-    if args.market.strip().upper() != "ML":
-        raise ValueError("Only ML calibration is supported for now.")
     start_date = _require_iso_date(args.start_date, field="--start-date")
     end_date = _require_iso_date(args.end_date, field="--end-date")
     model_list = None
     if args.models:
         model_list = [m.strip() for m in args.models.split(",") if m.strip()]
-    out_path = calibrate_ml_ensemble(
+    
+    market_upper = args.market.strip().upper()
+    
+    # ===== ML MARKET =====
+    if market_upper == "ML":
+        out_path = calibrate_ml_ensemble(
+            sport=args.sport,
+            season=args.season,
+            start_date=start_date,
+            end_date=end_date,
+            ensemble_id=args.source,
+            models=model_list,
+            csv_path=args.csv,
+            db_path=args.db,
+            method=args.method,
+        )
+        print(f"Saved ML calibrator -> {out_path}")
+    
+    # ===== TOTAL MARKET WITH REGIMES =====
+    elif market_upper == "TOTAL":
+        regimes = getattr(args, "regimes", None)
+        
+        if regimes == "total_bucket":
+            # Phase 10: regime-conditioned TOTAL calibration
+            _LOG.info("[calibrate] Using Phase 10 total_bucket regimes for TOTAL calibration")
+            
+            db_path = args.db or str(Path("data") / "db" / args.sport / f"{args.season}.db")
+            
+            # Load games and generate predictions
+            games_df = load_completed_games(
+                db_path,
+                sport=args.sport,
+                season=args.season,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            
+            if games_df.empty:
+                raise ValueError(f"No completed games found for {args.sport}/{args.season}")
+            
+            from ensemble.config import load_ensemble_config
+            ensemble_config = load_ensemble_config(
+                sport=args.sport,
+                season=args.season,
+                available_models=None,
+            )
+            market_configs = ensemble_config.get("markets", {})
+            total_config = market_configs.get("TOTAL", {})
+            configured_models = list(total_config.get("models", []))
+            
+            if not configured_models:
+                raise ValueError("No TOTAL models configured in ensemble config")
+            
+            preds_df = generate_model_predictions(
+                db_path,
+                games_df,
+                sport=args.sport,
+                season=args.season,
+                models=configured_models,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            
+            if preds_df.empty:
+                raise ValueError("No predictions generated for TOTAL market")
+            
+            # Build TOTAL calibration dataset
+            dataset_df = build_total_calibration_dataset(games_df, preds_df)
+            
+            if dataset_df.empty:
+                raise ValueError("No valid calibration data for TOTAL market")
+            
+            # Fit regime-conditioned calibrators
+            global_var_cal, global_mean_cal, bucket_cals, manifest_path = fit_total_bucket_calibrators(
+                dataset_df,
+                sport=args.sport,
+                season=args.season,
+                source_id=args.source,
+                method=args.method,
+                low_threshold=args.total_bucket_low_threshold,
+                mid_threshold=args.total_bucket_mid_threshold,
+                min_samples_per_bucket=args.min_samples_per_bucket,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            
+            print(f"[total_bucket] Saved {len(bucket_cals)} bucket calibrators")
+            print(f"[total_bucket] Manifest -> {manifest_path}")
+        
+        else:
+            # Global TOTAL calibration (no regimes)
+            from calibration.historical_calibration import calibrate_sport_season
+            from markets.base import Market
+            
+            db_path = args.db or str(Path("data") / "db" / args.sport / f"{args.season}.db")
+            
+            results = calibrate_sport_season(
+                db_path,
+                sport=args.sport,
+                season=args.season,
+                models=model_list or [],
+                markets=[Market.TOTAL],
+                source_id=args.source,
+                method=args.method,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            
+            if "total" in results:
+                _, path = results["total"]
+                print(f"Saved TOTAL calibrator -> {path}")
+            else:
+                print("No TOTAL calibrator was fitted")
+    
+    else:
+        raise ValueError(f"Market '{market_upper}' not supported. Use 'ML' or 'total'.")
+
+
+def _run_calibration_report(args: argparse.Namespace) -> None:
+    """Evaluate calibration quality: metrics, regime slicing, drift detection."""
+    _ensure_src_on_path()
+    import json as json_module
+    import pandas as pd
+    from pathlib import Path
+    
+    from pipelines.calibration_evaluation import (
+        Market,
+        SlicerConfig,
+        RegimeType,
+        build_slicer,
+        brier_score,
+        log_loss,
+        calibration_error,
+        mean_absolute_error,
+        root_mean_squared_error,
+        mean_signed_error,
+        empirical_coverage,
+        tail_miss_rate,
+        compute_drift_metrics,
+        rolling_window_metrics,
+        MarketEvaluationReport,
+        summarize_evaluation,
+    )
+    
+    # Load schedule
+    schedule_path = Path(args.schedule_path)
+    if not schedule_path.exists():
+        raise FileNotFoundError(f"Schedule file not found: {schedule_path}")
+    
+    df = pd.read_csv(schedule_path) if schedule_path.suffix == ".csv" else pd.read_excel(schedule_path)
+    _LOG.info(f"[calibration_report] Loaded schedule with {len(df)} rows from {schedule_path}")
+    
+    # Parse markets to evaluate
+    markets_str = getattr(args, "markets", "ML,spread,total")
+    markets = [m.strip().upper() for m in markets_str.split(",") if m.strip()]
+    _LOG.info(f"[calibration_report] Evaluating markets: {markets}")
+    
+    # Parse slicing config if provided
+    slicing_configs: list[SlicerConfig] = []
+    slicing_json = getattr(args, "slicing_regimes", None)
+    if slicing_json:
+        try:
+            slicing_dict = json_module.loads(slicing_json)
+            for regime_name, regime_kwargs in slicing_dict.items():
+                # Map string regime names to RegimeType
+                regime_type_map = {
+                    "favorite_vs_underdog": RegimeType.FAVORITE_VS_UNDERDOG,
+                    "spread_bucket": RegimeType.SPREAD_BUCKET,
+                    "total_bucket": RegimeType.TOTAL_BUCKET,
+                    "home_vs_away": RegimeType.HOME_VS_AWAY,
+                    "season_segment": RegimeType.SEASON_SEGMENT,
+                    "market_distance": RegimeType.MARKET_DISTANCE,
+                }
+                if regime_name not in regime_type_map:
+                    raise ValueError(f"Unknown regime type: {regime_name}")
+                
+                regime_type = regime_type_map[regime_name]
+                config = SlicerConfig(
+                    regime_type=regime_type,
+                    name=regime_name,
+                    kwargs=regime_kwargs or {},
+                )
+                slicing_configs.append(config)
+        except json_module.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in --slicing-regimes: {e}")
+    
+    # Filter by date if specified
+    fit_start = getattr(args, "fit_start_date", None)
+    fit_end = getattr(args, "fit_end_date", None)
+    eval_start = getattr(args, "eval_start_date", None)
+    eval_end = getattr(args, "eval_end_date", None)
+    
+    if fit_start:
+        fit_start = _require_iso_date(fit_start, field="--fit-start-date")
+    if fit_end:
+        fit_end = _require_iso_date(fit_end, field="--fit-end-date")
+    if eval_start:
+        eval_start = _require_iso_date(eval_start, field="--eval-start-date")
+    if eval_end:
+        eval_end = _require_iso_date(eval_end, field="--eval-end-date")
+    
+    fit_df = df.copy()
+    eval_df = df.copy()
+    
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        
+        if fit_start or fit_end:
+            if fit_start:
+                fit_df = fit_df[fit_df["date"] >= fit_start]
+            if fit_end:
+                fit_df = fit_df[fit_df["date"] <= fit_end]
+        
+        if eval_start or eval_end:
+            if eval_start:
+                eval_df = eval_df[eval_df["date"] >= eval_start]
+            if eval_end:
+                eval_df = eval_df[eval_df["date"] <= eval_end]
+    
+    rolling_window_days = getattr(args, "rolling_window_days", None)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_output = getattr(args, "csv_output", False)
+    
+    # Evaluate each market
+    all_reports = {}
+    
+    if "ML" in markets:
+        report = _evaluate_ml_market(df, fit_df, eval_df, slicing_configs, rolling_window_days)
+        all_reports["ML"] = report
+        report.to_json(output_dir / "calibration_report_ML.json")
+        if csv_output and not report.regime_metrics.empty:
+            _write_regime_metrics_csv(report, output_dir / "regime_metrics_ML.csv")
+        if csv_output and not report.rolling_window_results.empty:
+            report.rolling_window_results.to_csv(output_dir / "rolling_window_ML.csv", index=False)
+    
+    for market in ["SPREAD", "TOTAL"]:
+        if market in markets:
+            col_prefix = "margin" if market == "SPREAD" else "total"
+            report = _evaluate_variance_market(df, fit_df, eval_df, market, col_prefix, slicing_configs, rolling_window_days)
+            all_reports[market] = report
+            report.to_json(output_dir / f"calibration_report_{market}.json")
+            if csv_output and report.regime_metrics:
+                _write_regime_metrics_csv(report, output_dir / f"regime_metrics_{market}.csv")
+            if csv_output and not report.rolling_window_results.empty:
+                report.rolling_window_results.to_csv(output_dir / f"rolling_window_{market}.csv", index=False)
+    
+    # Print summary
+    summary = summarize_evaluation(all_reports)
+    print(summary)
+    _LOG.info(f"[calibration_report] Reports written to {output_dir}")
+
+
+def _evaluate_ml_market(
+    full_df: pd.DataFrame,
+    fit_df: pd.DataFrame,
+    eval_df: pd.DataFrame,
+    slicing_configs: list[SlicerConfig],
+    rolling_window_days: int | None = None,
+) -> MarketEvaluationReport:
+    """Evaluate ML market calibration."""
+    from pipelines.calibration_evaluation import (
+        brier_score,
+        log_loss,
+        calibration_error,
+        compute_drift_metrics,
+        rolling_window_metrics,
+        MarketEvaluationReport,
+    )
+    
+    # Top-level metrics
+    metrics = {}
+    
+    # Use full_df for top-level metrics
+    eval_subset = full_df[
+        (full_df["home_score"].notna()) &
+        (full_df["away_score"].notna()) &
+        (full_df["win_prob_home"].notna())
+    ].copy()
+    
+    if len(eval_subset) > 0:
+        outcomes = (eval_subset["home_score"] > eval_subset["away_score"]).astype(float)
+        probs = eval_subset["win_prob_home"]
+        
+        metrics["brier_score"] = brier_score(probs, outcomes)
+        metrics["log_loss"] = log_loss(probs, outcomes)
+        metrics["calibration_error"] = calibration_error(probs, outcomes)
+    
+    # Regime slicing
+    regime_metrics = {}
+    num_regimes = 0
+    
+    for config in slicing_configs:
+        slicer = _build_slicer(config)
+        slices = slicer.slice(eval_subset)
+        
+        for slice_name, slice_df in slices.items():
+            if len(slice_df) == 0:
+                continue
+            
+            slice_outcomes = (slice_df["home_score"] > slice_df["away_score"]).astype(float)
+            slice_probs = slice_df["win_prob_home"]
+            
+            regime_name = f"{config.name}_{slice_name}"
+            regime_metrics[regime_name] = {
+                "brier_score": brier_score(slice_probs, slice_outcomes),
+                "log_loss": log_loss(slice_probs, slice_outcomes),
+                "calibration_error": calibration_error(slice_probs, slice_outcomes),
+                "sample_count": len(slice_df),
+            }
+            num_regimes += 1
+    
+    # Drift diagnostics
+    drift_metrics = {}
+    if len(fit_df) > 0 and len(eval_df) > 0:
+        fit_outcomes = (fit_df["home_score"] > fit_df["away_score"]).astype(float)
+        fit_probs = fit_df["win_prob_home"]
+        
+        eval_outcomes = (eval_df["home_score"] > eval_df["away_score"]).astype(float)
+        eval_probs = eval_df["win_prob_home"]
+        
+        def brier_fn(x):
+            if len(x) == 0:
+                return float("nan")
+            outcomes = (x["home_score"] > x["away_score"]).astype(float)
+            probs = x["win_prob_home"]
+            return brier_score(probs, outcomes)
+        
+        drift_metrics["brier_score_drift"] = compute_drift_metrics(
+            fit_df, eval_df, metric_fn=brier_fn, metric_name="brier_score"
+        )
+    
+    # Rolling window
+    rolling_results = pd.DataFrame()
+    if rolling_window_days:
+        def rolling_metric(x):
+            if len(x) == 0:
+                return float("nan")
+            outcomes = (x["home_score"] > x["away_score"]).astype(float)
+            probs = x["win_prob_home"]
+            return brier_score(probs, outcomes)
+        
+        rolling_results = rolling_window_metrics(
+            eval_subset, metric_fn=rolling_metric, window_days=rolling_window_days
+        )
+    
+    return MarketEvaluationReport(
+        market="ML",
+        num_samples=len(eval_subset),
+        num_regimes=num_regimes,
+        metrics=metrics,
+        regime_metrics=regime_metrics,
+        drift_metrics=drift_metrics,
+        rolling_window_results=rolling_results,
+    )
+
+
+def _evaluate_variance_market(
+    full_df: pd.DataFrame,
+    fit_df: pd.DataFrame,
+    eval_df: pd.DataFrame,
+    market: str,  # "SPREAD" or "TOTAL"
+    col_prefix: str,  # "margin" or "total"
+    slicing_configs: list[SlicerConfig],
+    rolling_window_days: int | None = None,
+) -> MarketEvaluationReport:
+    """Evaluate SPREAD or TOTAL market calibration."""
+    from pipelines.calibration_evaluation import (
+        mean_absolute_error,
+        root_mean_squared_error,
+        mean_signed_error,
+        empirical_coverage,
+        tail_miss_rate,
+        compute_drift_metrics,
+        rolling_window_metrics,
+        MarketEvaluationReport,
+    )
+    
+    mean_col = f"proj_{col_prefix}_mean"
+    sd_col = f"proj_{col_prefix}_sd"
+    actual_col = f"result_{col_prefix}"
+    
+    # Top-level metrics
+    metrics = {}
+    
+    eval_subset = full_df[
+        (full_df[actual_col].notna()) &
+        (full_df[mean_col].notna()) &
+        (full_df[sd_col].notna())
+    ].copy()
+    
+    if len(eval_subset) > 0:
+        metrics["mae"] = mean_absolute_error(eval_subset[mean_col], eval_subset[actual_col])
+        metrics["rmse"] = root_mean_squared_error(eval_subset[mean_col], eval_subset[actual_col])
+        metrics["mean_signed_error"] = mean_signed_error(eval_subset[mean_col], eval_subset[actual_col])
+        metrics["coverage_1sigma"] = empirical_coverage(
+            eval_subset[mean_col], eval_subset[sd_col], eval_subset[actual_col], sigma=1.0
+        )
+        metrics["coverage_2sigma"] = empirical_coverage(
+            eval_subset[mean_col], eval_subset[sd_col], eval_subset[actual_col], sigma=2.0
+        )
+        metrics["tail_miss_rate_2sigma"] = tail_miss_rate(
+            eval_subset[mean_col], eval_subset[sd_col], eval_subset[actual_col], sigma=2.0
+        )
+    
+    # Regime slicing
+    regime_metrics = {}
+    num_regimes = 0
+    
+    for config in slicing_configs:
+        slicer = _build_slicer(config)
+        slices = slicer.slice(eval_subset)
+        
+        for slice_name, slice_df in slices.items():
+            if len(slice_df) == 0:
+                continue
+            
+            regime_name = f"{config.name}_{slice_name}"
+            regime_metrics[regime_name] = {
+                "mae": mean_absolute_error(slice_df[mean_col], slice_df[actual_col]),
+                "rmse": root_mean_squared_error(slice_df[mean_col], slice_df[actual_col]),
+                "mean_signed_error": mean_signed_error(slice_df[mean_col], slice_df[actual_col]),
+                "coverage_1sigma": empirical_coverage(
+                    slice_df[mean_col], slice_df[sd_col], slice_df[actual_col], sigma=1.0
+                ),
+                "sample_count": len(slice_df),
+            }
+            num_regimes += 1
+    
+    # Drift diagnostics
+    drift_metrics = {}
+    
+    # Rolling window
+    rolling_results = pd.DataFrame()
+    if rolling_window_days:
+        def rolling_metric(x):
+            if len(x) == 0:
+                return float("nan")
+            return mean_absolute_error(x[mean_col], x[actual_col])
+        
+        rolling_results = rolling_window_metrics(
+            eval_subset, metric_fn=rolling_metric, window_days=rolling_window_days
+        )
+    
+    return MarketEvaluationReport(
+        market=market,
+        num_samples=len(eval_subset),
+        num_regimes=num_regimes,
+        metrics=metrics,
+        regime_metrics=regime_metrics,
+        drift_metrics=drift_metrics,
+        rolling_window_results=rolling_results,
+    )
+
+
+def _build_slicer(config: SlicerConfig):
+    """Helper to build a slicer from config."""
+    from pipelines.calibration_evaluation import build_slicer
+    return build_slicer(config)
+
+
+def _write_regime_metrics_csv(report: MarketEvaluationReport, path: Path) -> None:
+    """Write regime metrics to CSV."""
+    rows = []
+    for regime_name, metrics in report.regime_metrics.items():
+        row = {"regime": regime_name}
+        row.update(metrics)
+        rows.append(row)
+    
+    df = pd.DataFrame(rows)
+    df.to_csv(path, index=False)
+    _LOG.info(f"[calibration_report] Wrote regime metrics to {path}")
+
+
+def _run_calibration_ab(args: argparse.Namespace) -> None:
+    """Run A/B evaluation comparing global vs bucketed TOTAL calibration."""
+    _ensure_src_on_path()
+    from pathlib import Path
+    from pipelines.calibration_ab import run_calibration_ab
+
+    fit_start = _require_iso_date(args.fit_start, field="--fit-start")
+    fit_end = _require_iso_date(args.fit_end, field="--fit-end")
+    eval_start = _require_iso_date(args.eval_start, field="--eval-start")
+    eval_end = _require_iso_date(args.eval_end, field="--eval-end")
+
+    market = args.market.strip().lower()
+    if market != "total":
+        raise ValueError(
+            f"Phase 11 only supports --market total, got: {market}"
+        )
+
+    # Parse bucket thresholds
+    parts = [float(x.strip()) for x in args.bucket_thresholds.split(",")]
+    if len(parts) != 2:
+        raise ValueError(
+            "--bucket-thresholds must be two comma-separated floats (e.g., 210,225)"
+        )
+    bucket_thresholds = (parts[0], parts[1])
+
+    db_path = args.db or str(Path("data") / "db" / args.sport / f"{args.season}.db")
+
+    model_list = None
+    if args.models:
+        model_list = [m.strip() for m in args.models.split(",") if m.strip()]
+
+    report = run_calibration_ab(
+        db_path=db_path,
         sport=args.sport,
         season=args.season,
-        start_date=start_date,
-        end_date=end_date,
-        ensemble_id=args.source,
+        source=args.source,
+        fit_start=fit_start,
+        fit_end=fit_end,
+        eval_start=eval_start,
+        eval_end=eval_end,
+        bucket_thresholds=bucket_thresholds,
+        min_samples_per_bucket=args.min_samples_per_bucket,
+        output_dir=Path(args.output_dir),
+        tolerance_pct=args.tolerance_pct,
         models=model_list,
-        csv_path=args.csv,
-        db_path=args.db,
-        method=args.method,
     )
-    print(f"Saved calibrator -> {out_path}")
+
+    # Print summary
+    print(f"\n{'=' * 60}")
+    print(f"CALIBRATION A/B REPORT: {args.sport}/{args.season}")
+    print(f"{'=' * 60}")
+    print(f"Fit window:  {fit_start} to {fit_end}")
+    print(f"Eval window: {eval_start} to {eval_end}")
+    print(
+        f"\nBaseline (global):  MAE={report.baseline.mae:.3f}  "
+        f"RMSE={report.baseline.rmse:.3f}  "
+        f"tail_miss={report.baseline.tail_miss_rate:.3f}  "
+        f"cov_2sd={report.baseline.coverage_2sd:.3f}"
+    )
+    print(
+        f"Treatment (bucket): MAE={report.treatment.mae:.3f}  "
+        f"RMSE={report.treatment.rmse:.3f}  "
+        f"tail_miss={report.treatment.tail_miss_rate:.3f}  "
+        f"cov_2sd={report.treatment.coverage_2sd:.3f}"
+    )
+    print(f"\nPolicy: {report.policy.recommendation}")
+    for line in report.policy.reasoning:
+        print(f"  - {line}")
+    print(
+        f"\nReport saved to: {Path(args.output_dir) / 'calibration_ab_report.json'}"
+    )
+
+
+def _run_calibration_policy(args: argparse.Namespace) -> None:
+    """Show current active TOTAL calibration policy (ASCII-only output)."""
+    _ensure_src_on_path()
+    from calibration.active_policy import load_total_active_policy, get_total_policy_path
+    
+    policy = load_total_active_policy(sport=args.sport, season=args.season)
+    policy_path = get_total_policy_path(sport=args.sport, season=args.season)
+    
+    if not policy:
+        print(f"[calibration policy] market=TOTAL no_active_policy")
+        print(f"Policy file: {policy_path}")
+        print("Status: no active policy; using default global behavior")
+        return
+    
+    mode = policy.get("mode", "unknown")
+    promoted_at = policy.get("promoted_at", "unknown")
+    notes = policy.get("notes", "")
+    
+    print(f"[calibration policy] market=TOTAL mode={mode} policy={policy_path}")
+    print(f"Promoted at: {promoted_at}")
+    
+    if mode == "global":
+        global_cfg = policy.get("global", {})
+        global_path = global_cfg.get("path", "unknown")
+        print(f"Global calibrator path: {global_path}")
+    elif mode == "total_bucket":
+        bucket_cfg = policy.get("total_bucket", {})
+        manifest_path = bucket_cfg.get("manifest_path", "unknown")
+        print(f"Bucket manifest path: {manifest_path}")
+        global_cfg = policy.get("global")
+        if global_cfg:
+            global_path = global_cfg.get("path", "unknown")
+            print(f"Global fallback path: {global_path}")
+    
+    if notes:
+        print(f"Notes: {notes}")
+
+
+def _run_calibration_promote_total(args: argparse.Namespace) -> None:
+    """Promote a TOTAL calibration policy (global or bucket) to active (ASCII-only output)."""
+    _ensure_src_on_path()
+    from calibration.active_policy import (
+        create_global_policy,
+        create_total_bucket_policy,
+        save_total_active_policy,
+        get_total_policy_path,
+    )
+    
+    mode = args.mode.lower()
+    notes = args.notes or ""
+    
+    # Validate arguments based on mode
+    if mode == "global":
+        if not args.global_path:
+            raise ValueError("--global-path is required for mode=global")
+        policy = create_global_policy(
+            sport=args.sport,
+            season=args.season,
+            global_path=args.global_path,
+            notes=notes,
+        )
+    elif mode == "total_bucket":
+        if not args.manifest_path:
+            raise ValueError("--manifest-path is required for mode=total_bucket")
+        policy = create_total_bucket_policy(
+            sport=args.sport,
+            season=args.season,
+            manifest_path=args.manifest_path,
+            global_path=args.global_path,
+            notes=notes,
+        )
+    else:
+        raise ValueError(f"Invalid mode: {mode}")
+    
+    # Save to active.json
+    policy_path = save_total_active_policy(
+        sport=args.sport,
+        season=args.season,
+        policy=policy,
+    )
+    
+    print(f"[calibration policy] market=TOTAL mode={mode} promoted")
+    print(f"Policy written to: {policy_path}")
+    print(f"Promoted at: {policy.get('promoted_at', 'unknown')}")
+
+
+def _run_calibration_rollback_total(args: argparse.Namespace) -> None:
+    """Rollback TOTAL calibration policy (remove active.json, preserve backup) (ASCII-only output)."""
+    _ensure_src_on_path()
+    from datetime import datetime, timezone
+    from pathlib import Path
+    from calibration.active_policy import get_total_policy_path
+    
+    policy_path = get_total_policy_path(sport=args.sport, season=args.season)
+    
+    if not policy_path.exists():
+        print(f"[calibration policy] market=TOTAL no_active_policy")
+        print("No active policy to rollback.")
+        return
+    
+    # Backup to active.prev.<timestamp>.json
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    backup_path = policy_path.parent / f"active.prev.{timestamp}.json"
+    
+    policy_path.rename(backup_path)
+    
+    print(f"[calibration policy] market=TOTAL rollback_complete")
+    print(f"Active policy removed: {policy_path}")
+    print(f"Backup saved to: {backup_path}")
+    print("Schedule will now use default global calibration behavior.")
+
+
+def _run_calibration_promote_total_from_report(args: argparse.Namespace) -> None:
+    """Promote TOTAL policy from Phase 11 A/B report (ASCII-only output)."""
+    _ensure_src_on_path()
+    from pipelines.calibration_promote import (
+        load_calibration_ab_report,
+        promote_policy_from_report,
+    )
+    from pathlib import Path
+
+    report_path = Path(args.report)
+    notes = args.notes or ""
+
+    try:
+        # Load and validate report
+        report = load_calibration_ab_report(report_path)
+        print(f"[calibration promote] Loaded report: {report_path}")
+
+        # Promote policy
+        policy_path = promote_policy_from_report(
+            sport=args.sport,
+            season=args.season,
+            report=report,
+            notes=notes,
+        )
+
+        print(f"[calibration promote] market=TOTAL promotion_complete")
+        print(f"Policy mode: {report['policy'].get('recommendation')}")
+        print(f"Policy written to: {policy_path}")
+
+    except ValueError as e:
+        print(f"[calibration promote] error: promotion_blocked")
+        print(f"Reason: {e}")
+        raise SystemExit(1)
+    except Exception as e:
+        print(f"[calibration promote] error: unexpected_failure")
+        print(f"Details: {e}")
+        raise SystemExit(1)
+
+
+def _run_calibration_policy_health(args: argparse.Namespace) -> None:
+    """Check health of active TOTAL calibration policy (advisory only, ASCII-only output)."""
+    _ensure_src_on_path()
+    from pipelines.calibration_promote import evaluate_policy_health
+    from data.paths import db_path_for
+
+    db_path = args.db
+    if not db_path:
+        db_path = db_path_for(args.sport, args.season)
+    
+    _echo_db_path(Path(db_path))
+
+    try:
+        health = evaluate_policy_health(
+            db_path=db_path,
+            sport=args.sport,
+            season=args.season,
+            market=args.market,
+            window_games=args.window_games,
+        )
+
+        status = health.get("status", "UNKNOWN")
+        print(f"[calibration policy-health] market={args.market} status={status}")
+        
+        metrics = health.get("current_metrics", {})
+        if metrics:
+            print(f"  MAE:              {metrics.get('mae', 'N/A'):.4f}" if isinstance(metrics.get('mae'), (int, float)) else f"  MAE:              {metrics.get('mae', 'N/A')}")
+            print(f"  RMSE:             {metrics.get('rmse', 'N/A'):.4f}" if isinstance(metrics.get('rmse'), (int, float)) else f"  RMSE:             {metrics.get('rmse', 'N/A')}")
+            print(f"  Coverage (2-sig): {metrics.get('coverage_2sd', 'N/A'):.2%}" if isinstance(metrics.get('coverage_2sd'), (int, float)) else f"  Coverage (2-sig): {metrics.get('coverage_2sd', 'N/A')}")
+            print(f"  Tail miss rate:   {metrics.get('tail_miss_rate', 'N/A'):.2%}" if isinstance(metrics.get('tail_miss_rate'), (int, float)) else f"  Tail miss rate:   {metrics.get('tail_miss_rate', 'N/A')}")
+            print(f"  Samples:          {metrics.get('sample_count', 'N/A')}")
+        
+        warnings = health.get("warnings", [])
+        if warnings:
+            print("  Warnings:")
+            for w in warnings:
+                print(f"    - {w}")
+        else:
+            print("  No warnings.")
+        
+        notes = health.get("notes", "")
+        if notes:
+            print(f"  Notes: {notes}")
+
+    except Exception as e:
+        print(f"[calibration policy-health] error: evaluation_failed")
+        print(f"Details: {e}")
+        raise SystemExit(1)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -2372,6 +3365,20 @@ def main(argv: list[str] | None = None) -> None:
         _run_init_ensemble_config(args)
     elif args.command == "calibrate":
         _run_calibrate_ensemble(args)
+    elif args.command == "calibration-report":
+        _run_calibration_report(args)
+    elif args.command == "calibration-ab":
+        _run_calibration_ab(args)
+    elif args.command == "calibration-policy":
+        _run_calibration_policy(args)
+    elif args.command == "calibration-promote-total":
+        _run_calibration_promote_total(args)
+    elif args.command == "calibration-rollback-total":
+        _run_calibration_rollback_total(args)
+    elif args.command == "calibration-promote-total-from-report":
+        _run_calibration_promote_total_from_report(args)
+    elif args.command == "calibration-policy-health":
+        _run_calibration_policy_health(args)
     elif args.command == "activate-tuning":
         _run_activate_tuning(args)
     elif args.command == "tuning-status":

@@ -970,6 +970,8 @@ def _build_forecasts_df_legacy(
     total_std = metrics.get("total_std")
     conditional_sd_intercept = metrics.get("conditional_sd_intercept")
     conditional_sd_slope = metrics.get("conditional_sd_slope")
+    
+    # Build base projection context
     projection_context = {
         "ratings": ratings,
         "base_total": base_total,
@@ -988,6 +990,31 @@ def _build_forecasts_df_legacy(
         "sd_residual_max": sd_residual_max,
         "rating_units": "points",
     }
+    
+    # Add model-specific context for heads-based projection
+    if model_instance is not None and model == "gssd":
+        # For GSSD heads, include team stats and calibration coefficients
+        if hasattr(model_instance, "_gssd") and hasattr(model_instance._gssd, "_team_stats"):
+            projection_context["team_stats"] = model_instance._gssd._team_stats
+        if hasattr(model_instance, "_coefficients"):
+            coeff = model_instance._coefficients
+            projection_context.update({
+                "intercept": coeff.intercept,
+                "beta_pfh": coeff.beta_pfh,
+                "beta_pah": coeff.beta_pah,
+                "beta_pfa": coeff.beta_pfa,
+                "beta_paa": coeff.beta_paa,
+                "home_advantage_points": coeff.home_advantage_points,
+                "error_term": coeff.error_term,
+            })
+        if hasattr(model_instance, "_total_mean"):
+            projection_context["total_mean"] = model_instance._total_mean
+        if hasattr(model_instance, "_total_sd"):
+            projection_context["total_sd"] = model_instance._total_sd
+        if hasattr(model_instance, "_conditional_sd_model") and model_instance._conditional_sd_model is not None:
+            projection_context["conditional_sd_intercept"] = model_instance._conditional_sd_model.intercept
+            projection_context["conditional_sd_slope"] = model_instance._conditional_sd_model.slope
+
     if model == "poisson" and model_params and "n_simulations" in model_params:
         projection_context["n_simulations"] = model_params["n_simulations"]
 

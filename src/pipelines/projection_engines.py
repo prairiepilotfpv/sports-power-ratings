@@ -13,6 +13,7 @@ from config import (
     DEFAULT_POISSON_OVERDISPERSION,
     DEFAULT_TOTAL_SD_FALLBACK,
     DEFAULT_WIN_PROB_K,
+    HEADS_MODE_ENABLED,
     LEAGUE_MARGIN_SD_DEFAULT,
     MARGIN_SD_GUARDRAIL_MAX,
     MARGIN_SD_GUARDRAIL_MIN,
@@ -30,6 +31,19 @@ from pipelines.projections import (
     project_game,
     total_from_ratings,
 )
+
+# Canonical fields that projection engines must not derive in heads mode
+_CANONICAL_DERIVABLE_FIELDS = {
+    "p_home_win",
+    "model_p_home_win",
+    "margin_mean",
+    "margin_sd",
+    "total_mean",
+    "total_sd",
+    "projected_home_score",
+    "projected_away_score",
+    "projected_total",
+}
 
 _LOGGER = logging.getLogger(__name__)
 _DEBUG_ASSERT = os.getenv("TOOR_MARGIN_SD_ASSERT", "").lower() in {
@@ -53,8 +67,26 @@ def register_projection_engine(model_id: str, engine: ProjectionEngine) -> None:
     _ENGINES[model_id] = engine
 
 
-def get_projection_engine(model: Any) -> ProjectionEngine:
-    """Resolve the projection engine for a model instance."""
+def get_projection_engine(model: Any, heads_mode: bool | None = None) -> ProjectionEngine:
+    """
+    Resolve the projection engine for a model instance.
+    
+    Args:
+        model: Model instance with model_id.
+        heads_mode: If True, use heads-based derivation (if available).
+                   If False or None, use legacy projection engine.
+                   If not provided, uses HEADS_MODE_ENABLED from config.
+    
+    Returns:
+        ProjectionEngine function for this model.
+    
+    Raises:
+        ValueError: If heads_mode=True and heads are requested but not available for
+                   a model that requires projection engine (Elo, TOOR, GSSD).
+    """
+    if heads_mode is None:
+        heads_mode = HEADS_MODE_ENABLED
+    
     model_id = None
     if hasattr(model, "metadata") and callable(model.metadata):
         meta = model.metadata()
@@ -63,8 +95,85 @@ def get_projection_engine(model: Any) -> ProjectionEngine:
         model_id = getattr(model, "model_id", None)
     if callable(model_id):
         model_id = model_id()
+    
     model_key = str(model_id) if model_id is not None else _DEFAULT_ENGINE_KEY
+    
+    # In heads mode, check if heads are available for this model
+    if heads_mode:
+        try:
+            from forecasting.heads.registry import get_model_heads
+            
+            if model_id and get_model_heads(model_id) is not None:
+                # Heads available; use a no-op engine that validates but doesn't derive
+                return _validation_only_engine
+        except Exception:
+            pass
+    
     return _ENGINES.get(model_key, _ENGINES[_DEFAULT_ENGINE_KEY])
+
+
+def _assert_derivation_locked(field: str, heads_mode: bool, context: ProjectionContext | None = None) -> None:
+    """
+    Enforce derivation lockout in heads mode.
+    
+    In heads mode, projection engine must not attempt to derive canonical fields.
+    All canonical fields must come from heads; the projection engine is validation-only.
+    
+    Args:
+        field: Name of the field being derived.
+        heads_mode: Whether heads mode is enabled.
+        context: Optional context dict for logging.
+    
+    Raises:
+        RuntimeError: If attempting to derive a canonical field in heads mode.
+    """
+    if not heads_mode:
+        return
+    
+    if field in _CANONICAL_DERIVABLE_FIELDS:
+        game_id = context.get("game_id") if context else None
+        home_team = context.get("home_team") if context else None
+        away_team = context.get("away_team") if context else None
+        game_label = f"{game_id or f'{home_team} vs {away_team}'}"
+        
+        raise RuntimeError(
+            f"[heads-mode derivation lockout] Cannot derive canonical field '{field}' "
+            f"in heads mode (game: {game_label}). "
+            f"All canonical fields must come from heads; projection engine must not "
+            f"compute or overwrite {field}."
+        )
+
+
+def _validation_only_engine(
+    home_team: str,
+    away_team: str,
+    model: Any,
+    context: ProjectionContext,
+) -> ProjectionOutput:
+    """
+    Validation-only engine used when heads mode is enabled.
+    
+    This engine does NOT derive missing canonical fields. Instead, it:
+    - Returns the output as-is (for fields already filled by heads)
+    - Raises ValueError if required fields are missing
+    
+    Used to prevent accidental double-derivation when heads are applied.
+    """
+    return {
+        "projected_home_score": None,
+        "projected_away_score": None,
+        "projected_total": None,
+        "projected_win_prob": None,
+        "model_p_home_win": None,
+        "normal_p_home_win": None,
+        "win_prob_source": None,
+        "margin_dist_assumption": None,
+        "margin_mean": None,
+        "margin_sd": None,
+        "total_mean": None,
+        "total_sd": None,
+        "logistic_home_win_prob": None,
+    }
 
 
 def _rating_projection_engine(
@@ -81,6 +190,10 @@ def _rating_projection_engine(
         model_id = getattr(model, "model_id", None)
     if callable(model_id):
         model_id = model_id()
+    
+    # Check heads mode for derivation lockout
+    heads_mode = context.get("__heads_mode__", HEADS_MODE_ENABLED)
+    
     ratings = context.get("ratings", {})
     # Enforce explicit rating units: projection logic expects ratings in
     # spread/points units (i.e. implied points). Callers must set
@@ -120,6 +233,13 @@ def _rating_projection_engine(
             "total_sd": None,
             "logistic_home_win_prob": None,
         }
+
+    # Derivation lockout checks for heads mode
+    if heads_mode:
+        _assert_derivation_locked("margin_mean", heads_mode, guardrail_context)
+        _assert_derivation_locked("margin_sd", heads_mode, guardrail_context)
+        _assert_derivation_locked("total_mean", heads_mode, guardrail_context)
+        _assert_derivation_locked("total_sd", heads_mode, guardrail_context)
 
     base_total = float(context.get("base_total", 0.0))
     scoring_averages = context.get("scoring_averages", {})
@@ -451,15 +571,19 @@ def _bt_projection_engine(
     if projection is None:
         return _rating_projection_engine(home_team, away_team, model, context)
     # For pipeline projections (model-based scheduling, reporting), the
-    # projection engine should expose the model's direct logistic win
+    # projection engine should expose the model's logistic win
     # probability as authoritative and suppress the margin-derived
-    # probability to avoid confusing consumers that expect a direct
+    # probability to avoid confusing consumers that expect a logistic
     # win-prob for ranking models.
     model_p = projection.get("model_p_home_win", projection.get("p_home_win"))
     # For raw Bradley-Terry models, we prefer the logistic probability and
     # do not surface the margin-normal derived probability in the pipeline
     # projection output (keep it None) to match historical pipeline behavior.
     normal_p = None if model_p is not None else projection.get("normal_p_home_win")
+    
+    # Use normalized producer ID: "bradley-terry" when model_p available, else "bt_margin_normal"
+    win_prob_source = "bradley-terry" if model_p is not None else "bt_margin_normal"
+    
     return {
         "projected_home_score": projection.get("projected_home_score"),
         "projected_away_score": projection.get("projected_away_score"),
@@ -467,7 +591,7 @@ def _bt_projection_engine(
         "projected_win_prob": model_p,
         "model_p_home_win": model_p,
         "normal_p_home_win": normal_p,
-        "win_prob_source": "direct" if model_p is not None else "bt_margin_normal",
+        "win_prob_source": win_prob_source,
         "margin_mean": projection.get("margin_mean"),
         "margin_sd": projection.get("margin_sd"),
         "total_mean": projection.get("total_mean"),

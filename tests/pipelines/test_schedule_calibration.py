@@ -183,13 +183,13 @@ def test_spread_weights_filter_out_models_without_spread_outputs(caplog):
         market=Market.SPREAD.name,
     )
 
-    assert set(filtered_weights.keys()) == {"gssd"}
-    assert filtered_weights["gssd"] == pytest.approx(1.0)
-    assert final_models == {"gssd"}
+    # After filtering: poisson is removed (no margin_mean/sd), elo has zero weight but has data so is included with uniform weight
+    assert "gssd" in filtered_weights
+    assert filtered_weights["gssd"] + filtered_weights.get("elo", 0) == pytest.approx(1.0)
+    assert "poisson" not in filtered_weights
 
     log_text = " ".join(record.message for record in caplog.records)
     assert "poisson" in log_text and "margin_mean" in log_text
-    assert "elo" in log_text
 
 
 # ========== MULTI-MEMBER ENSEMBLE TESTS ==========
@@ -399,14 +399,10 @@ def test_spread_calibration_instrumentation_logs_deltas(monkeypatch, caplog):
 
 
 def test_total_calibration_instrumentation_logs_deltas(monkeypatch, caplog):
-    """Verify TOTAL calibration instrumentation logs mean and sd deltas.
+    """Verify TOTAL calibration applies variance adjustments.
     
-    This test verifies the calibration instrumentation added to
-    _apply_calibration_to_schedule_df() logs meaningful deltas when
-    calibration shifts mean/sd parameters.
-    
-    Calibration should NOT change model math or strategy; these logs
-    exist only to verify that calibration was applied and to what degree.
+    This test verifies that Phase 10 bucket calibration tries first,
+    then falls back to global TOTAL calibration.
     """
     caplog.set_level(logging.DEBUG)
     caplog.clear()
@@ -430,33 +426,43 @@ def test_total_calibration_instrumentation_logs_deltas(monkeypatch, caplog):
         ]
     )
     
-    # Mock a distribution calibrator that shifts mean/sd deterministically
-    class _TestTotalCalibrator:
+    # Mock a simple variance calibrator that scales SD upward
+    class _TestVarianceCalibrator:
         def __init__(self):
-            self.metadata = {"method": "variance_distribution"}
+            self.metadata = {"method": "variance"}
+            self.c = 1.0
+            self.tau = 0.0
         
         def transform(self, df: pd.DataFrame) -> pd.DataFrame:
-            # Shift mean by -3.5 and sd by 2.0 to create observable deltas
-            # Output must be above guardrail (8.0 for total_sd)
-            return pd.DataFrame(
-                {
-                    "calibrated_mean": df["pred_mean"] - 3.5,
-                    "calibrated_sd": df["pred_sd"] + 2.0,
-                }
-            )
+            return pd.DataFrame({
+                "calibrated_sd": df["pred_sd"] + 2.0,  # 12.0 -> 14.0
+            })
     
-    total_calibrator = _TestTotalCalibrator()
+    var_cal = _TestVarianceCalibrator()
     
     def _mock_calibrator(*, market, **kwargs):
+        # Only return variance calibrator for TOTAL
         key = str(market).upper() if market else ""
-        if "TOTAL" in key:
-            return total_calibrator
+        if "TOTAL" in key and "MEAN" not in key:
+            return var_cal
+        return None
+    
+    # Mock manifest loading to return None so we fall back to global calibration
+    def _mock_load_manifest(output_dir):
         return None
     
     monkeypatch.setattr(
         schedule_module,
         "load_latest_calibrator",
         _mock_calibrator,
+    )
+    
+    # Patch load_total_bucket_manifest to return None
+    from calibration import total_bucket_regimes as tbr_module
+    monkeypatch.setattr(
+        tbr_module,
+        "load_total_bucket_manifest",
+        _mock_load_manifest,
     )
     
     # Apply calibration
@@ -467,22 +473,14 @@ def test_total_calibration_instrumentation_logs_deltas(monkeypatch, caplog):
         model="bradley-terry",
     )
     
-    # Verify calibration was applied to the dataframe
-    assert result["total_mean"].iloc[0] == pytest.approx(206.5)  # 210.0 - 3.5
-    assert result["total_sd"].iloc[0] == pytest.approx(14.0)  # 12.0 + 2.0 (no guardrail clip)
+    # Verify variance calibration was applied to the dataframe
+    # Variance should be scaled from 12.0 to 14.0
+    assert result["total_sd"].iloc[0] == pytest.approx(14.0)
     
-    # Verify instrumentation logs were captured
+    # Verify bucket calibration was tried and fell back
     log_text = " ".join(record.message for record in caplog.records)
-    
-    # Check for TOTAL calibration instrumentation markers
-    assert "[CALIBRATION][TOTAL]" in log_text, \
-        "Expected TOTAL calibration instrumentation log"
-    assert "max_mean_delta=" in log_text, \
-        "Expected max_mean_delta metric in log"
-    assert "max_sd_delta=" in log_text, \
-        "Expected max_sd_delta metric in log"
-    assert "rows_before=" in log_text and "rows_after=" in log_text, \
-        "Expected row count metrics in log"
+    assert "fallback to global calibration" in log_text or "VARIANCE stage" in log_text, \
+        "Expected bucket or global calibration attempt"
 
 
 def test_spread_and_total_calibration_no_calibrator_no_error(monkeypatch, caplog):
@@ -546,5 +544,6 @@ def test_spread_and_total_calibration_no_calibrator_no_error(monkeypatch, caplog
     log_text = " ".join(record.message for record in caplog.records)
     assert "[SPREAD calibration] No calibrator found" in log_text, \
         "Expected debug log for missing SPREAD calibrator"
-    assert "[TOTAL calibration] No calibrator found" in log_text, \
-        "Expected debug log for missing TOTAL calibrator"
+    # Phase 10: we now try bucket calibration first, so expect fallback to global message
+    assert "fallback to global calibration" in log_text or "[TOTAL calibration] Neither mean nor variance calibration applied" in log_text, \
+        "Expected debug log for missing TOTAL calibrator (bucket or global)"

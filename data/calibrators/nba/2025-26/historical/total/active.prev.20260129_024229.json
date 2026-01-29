@@ -1,0 +1,8 @@
+{
+  "market": "total",
+  "mode": "total_bucket",
+  "total_bucket": {
+    "manifest_path": "/path/to/manifest.json"
+  },
+  "promoted_at": "2026-01-29T02:42:29.505602+00:00"
+}

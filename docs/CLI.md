@@ -461,12 +461,52 @@ python -m src.cli.pipeline tune-ensemble --sport nba --season 2025-26 --market M
 
 ## calibrate — fit a probability calibrator for an ML source
 
+### ML Calibration (Phase 8)
+
 ```bash
 python -m src.cli.pipeline calibrate --sport nba --season 2025-26 --market ML --source ensemble_ml_v1 \
   --start-date 2020-01-01 --end-date 2024-12-31 --csv data/raw/nba_history.csv
 ```
 
 - Calibrators are written to `outputs/calibrators/<sport>/<season>/<source_id>/<market>/`.
+
+### TOTAL Calibration - Global (Phase 8)
+
+```bash
+python -m src.cli.pipeline calibrate --sport nba --season 2025-26 --market total --source ensemble_total_v1 \
+  --start-date 2025-10-01 --end-date 2025-12-31
+```
+
+- Fits global mean + variance calibrators for TOTAL predictions.
+- Outputs to `outputs/calibrators/<sport>/<season>/<source_id>/total/`.
+
+### TOTAL Calibration - Regime-Conditioned Buckets (Phase 10)
+
+```bash
+python -m src.cli.pipeline calibrate --sport nba --season 2025-26 --market total --source ensemble_total_v1 \
+  --start-date 2025-10-01 --end-date 2025-12-31 \
+  --regimes total_bucket \
+  --total-bucket-low-threshold 210.0 \
+  --total-bucket-mid-threshold 225.0 \
+  --min-samples-per-bucket 200 \
+  --method auto
+```
+
+**Phase 10 Options:**
+- `--regimes total_bucket`: Enable regime-conditioned calibration (fits per-bucket calibrators)
+- `--total-bucket-low-threshold`: Cutoff for low bucket (default: 210)
+- `--total-bucket-mid-threshold`: Cutoff for mid/high boundary (default: 225)
+- `--min-samples-per-bucket`: Minimum samples to fit a bucket calibrator (default: 200)
+
+**Bucket Assignment:**
+- **low**: `total_mean < 210`
+- **mid**: `210 <= total_mean < 225`
+- **high**: `total_mean >= 225`
+
+**Outputs:**
+- Global calibrators (fallback): `outputs/calibrators/<sport>/<season>/<source_id>/total/global/`
+- Per-bucket calibrators: `outputs/calibrators/<sport>/<season>/<source_id>/total/bucket_{low,mid,high}/`
+- Manifest: `outputs/calibrators/<sport>/<season>/<source_id>/total/regime_manifest.json`
 
 ## validation-report — include calibration status
 
@@ -478,3 +518,172 @@ python -m src.cli.pipeline validation-report --sport nba --season 2025-26
 - Use `--skip-calibration` to disable.
 - Use `--calibration-source-id` to select which calibration artifacts to verify.
 - If backtest start/end are provided, calibration defaults to the same window unless overridden.
+## calibration-ab — A/B compare global vs bucketed TOTAL calibration (Phase 11)
+
+```bash
+python -m src.cli.pipeline calibration-ab \
+  --sport nba --season 2025-26 \
+  --source ensemble_total_v1 \
+  --fit-start 2025-10-01 --fit-end 2025-12-31 \
+  --eval-start 2026-01-01 --eval-end 2026-01-28 \
+  --bucket-thresholds 210,225 \
+  --min-samples-per-bucket 200 \
+  --tolerance-pct 0.05 \
+  --output-dir outputs/calibration_ab
+```
+
+**Purpose:** Compare global TOTAL calibration (baseline) vs regime-conditioned bucketed calibration (treatment) to determine if bucketing improves prediction performance.
+
+**Options:**
+- `--source`: Prediction source id (e.g., `ensemble_total_v1`)
+- `--fit-start`, `--fit-end`: Fit window (YYYY-MM-DD)
+- `--eval-start`, `--eval-end`: Eval window (separate from fit for fair comparison)
+- `--bucket-thresholds`: Comma-separated low,mid thresholds (default: 210,225)
+- `--min-samples-per-bucket`: Minimum samples to fit bucket calibrator (default: 200)
+- `--tolerance-pct`: MAE/RMSE degradation tolerance for policy gate (default: 0.05 = 5%)
+- `--output-dir`: Report output location (default: outputs/calibration_ab)
+
+**Output:**
+- JSON report to `<output-dir>/calibration_ab_report.json` with:
+  - `policy.recommendation`: "recommended" or "not_recommended"
+  - `global_calibrator_path`: Path to global calibrator
+  - `bucket_manifest_path`: Path to bucket manifest (if bucketing was fit)
+  - Baseline/treatment metrics (MAE, RMSE, coverage, tail miss rate)
+  - Per-bucket metric breakdowns
+
+**Policy Gate:** Recommendation is "recommended" only if ALL four criteria are met:
+1. Tail miss rate improved (lower)
+2. 2-sigma coverage improved (higher)
+3. MAE within tolerance
+4. RMSE within tolerance
+
+## calibration-policy — show active TOTAL calibration mode (Phase 12)
+
+```bash
+python -m src.cli.pipeline calibration-policy --sport nba --season 2025-26
+```
+
+- Displays the active TOTAL calibration policy (global or total_bucket mode).
+- Returns `no active policy` if none is set.
+
+## calibration-promote-total — promote a TOTAL policy to active (Phase 12)
+
+```bash
+# Global mode
+python -m src.cli.pipeline calibration-promote-total \
+  --sport nba --season 2025-26 \
+  --mode global \
+  --global-path outputs/calibrators/nba/2025-26/ensemble_total_v1/total/global \
+  --notes "Manual global promotion"
+
+# Total bucket mode
+python -m src.cli.pipeline calibration-promote-total \
+  --sport nba --season 2025-26 \
+  --mode total_bucket \
+  --manifest-path outputs/calibrators/nba/2025-26/ensemble_total_v1/total/regime_manifest.json \
+  --global-path outputs/calibrators/nba/2025-26/ensemble_total_v1/total/global \
+  --notes "Bucketed calibration promoted"
+```
+
+**Purpose:** Manually promote a TOTAL calibration policy (global or bucketed) to active, making it the default for schedule projections.
+
+**Options:**
+- `--mode`: "global" or "total_bucket" (required)
+- `--global-path`: Path to global calibrator (required for global, optional for total_bucket as fallback)
+- `--manifest-path`: Path to bucket manifest JSON (required for total_bucket)
+- `--notes`: Optional notes about this promotion
+
+**Output:**
+- Writes policy to `data/calibrators/<sport>/<season>/historical/total/active.json`
+- Schedule/projection commands automatically use this policy
+
+## calibration-rollback-total — rollback active TOTAL policy (Phase 12)
+
+```bash
+python -m src.cli.pipeline calibration-rollback-total --sport nba --season 2025-26
+```
+
+**Purpose:** Remove active policy and revert to default behavior; creates timestamped backup.
+
+**Output:**
+- Renames `active.json` to `active.prev.<timestamp>.json`
+- Subsequent schedule/projection commands use default global calibration
+
+## calibration-promote-total-from-report — promote policy from A/B report (Phase 13)
+
+```bash
+python -m src.cli.pipeline calibration-promote-total-from-report \
+  --sport nba --season 2025-26 \
+  --report outputs/calibration_ab/calibration_ab_report.json \
+  --notes "Phase 11 A/B recommended this policy"
+```
+
+**Purpose:** Convenience command that reads a Phase 11 calibration-ab report and automatically promotes the policy if recommendation is "recommended".
+
+**Logic:**
+1. Load the A/B report JSON
+2. Validate report structure and fields
+3. Check `policy.recommendation` field
+4. If "recommended":
+   - Determine mode from report: if `bucket_manifest_path` exists → total_bucket, else → global
+   - Extract calibrator paths from report
+   - Promote using Phase 12 helpers
+5. If "not_recommended":
+   - Abort with clear error message explaining why promotion is blocked
+   - Print reasoning from report
+
+**Options:**
+- `--report`: Path to calibration_ab_report.json (required)
+- `--notes`: Optional notes about this promotion
+
+**Error Cases:**
+- Missing report file → FileNotFoundError
+- Invalid JSON → ValueError
+- Report.policy.recommendation != "recommended" → ValueError with reasoning
+- Missing calibrator paths → ValueError
+
+**Output:**
+- Writes policy to `data/calibrators/<sport>/<season>/historical/total/active.json`
+- Prints status message indicating success or failure reason
+
+## calibration-policy-health — check active policy health (Phase 13, Advisory Only)
+
+```bash
+python -m src.cli.pipeline calibration-policy-health \
+  --sport nba --season 2025-26 \
+  --market total \
+  --window-games 100
+```
+
+**Purpose:** Evaluate recent performance of active TOTAL calibration policy and report degradation warnings (advisory only; does NOT auto-rollback or modify files).
+
+**Options:**
+- `--sport`, `--season`: Required
+- `--market`: Market to evaluate (default: total)
+- `--window-games`: Number of recent games to assess (default: 100)
+- `--db`: Optional DB path override
+
+**Logic:**
+1. Load active TOTAL policy
+2. Build calibration dataset on most recent `window_games`
+3. Apply policy calibration to dataset
+4. Compute Phase 9 evaluation metrics
+5. Compare against health thresholds:
+   - MAE: threshold 5.0 points
+   - RMSE: threshold 7.0 points
+   - 2-sigma coverage: threshold >= 94%
+   - Tail miss rate: threshold <= 10%
+6. Return status and warnings
+
+**Output:**
+- Status: "OK" (no warnings) or "WARN" (degradation detected)
+- Current metrics: MAE, RMSE, coverage, tail miss rate, sample count
+- Warnings: List of any metric degradations
+- Notes: Advisory statement ("No automatic action taken")
+
+**Important:** This is advisory only. It does NOT:
+- Automatically rollback the policy
+- Modify any files
+- Stop schedule/projection commands
+
+Use `calibration-rollback-total` manually if rollback is needed.
